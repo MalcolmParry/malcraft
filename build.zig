@@ -4,6 +4,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const mwengine = b.dependency("mwengine", .{}).module("mwengine");
+
     const exe = b.addExecutable(.{
         .name = "malcraft",
         .root_module = b.createModule(.{
@@ -12,6 +14,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe.root_module.addImport("mwengine", mwengine);
 
     b.getInstallStep().dependOn(&exe.step);
 

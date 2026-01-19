@@ -1,0 +1,3 @@
+[submodule "deps/mwengine"]
+	path = deps/mwengine
+	url = https://github.com/MalcolmParry/mwengine.git

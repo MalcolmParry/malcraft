@@ -4,4 +4,9 @@
     .minimum_zig_version = "0.15.2",
     .paths = .{""},
     .fingerprint = 0x4e455feaf5ff5191,
+    .dependencies = .{
+        .mwengine = .{
+            .path = "deps/mwengine",
+        },
+    },
 }
