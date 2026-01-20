@@ -3,15 +3,15 @@ const mw = @import("mwengine");
 const gpu = mw.gpu;
 const math = mw.math;
 
+const Renderer = @This();
+
 event_queue: mw.EventQueue,
 window: mw.Window,
 instance: gpu.Instance,
 device: gpu.Device,
 display: gpu.Display,
-image_available_semaphore: gpu.Semaphore,
-render_finished_semaphore: gpu.Semaphore,
-presented_fence: gpu.Fence,
-cmd_encoder: gpu.CommandEncoder,
+frame_index: usize,
+per_frame_in_flight: []PerFrameInFlight,
 
 pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.event_queue = try .init(alloc);
@@ -30,25 +30,13 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.display = try .init(this.device, &this.window, alloc);
     errdefer this.display.deinit(alloc);
 
-    this.image_available_semaphore = try .init(this.device);
-    errdefer this.image_available_semaphore.deinit(this.device);
-
-    this.render_finished_semaphore = try .init(this.device);
-    errdefer this.render_finished_semaphore.deinit(this.device);
-
-    this.presented_fence = try .init(this.device, true);
-    errdefer this.presented_fence.deinit(this.device);
-
-    this.cmd_encoder = try .init(this.device);
-    errdefer this.cmd_encoder.deinit(this.device);
+    try this.initFramesInFlight(alloc);
+    errdefer this.deinitFramesInFlight(alloc);
 }
 
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.device.waitUntilIdle();
-    this.cmd_encoder.deinit(this.device);
-    this.presented_fence.deinit(this.device);
-    this.render_finished_semaphore.deinit(this.device);
-    this.image_available_semaphore.deinit(this.device);
+    this.deinitFramesInFlight(alloc);
     this.display.deinit(alloc);
     this.device.deinit(alloc);
     this.instance.deinit(alloc);
@@ -58,17 +46,18 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
 
 pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
     _ = alloc;
-    try this.presented_fence.wait(this.device, std.time.ns_per_s);
-    try this.presented_fence.reset(this.device);
+    const per_frame = this.per_frame_in_flight[this.frame_index];
+    try per_frame.presented_fence.wait(this.device, std.time.ns_per_s);
+    try per_frame.presented_fence.reset(this.device);
 
-    const image_index = switch (try this.display.acquireImageIndex(this.image_available_semaphore, null, std.time.ns_per_s)) {
+    const image_index = switch (try this.display.acquireImageIndex(per_frame.image_available_semaphore, null, std.time.ns_per_s)) {
         .success => |x| x,
         .suboptimal => |x| x,
         .out_of_date => return error.Failed,
     };
 
-    try this.cmd_encoder.begin(this.device);
-    this.cmd_encoder.cmdMemoryBarrier(this.device, &.{.{
+    try per_frame.cmd_encoder.begin(this.device);
+    per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{.{
         .image = .{
             .image = this.display.image(image_index),
             .old_layout = .undefined,
@@ -80,7 +69,7 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
         },
     }});
 
-    this.cmd_encoder.cmdMemoryBarrier(this.device, &.{
+    per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
         .{ .image = .{
             .image = this.display.image(image_index),
             .old_layout = .color_attachment,
@@ -92,8 +81,59 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
         } },
     });
 
-    try this.cmd_encoder.end(this.device);
-    try this.cmd_encoder.submit(this.device, &.{this.image_available_semaphore}, &.{this.render_finished_semaphore}, null);
+    try per_frame.cmd_encoder.end(this.device);
+    try per_frame.cmd_encoder.submit(this.device, &.{per_frame.image_available_semaphore}, &.{per_frame.render_finished_semaphore}, null);
 
-    _ = try this.display.presentImage(image_index, &.{this.render_finished_semaphore}, this.presented_fence);
+    _ = try this.display.presentImage(image_index, &.{per_frame.render_finished_semaphore}, per_frame.presented_fence);
+    this.frame_index = (this.frame_index + 1) % this.display.imageCount();
 }
+
+fn initFramesInFlight(this: *Renderer, alloc: std.mem.Allocator) !void {
+    this.frame_index = 0;
+    this.per_frame_in_flight = try alloc.alloc(PerFrameInFlight, this.display.imageCount());
+    errdefer alloc.free(this.per_frame_in_flight);
+
+    for (this.per_frame_in_flight) |*x| {
+        try x.init(this, alloc);
+    }
+}
+
+fn deinitFramesInFlight(this: *Renderer, alloc: std.mem.Allocator) void {
+    for (this.per_frame_in_flight) |*x| {
+        x.deinit(this, alloc);
+    }
+
+    alloc.free(this.per_frame_in_flight);
+}
+
+const PerFrameInFlight = struct {
+    image_available_semaphore: gpu.Semaphore,
+    render_finished_semaphore: gpu.Semaphore,
+    presented_fence: gpu.Fence,
+    cmd_encoder: gpu.CommandEncoder,
+
+    pub fn init(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) !void {
+        _ = alloc;
+
+        this.image_available_semaphore = try .init(renderer.device);
+        errdefer this.image_available_semaphore.deinit(renderer.device);
+
+        this.render_finished_semaphore = try .init(renderer.device);
+        errdefer this.render_finished_semaphore.deinit(renderer.device);
+
+        this.presented_fence = try .init(renderer.device, true);
+        errdefer this.presented_fence.deinit(renderer.device);
+
+        this.cmd_encoder = try .init(renderer.device);
+        errdefer this.cmd_encoder.deinit(renderer.device);
+    }
+
+    pub fn deinit(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) void {
+        _ = alloc;
+
+        this.cmd_encoder.deinit(renderer.device);
+        this.presented_fence.deinit(renderer.device);
+        this.render_finished_semaphore.deinit(renderer.device);
+        this.image_available_semaphore.deinit(renderer.device);
+    }
+};
