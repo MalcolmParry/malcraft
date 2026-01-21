@@ -2,6 +2,7 @@ const std = @import("std");
 const mw = @import("mwengine");
 const gpu = mw.gpu;
 const math = mw.math;
+const Chunk = @import("Chunk.zig");
 
 const Renderer = @This();
 
@@ -12,6 +13,7 @@ device: gpu.Device,
 display: gpu.Display,
 frame_index: usize,
 per_frame_in_flight: []PerFrameInFlight,
+chunk: Chunk,
 
 pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.event_queue = try .init(alloc);
@@ -32,6 +34,8 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     try this.initFramesInFlight(alloc);
     errdefer this.deinitFramesInFlight(alloc);
+
+    this.chunk.init(.{ 0, 0, 0 });
 }
 
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
