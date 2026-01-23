@@ -14,6 +14,7 @@ display: gpu.Display,
 frame_index: usize,
 per_frame_in_flight: []PerFrameInFlight,
 chunk: Chunk,
+mesh: ChunkMesh,
 
 pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.event_queue = try .init(alloc);
@@ -36,9 +37,12 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     errdefer this.deinitFramesInFlight(alloc);
 
     this.chunk.init(.{ 0, 0, 0 });
+    try this.mesh.build(&this.chunk, alloc);
 }
 
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
+    this.mesh.deinit(alloc);
+
     this.device.waitUntilIdle();
     this.deinitFramesInFlight(alloc);
     this.display.deinit(alloc);
@@ -139,5 +143,84 @@ const PerFrameInFlight = struct {
         this.presented_fence.deinit(renderer.device);
         this.render_finished_semaphore.deinit(renderer.device);
         this.image_available_semaphore.deinit(renderer.device);
+    }
+};
+
+const ChunkMesh = struct {
+    const PerVertex = struct {
+        pos: [3]f32,
+    };
+
+    per_vertex: []PerVertex,
+
+    const quat_table: [6]math.Quat = .{
+        math.quat_identity,
+        math.quatFromAxisAngle(math.dir_up, math.rad(180.0)),
+        math.quatFromAxisAngle(math.dir_up, math.rad(90.0)),
+        math.quatFromAxisAngle(math.dir_up, math.rad(-90.0)),
+        math.quatFromAxisAngle(math.dir_right, math.rad(90.0)),
+        math.quatFromAxisAngle(math.dir_right, math.rad(-90.0)),
+    };
+
+    const offset_table = blk: {
+        var result: [6]Chunk.BlockPos = undefined;
+
+        for (quat_table, 0..) |quat, i| {
+            result[i] = @intFromFloat(@round(math.quatMulVec(quat, math.dir_forward)));
+        }
+
+        break :blk result;
+    };
+
+    const forward_face: [6]@Vector(3, f32) = .{
+        .{ 1, 0, 0 },
+        .{ 1, 1, 0 },
+        .{ 1, 1, 1 },
+
+        .{ 1, 0, 0 },
+        .{ 1, 1, 1 },
+        .{ 1, 0, 1 },
+    };
+
+    const face_table = blk: {
+        var result: [6][6]@Vector(3, f32) = undefined;
+
+        for (quat_table, 0..) |q, i| {
+            for (0..6) |ii| {
+                result[i][ii] = math.quatMulVec(q, forward_face[ii]);
+            }
+        }
+
+        break :blk result;
+    };
+
+    fn build(mesh: *ChunkMesh, chunk: *Chunk, alloc: std.mem.Allocator) !void {
+        // test other starting values and maybe do prepass to find correct vertex count
+        var vertices = try std.ArrayList(PerVertex).initCapacity(alloc, 256);
+        errdefer vertices.deinit(alloc);
+
+        var iter: Chunk.Iterator = .{};
+        while (iter.next()) |pos| {
+            const ipos: Chunk.Pos = pos;
+
+            for (offset_table, 0..) |offset, i| {
+                const adjacent = ipos + offset;
+                if (chunk.isOpaqueSafe(adjacent)) continue;
+
+                const face_vectors = face_table[i];
+                var face: [6]PerVertex = undefined;
+                for (face_vectors, 0..) |face_v, ii| {
+                    face[ii].pos = math.toArray(face_v + @as(math.Vec3, @floatFromInt(pos)));
+                }
+
+                try vertices.appendSlice(alloc, &face);
+            }
+        }
+
+        mesh.per_vertex = try vertices.toOwnedSlice(alloc);
+    }
+
+    fn deinit(mesh: *ChunkMesh, alloc: std.mem.Allocator) void {
+        alloc.free(mesh.per_vertex);
     }
 };

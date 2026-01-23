@@ -9,14 +9,14 @@ pub fn main() !void {
     defer app.deinit(alloc);
     const renderer = &app.renderer;
     while (true) {
-        try renderer.render(alloc);
-
         renderer.window.update();
         while (renderer.event_queue.pending()) {
             switch (renderer.event_queue.pop()) {
                 else => {},
             }
         }
+
+        try renderer.render(alloc);
 
         if (renderer.window.shouldClose()) break;
     }
