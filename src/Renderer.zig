@@ -15,6 +15,10 @@ frame_index: usize,
 per_frame_in_flight: []PerFrameInFlight,
 chunk: Chunk,
 mesh: ChunkMesh,
+chunk_shader_vertex: gpu.Shader,
+chunk_shader_pixel: gpu.Shader,
+chunk_shader_set: gpu.Shader.Set,
+chunk_pipeline: gpu.GraphicsPipeline,
 
 pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.event_queue = try .init(alloc);
@@ -38,12 +42,35 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     this.chunk.init(.{ 0, 0, 0 });
     try this.mesh.build(&this.chunk, alloc);
+
+    this.chunk_shader_vertex = try makeShader(this, alloc, "res/shaders/chunk_opaque.vert.spv", .vertex);
+    errdefer this.chunk_shader_vertex.deinit(this.device, alloc);
+
+    this.chunk_shader_pixel = try makeShader(this, alloc, "res/shaders/chunk_opaque.frag.spv", .pixel);
+    errdefer this.chunk_shader_pixel.deinit(this.device, alloc);
+
+    this.chunk_shader_set = try .init(this.device, this.chunk_shader_vertex, this.chunk_shader_pixel, &.{}, alloc);
+    errdefer this.chunk_shader_set.deinit(this.device, alloc);
+
+    this.chunk_pipeline = try .init(this.device, .{
+        .alloc = alloc,
+        .render_target_desc = .{
+            .color_format = this.display.imageFormat(),
+        },
+        .shader_set = this.chunk_shader_set,
+        .resource_layouts = &.{},
+    });
+    errdefer this.chunk_pipeline.deinit(this.device, alloc);
 }
 
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.mesh.deinit(alloc);
 
     this.device.waitUntilIdle();
+    this.chunk_pipeline.deinit(this.device, alloc);
+    this.chunk_shader_set.deinit(this.device, alloc);
+    this.chunk_shader_pixel.deinit(this.device, alloc);
+    this.chunk_shader_vertex.deinit(this.device, alloc);
     this.deinitFramesInFlight(alloc);
     this.display.deinit(alloc);
     this.device.deinit(alloc);
@@ -76,6 +103,24 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
             .dst_access = .{ .color_attachment_write = true },
         },
     }});
+
+    const render_pass = per_frame.cmd_encoder.cmdBeginRenderPass(.{
+        .device = this.device,
+        .target = .{
+            .color_image_view = this.display.imageView(image_index),
+            .color_clear_value = .{ 0, 0, 0, 1 },
+        },
+        .image_size = this.display.imageSize(),
+    });
+
+    render_pass.cmdBindPipeline(this.device, this.chunk_pipeline, this.display.imageSize());
+    render_pass.cmdDraw(.{
+        .device = this.device,
+        .vertex_count = 3,
+        .indexed = false,
+    });
+
+    render_pass.cmdEnd(this.device);
 
     per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
         .{ .image = .{
@@ -224,3 +269,15 @@ const ChunkMesh = struct {
         alloc.free(mesh.per_vertex);
     }
 };
+
+fn makeShader(this: *Renderer, alloc: std.mem.Allocator, file_name: []const u8, t: gpu.Shader.Stage) !gpu.Shader {
+    const shader_file = try std.fs.cwd().openFile(file_name, .{});
+    defer shader_file.close();
+    const shader_code = try shader_file.readToEndAlloc(alloc, 1024 * 1024);
+    defer alloc.free(shader_code);
+
+    var shader = try gpu.Shader.fromSpirv(this.device, t, @ptrCast(@alignCast(shader_code)), alloc);
+    errdefer shader.deinit(this.device, alloc);
+
+    return shader;
+}
