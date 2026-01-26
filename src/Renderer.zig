@@ -58,7 +58,11 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             .color_format = this.display.imageFormat(),
         },
         .shader_set = this.chunk_shader_set,
-        .resource_layouts = &.{},
+        .push_constant_ranges = &.{.{
+            .stages = .{ .vertex = true },
+            .offset = 0,
+            .size = 64,
+        }},
     });
     errdefer this.chunk_pipeline.deinit(this.device, alloc);
 }
@@ -84,6 +88,9 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
     const per_frame = this.per_frame_in_flight[this.frame_index];
     try per_frame.presented_fence.wait(this.device, std.time.ns_per_s);
     try per_frame.presented_fence.reset(this.device);
+
+    const matrix = math.rotateZ(math.pi);
+    const push_constants = math.toArray(matrix);
 
     const image_index = switch (try this.display.acquireImageIndex(per_frame.image_available_semaphore, null, std.time.ns_per_s)) {
         .success => |x| x,
@@ -114,6 +121,12 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
     });
 
     render_pass.cmdBindPipeline(this.device, this.chunk_pipeline, this.display.imageSize());
+    render_pass.cmdPushConstants(this.device, this.chunk_pipeline, .{
+        .stages = .{ .vertex = true },
+        .offset = 0,
+        .size = 64,
+    }, @ptrCast(&push_constants));
+
     render_pass.cmdDraw(.{
         .device = this.device,
         .vertex_count = 3,

@@ -4,6 +4,9 @@
 #include "core.hglsl"
 
 layout(location = 0) toPixel vec3 pColor;
+layout(push_constant) uniform PushConstants {
+    mat4 vp;
+} constants;
 
 #ifdef _VERTEX
 
@@ -14,7 +17,7 @@ vec4 vert_table[3] = {
 };
 
 void main() {
-    gl_Position = vert_table[gl_VertexIndex];
+    gl_Position = constants.vp * vert_table[gl_VertexIndex];
     pColor = vec3(1,1,1);
 }
 
