@@ -13,12 +13,20 @@ device: gpu.Device,
 display: gpu.Display,
 frame_index: usize,
 per_frame_in_flight: []PerFrameInFlight,
+frame_timer: std.time.Timer,
+last_cursor: @Vector(2, f32),
+
 chunk: Chunk,
 mesh: ChunkMesh,
+
 chunk_shader_vertex: gpu.Shader,
 chunk_shader_pixel: gpu.Shader,
 chunk_shader_set: gpu.Shader.Set,
 chunk_pipeline: gpu.GraphicsPipeline,
+camera: struct {
+    pos: math.Vec3,
+    euler: math.Vec3,
+},
 
 pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.event_queue = try .init(alloc);
@@ -26,6 +34,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     this.window = try .init(alloc, "malcraft", .{ 100, 100 }, &this.event_queue);
     errdefer this.window.deinit();
+    try this.window.setCursorMode(.disabled);
 
     this.instance = try .init(true, alloc);
     errdefer this.instance.deinit(alloc);
@@ -65,6 +74,12 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         }},
     });
     errdefer this.chunk_pipeline.deinit(this.device, alloc);
+
+    this.frame_timer = try .start();
+    this.camera = .{
+        .pos = .{ -1, 0, 0 },
+        .euler = .{ 0, 0, 0 },
+    };
 }
 
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
@@ -89,8 +104,55 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
     try per_frame.presented_fence.wait(this.device, std.time.ns_per_s);
     try per_frame.presented_fence.reset(this.device);
 
-    const matrix = math.rotateZ(math.pi);
-    const push_constants = math.toArray(matrix);
+    const viewport = this.window.getFramebufferSize();
+    const viewport_f: math.Vec2 = @floatFromInt(viewport);
+    const aspect_ratio = viewport_f[0] / viewport_f[1];
+    const dt_ns = this.frame_timer.lap();
+    const dt = @as(f32, @floatFromInt(dt_ns)) / std.time.ns_per_s;
+
+    {
+        var move_vector: math.Vec3 = @splat(0);
+
+        if (this.window.isKeyDown(.w))
+            move_vector += math.dir_forward;
+        if (this.window.isKeyDown(.s))
+            move_vector -= math.dir_forward;
+        if (this.window.isKeyDown(.a))
+            move_vector -= math.dir_right;
+        if (this.window.isKeyDown(.d))
+            move_vector += math.dir_right;
+        if (this.window.isKeyDown(.e))
+            move_vector += math.dir_up;
+        if (this.window.isKeyDown(.q))
+            move_vector -= math.dir_up;
+
+        if (!math.eql(move_vector, @as(math.Vec3, @splat(0)))) {
+            const q = math.quatFromEuler(this.camera.euler);
+            move_vector = math.quatMulVec(q, move_vector);
+            move_vector = math.normalize(move_vector);
+            move_vector *= @splat(dt * 0.75);
+            this.camera.pos += move_vector;
+        }
+    }
+
+    {
+        const cursor = this.window.getCursorPos();
+        var moved = cursor - this.last_cursor;
+        this.last_cursor = cursor;
+
+        if (!math.eql(moved, @as(math.Vec2, @splat(0)))) {
+            moved *= @splat(math.rad(0.18));
+            this.camera.euler += math.Vec3{ 0, moved[1], moved[0] };
+        }
+    }
+
+    const vp_mat = math.matMulMany(.{
+        math.perspective(aspect_ratio, math.rad(90.0), 0.1, 50),
+        math.rotateEuler(this.camera.euler),
+        math.translate(-this.camera.pos),
+    });
+
+    const push_constants = math.toArray(vp_mat);
 
     const image_index = switch (try this.display.acquireImageIndex(per_frame.image_available_semaphore, null, std.time.ns_per_s)) {
         .success => |x| x,

@@ -11,9 +11,9 @@ layout(push_constant) uniform PushConstants {
 #ifdef _VERTEX
 
 vec4 vert_table[3] = {
-	{ 1, 0, 0, 1 },
-	{ -1, 0, 0, 1 },
 	{ 0, 1, 0, 1 },
+	{ 0, -1, 0, 1 },
+	{ 0, 0, 1, 1 },
 };
 
 void main() {
