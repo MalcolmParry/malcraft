@@ -8,7 +8,10 @@ pub fn build(b: *Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const mwengine = b.dependency("mwengine", .{}).module("mwengine");
+    const mwengine = b.dependency("mwengine", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("mwengine");
 
     const exe = b.addExecutable(.{
         .name = "malcraft",
