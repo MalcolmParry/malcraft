@@ -20,7 +20,8 @@ pub fn build(b: *Build) !void {
     });
     exe.root_module.addImport("mwengine", mwengine);
 
-    b.getInstallStep().dependOn(&exe.step);
+    const exe_install = b.addInstallArtifact(exe, .{});
+    b.getInstallStep().dependOn(&exe_install.step);
     try buildShaders(b, b.getInstallStep());
 
     const run_step = b.step("run", "");
