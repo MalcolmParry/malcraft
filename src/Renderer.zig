@@ -18,6 +18,7 @@ last_cursor: @Vector(2, f32),
 
 chunk: Chunk,
 mesh: ChunkMesh,
+mesh_on_gpu: ChunkMesh.OnGpu,
 
 chunk_shader_vertex: gpu.Shader,
 chunk_shader_pixel: gpu.Shader,
@@ -51,6 +52,8 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     this.chunk.init(.{ 0, 0, 0 });
     try this.mesh.build(&this.chunk, alloc);
+    try this.mesh_on_gpu.init(this.device, &this.mesh, alloc);
+    errdefer this.mesh_on_gpu.deinit(this.device, alloc);
 
     this.chunk_shader_vertex = try makeShader(this, alloc, "res/shaders/chunk_opaque.vert.spv", .vertex);
     errdefer this.chunk_shader_vertex.deinit(this.device, alloc);
@@ -58,7 +61,9 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.chunk_shader_pixel = try makeShader(this, alloc, "res/shaders/chunk_opaque.frag.spv", .pixel);
     errdefer this.chunk_shader_pixel.deinit(this.device, alloc);
 
-    this.chunk_shader_set = try .init(this.device, this.chunk_shader_vertex, this.chunk_shader_pixel, &.{}, alloc);
+    this.chunk_shader_set = try .init(this.device, this.chunk_shader_vertex, this.chunk_shader_pixel, &.{
+        .float32x3,
+    }, alloc);
     errdefer this.chunk_shader_set.deinit(this.device, alloc);
 
     this.chunk_pipeline = try .init(this.device, .{
@@ -86,6 +91,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.mesh.deinit(alloc);
 
     this.device.waitUntilIdle();
+    this.mesh_on_gpu.deinit(this.device, alloc);
     this.chunk_pipeline.deinit(this.device, alloc);
     this.chunk_shader_set.deinit(this.device, alloc);
     this.chunk_shader_pixel.deinit(this.device, alloc);
@@ -130,7 +136,7 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
             const q = math.quatFromEuler(this.camera.euler);
             move_vector = math.quatMulVec(q, move_vector);
             move_vector = math.normalize(move_vector);
-            move_vector *= @splat(dt * 0.75);
+            move_vector *= @splat(dt * 5);
             this.camera.pos += move_vector;
         }
     }
@@ -177,7 +183,7 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
         .device = this.device,
         .target = .{
             .color_image_view = this.display.imageView(image_index),
-            .color_clear_value = .{ 0, 0, 0, 1 },
+            .color_clear_value = .{ 0.2, 0.2, 0.2, 1 },
         },
         .image_size = this.display.imageSize(),
     });
@@ -188,10 +194,11 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
         .offset = 0,
         .size = 64,
     }, @ptrCast(&push_constants));
+    render_pass.cmdBindVertexBuffer(this.device, this.mesh_on_gpu.vertex_buffer.region());
 
     render_pass.cmdDraw(.{
         .device = this.device,
-        .vertex_count = 3,
+        .vertex_count = @intCast(this.mesh.per_vertex.len),
         .indexed = false,
     });
 
@@ -267,6 +274,32 @@ const PerFrameInFlight = struct {
 };
 
 const ChunkMesh = struct {
+    const OnGpu = struct {
+        vertex_buffer: gpu.Buffer,
+
+        fn init(this: *OnGpu, device: gpu.Device, mesh: *ChunkMesh, alloc: std.mem.Allocator) !void {
+            this.vertex_buffer = try .init(device, .{
+                .alloc = alloc,
+                .loc = .device,
+                .usage = .{
+                    .vertex = true,
+                    .dst = true,
+                },
+                .size = mesh.per_vertex.len * @sizeOf(PerVertex),
+            });
+            errdefer this.vertex_buffer.deinit(device, alloc);
+
+            try device.setBufferRegions(
+                &.{this.vertex_buffer.region()},
+                &.{std.mem.sliceAsBytes(mesh.per_vertex)},
+            );
+        }
+
+        fn deinit(this: *OnGpu, device: gpu.Device, alloc: std.mem.Allocator) void {
+            this.vertex_buffer.deinit(device, alloc);
+        }
+    };
+
     const PerVertex = struct {
         pos: [3]f32,
     };
@@ -292,14 +325,14 @@ const ChunkMesh = struct {
         break :blk result;
     };
 
-    const forward_face: [6]@Vector(3, f32) = .{
-        .{ 1, 0, 0 },
-        .{ 1, 1, 0 },
-        .{ 1, 1, 1 },
+    const normal_face: [6]@Vector(3, f32) = .{
+        .{ 0, -0.5, -0.5 },
+        .{ 0, 0.5, -0.5 },
+        .{ 0, 0.5, 0.5 },
 
-        .{ 1, 0, 0 },
-        .{ 1, 1, 1 },
-        .{ 1, 0, 1 },
+        .{ 0, -0.5, -0.5 },
+        .{ 0, 0.5, 0.5 },
+        .{ 0, -0.5, 0.5 },
     };
 
     const face_table = blk: {
@@ -307,7 +340,7 @@ const ChunkMesh = struct {
 
         for (quat_table, 0..) |q, i| {
             for (0..6) |ii| {
-                result[i][ii] = math.quatMulVec(q, forward_face[ii]);
+                result[i][ii] = math.quatMulVec(q, normal_face[ii]) + @as(math.Vec3, @floatFromInt(offset_table[i])) / @as(math.Vec3, @splat(2.0));
             }
         }
 
@@ -325,6 +358,7 @@ const ChunkMesh = struct {
 
             for (offset_table, 0..) |offset, i| {
                 const adjacent = ipos + offset;
+                if (chunk.getBlock(pos) == .air) continue;
                 if (chunk.isOpaqueSafe(adjacent)) continue;
 
                 const face_vectors = face_table[i];
@@ -338,6 +372,8 @@ const ChunkMesh = struct {
         }
 
         mesh.per_vertex = try vertices.toOwnedSlice(alloc);
+        std.log.info("vertices {}", .{mesh.per_vertex.len});
+        std.log.info("faces {}", .{mesh.per_vertex.len / 6});
     }
 
     fn deinit(mesh: *ChunkMesh, alloc: std.mem.Allocator) void {

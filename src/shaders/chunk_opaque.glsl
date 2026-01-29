@@ -10,15 +10,11 @@ layout(push_constant) uniform PushConstants {
 
 #ifdef _VERTEX
 
-vec4 vert_table[3] = {
-	{ 0, 1, 0, 1 },
-	{ 0, -1, 0, 1 },
-	{ 0, 0, 1, 1 },
-};
+layout(location=0) in vec3 iPos;
 
 void main() {
-    gl_Position = constants.vp * vert_table[gl_VertexIndex];
-    pColor = vec3(1,1,1);
+    gl_Position = constants.vp * vec4(iPos, 1);
+    pColor = iPos / 32;
 }
 
 #endif
