@@ -4,6 +4,7 @@
 #include "core.hglsl"
 
 layout(location = 0) toPixel vec3 pColor;
+layout(location = 1) toPixel vec3 pNormal;
 layout(push_constant) uniform PushConstants {
     mat4 vp;
 } constants;
@@ -12,10 +13,12 @@ layout(push_constant) uniform PushConstants {
 
 layout(location=0) in vec3 iPos;
 layout(location=1) in vec3 iColor;
+layout(location=2) in vec3 iNormal;
 
 void main() {
     gl_Position = constants.vp * vec4(iPos, 1);
     pColor = iColor;
+    pNormal = iNormal;
 }
 
 #endif
@@ -24,8 +27,13 @@ void main() {
 
 layout(location = 0) out vec4 oColor;
 
+vec3 sunDir = vec3(0, 0, 1);
+
 void main() {
-     oColor = vec4(pColor, 1);
+    float diffuse = max(0, dot(pNormal, sunDir));
+    float light = diffuse * 0.7 + 0.3;
+
+     oColor = vec4(pColor, 1) * light;
 }
 
 #endif

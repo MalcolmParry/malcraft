@@ -64,6 +64,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.chunk_shader_set = try .init(this.device, this.chunk_shader_vertex, this.chunk_shader_pixel, &.{
         .float32x3,
         .float32x3,
+        .float32x3,
     }, alloc);
     errdefer this.chunk_shader_set.deinit(this.device, alloc);
 
@@ -305,6 +306,7 @@ const ChunkMesh = struct {
     const PerVertex = struct {
         pos: [3]f32,
         color: [3]f32,
+        normal: [3]f32,
     };
 
     per_vertex: []PerVertex,
@@ -371,6 +373,7 @@ const ChunkMesh = struct {
                     face[ii] = .{
                         .pos = math.toArray(face_v + @as(math.Vec3, @floatFromInt(pos))),
                         .color = math.toArray(block.color()),
+                        .normal = math.toArray(@as(math.Vec3, @floatFromInt(offset))),
                     };
                 }
 
