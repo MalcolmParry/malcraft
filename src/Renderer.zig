@@ -77,6 +77,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             .offset = 0,
             .size = 64,
         }},
+        .cull_mode = .front,
     });
     errdefer this.chunk_pipeline.deinit(this.device, alloc);
 
