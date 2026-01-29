@@ -63,6 +63,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     this.chunk_shader_set = try .init(this.device, this.chunk_shader_vertex, this.chunk_shader_pixel, &.{
         .float32x3,
+        .float32x3,
     }, alloc);
     errdefer this.chunk_shader_set.deinit(this.device, alloc);
 
@@ -303,6 +304,7 @@ const ChunkMesh = struct {
 
     const PerVertex = struct {
         pos: [3]f32,
+        color: [3]f32,
     };
 
     per_vertex: []PerVertex,
@@ -359,13 +361,17 @@ const ChunkMesh = struct {
 
             for (offset_table, 0..) |offset, i| {
                 const adjacent = ipos + offset;
-                if (chunk.getBlock(pos) == .air) continue;
+                const block = chunk.getBlock(pos);
+                if (block == .air) continue;
                 if (chunk.isOpaqueSafe(adjacent)) continue;
 
                 const face_vectors = face_table[i];
                 var face: [6]PerVertex = undefined;
                 for (face_vectors, 0..) |face_v, ii| {
-                    face[ii].pos = math.toArray(face_v + @as(math.Vec3, @floatFromInt(pos)));
+                    face[ii] = .{
+                        .pos = math.toArray(face_v + @as(math.Vec3, @floatFromInt(pos))),
+                        .color = math.toArray(block.color()),
+                    };
                 }
 
                 try vertices.appendSlice(alloc, &face);
