@@ -50,6 +50,40 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     try this.initFramesInFlight(alloc);
     errdefer this.deinitFramesInFlight(alloc);
 
+    // transition depth
+    {
+        const transitons = try alloc.alloc(gpu.CommandEncoder.MemoryBarrier, this.per_frame_in_flight.len);
+        defer alloc.free(transitons);
+
+        for (transitons, this.per_frame_in_flight) |*transition, *per_frame| {
+            transition.* = .{ .image = .{
+                .image = per_frame.depth_image,
+                .aspect = .{ .depth = true },
+                .old_layout = .undefined,
+                .new_layout = .depth_stencil,
+                .src_stage = .{ .pipeline_start = true },
+                .dst_stage = .{ .early_depth_tests = true },
+                .src_access = .{},
+                .dst_access = .{
+                    .depth_stencil_read = true,
+                    .depth_stencil_write = true,
+                },
+            } };
+        }
+
+        var cmd_encoder = try this.device.initCommandEncoder();
+        defer cmd_encoder.deinit(this.device);
+
+        var fence = try this.device.initFence(false);
+        defer fence.deinit(this.device);
+
+        try cmd_encoder.begin(this.device);
+        cmd_encoder.cmdMemoryBarrier(this.device, transitons);
+        try cmd_encoder.end(this.device);
+        try cmd_encoder.submit(this.device, &.{}, &.{}, fence);
+        try fence.wait(this.device, std.time.ns_per_s);
+    }
+
     this.chunk.init(.{ 0, 0, 0 });
     try this.mesh.build(&this.chunk, alloc);
     try this.mesh_on_gpu.init(this.device, &this.mesh, alloc);
@@ -186,16 +220,6 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
             .dst_stage = .{ .color_attachment_output = true },
             .src_access = .{},
             .dst_access = .{ .color_attachment_write = true },
-        } },
-        .{ .image = .{
-            .image = per_frame.depth_image,
-            .aspect = .{ .depth = true },
-            .old_layout = .undefined,
-            .new_layout = .depth_stencil,
-            .src_stage = .{ .pipeline_start = true },
-            .dst_stage = .{ .transfer = true },
-            .src_access = .{},
-            .dst_access = .{ .transfer_write = true },
         } },
     });
 
