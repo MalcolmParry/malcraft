@@ -145,7 +145,7 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
             const q = math.quatFromEuler(this.camera.euler);
             move_vector = math.quatMulVec(q, move_vector);
             move_vector = math.normalize(move_vector);
-            move_vector *= @splat(dt * 5);
+            move_vector *= @splat(dt * 15);
             this.camera.pos += move_vector;
         }
     }
@@ -162,7 +162,7 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
     }
 
     const vp_mat = math.matMulMany(.{
-        math.perspective(aspect_ratio, math.rad(90.0), 0.1, 50),
+        math.perspective(aspect_ratio, math.rad(90.0), 0.1, 1000),
         math.rotateEuler(this.camera.euler),
         math.translate(-this.camera.pos),
     });

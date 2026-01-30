@@ -27,7 +27,7 @@ void main() {
 
 layout(location = 0) out vec4 oColor;
 
-vec3 sunDir = vec3(0, 0, 1);
+vec3 sunDir = normalize(vec3(-1, -2, 5));
 
 void main() {
     float diffuse = max(0, dot(pNormal, sunDir));
