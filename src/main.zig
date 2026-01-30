@@ -2,7 +2,9 @@ const std = @import("std");
 const App = @import("App.zig");
 
 pub fn main() !void {
-    const alloc = std.heap.smp_allocator;
+    var alloc_obj = std.heap.DebugAllocator(.{}).init;
+    defer _ = alloc_obj.deinit();
+    const alloc = alloc_obj.allocator();
 
     var should_close: bool = false;
     var app: App = undefined;

@@ -72,6 +72,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         .alloc = alloc,
         .render_target_desc = .{
             .color_format = this.display.imageFormat(),
+            .depth_format = .d32_sfloat,
         },
         .shader_set = this.chunk_shader_set,
         .push_constant_ranges = &.{.{
@@ -80,12 +81,17 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             .size = 64,
         }},
         .cull_mode = .front,
+        .depth_mode = .{
+            .testing = true,
+            .writing = true,
+            .compare_op = .less,
+        },
     });
     errdefer this.chunk_pipeline.deinit(this.device, alloc);
 
     this.frame_timer = try .start();
     this.camera = .{
-        .pos = .{ -1, 0, 0 },
+        .pos = .{ 0, 0, 23 },
         .euler = .{ 0, 0, 0 },
     };
 }
@@ -170,23 +176,35 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
     };
 
     try per_frame.cmd_encoder.begin(this.device);
-    per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{.{
-        .image = .{
+    per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
+        .{ .image = .{
             .image = this.display.image(image_index),
+            .aspect = .{ .color = true },
             .old_layout = .undefined,
             .new_layout = .color_attachment,
             .src_stage = .{ .pipeline_start = true },
             .dst_stage = .{ .color_attachment_output = true },
             .src_access = .{},
             .dst_access = .{ .color_attachment_write = true },
-        },
-    }});
+        } },
+        .{ .image = .{
+            .image = per_frame.depth_image,
+            .aspect = .{ .depth = true },
+            .old_layout = .undefined,
+            .new_layout = .depth_stencil,
+            .src_stage = .{ .pipeline_start = true },
+            .dst_stage = .{ .transfer = true },
+            .src_access = .{},
+            .dst_access = .{ .transfer_write = true },
+        } },
+    });
 
     const render_pass = per_frame.cmd_encoder.cmdBeginRenderPass(.{
         .device = this.device,
         .target = .{
             .color_image_view = this.display.imageView(image_index),
-            .color_clear_value = .{ 0.2, 0.2, 0.2, 1 },
+            .color_clear_value = @as(math.Vec4, .{ 66.0, 130.0, 250.0, 255.0 }) / @as(math.Vec4, @splat(255.0)),
+            .depth_image_view = per_frame.depth_image_view,
         },
         .image_size = this.display.imageSize(),
     });
@@ -210,6 +228,7 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
     per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
         .{ .image = .{
             .image = this.display.image(image_index),
+            .aspect = .{ .color = true },
             .old_layout = .color_attachment,
             .new_layout = .present_src,
             .src_stage = .{ .color_attachment_output = true },
@@ -249,10 +268,10 @@ const PerFrameInFlight = struct {
     render_finished_semaphore: gpu.Semaphore,
     presented_fence: gpu.Fence,
     cmd_encoder: gpu.CommandEncoder,
+    depth_image: gpu.Image,
+    depth_image_view: gpu.Image.View,
 
     pub fn init(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) !void {
-        _ = alloc;
-
         this.image_available_semaphore = try .init(renderer.device);
         errdefer this.image_available_semaphore.deinit(renderer.device);
 
@@ -264,11 +283,30 @@ const PerFrameInFlight = struct {
 
         this.cmd_encoder = try .init(renderer.device);
         errdefer this.cmd_encoder.deinit(renderer.device);
+
+        this.depth_image = try .init(renderer.device, .{
+            .alloc = alloc,
+            .format = .d32_sfloat,
+            .usage = .{
+                .depth_stencil_attachment = true,
+            },
+            .loc = .device,
+            .size = renderer.display.imageSize(),
+        });
+        errdefer this.depth_image.deinit(renderer.device, alloc);
+
+        this.depth_image_view = try .init(
+            renderer.device,
+            this.depth_image,
+            .{ .depth = true },
+            alloc,
+        );
+        errdefer this.depth_image_view.deinit(renderer.device, alloc);
     }
 
     pub fn deinit(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) void {
-        _ = alloc;
-
+        this.depth_image_view.deinit(renderer.device, alloc);
+        this.depth_image.deinit(renderer.device, alloc);
         this.cmd_encoder.deinit(renderer.device);
         this.presented_fence.deinit(renderer.device);
         this.render_finished_semaphore.deinit(renderer.device);
@@ -345,7 +383,13 @@ const ChunkMesh = struct {
 
         for (quat_table, 0..) |q, i| {
             for (0..6) |ii| {
-                result[i][ii] = math.quatMulVec(q, normal_face[ii]) + @as(math.Vec3, @floatFromInt(offset_table[i])) / @as(math.Vec3, @splat(2.0));
+                const f_offset: math.Vec3 = @floatFromInt(offset_table[i]);
+                const half_offset = f_offset / @as(math.Vec3, @splat(2.0));
+
+                var vert = normal_face[ii];
+                vert = math.quatMulVec(q, vert);
+                vert += half_offset;
+                result[i][ii] = vert;
             }
         }
 
