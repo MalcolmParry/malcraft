@@ -15,6 +15,7 @@ pub fn main() !void {
         renderer.window.update();
         while (renderer.event_queue.pending()) {
             switch (renderer.event_queue.pop()) {
+                .resize => |_| renderer.dirty_swapchain = true,
                 .key_down => |key| {
                     switch (key) {
                         .escape => should_close = true,
