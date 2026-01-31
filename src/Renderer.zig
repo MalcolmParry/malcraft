@@ -89,46 +89,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     this.chunks = .init(alloc);
     this.chunks_on_gpu = .init(alloc);
-    const render_radius = 16;
-    {
-        const diameter = render_radius * 2 + 1;
-        const chunks = diameter * diameter;
-        var gen_time_ns: usize = 0;
-        var mesh_time_ns: usize = 0;
-        var transfer_time_ns: usize = 0;
-        var timer = try std.time.Timer.start();
-
-        var x: i32 = -render_radius;
-        while (x <= render_radius) : (x += 1) {
-            var y: i32 = -render_radius;
-            while (y <= render_radius) : (y += 1) {
-                const pos: Chunk.ChunkPos = .{ x, y, 0 };
-                timer.reset();
-                const chunk = try alloc.create(Chunk);
-                gen_time_ns += timer.read();
-                chunk.init(pos);
-
-                try this.chunks.put(pos, chunk);
-
-                var mesh: ChunkMesh = undefined;
-                timer.reset();
-                try mesh.build(chunk, alloc);
-                mesh_time_ns += timer.read();
-                defer mesh.deinit(alloc);
-
-                var on_gpu: ChunkMesh.OnGpu = undefined;
-                timer.reset();
-                try on_gpu.init(this.device, &mesh, alloc);
-                transfer_time_ns += timer.read();
-                errdefer on_gpu.deinit(this.device, alloc);
-                try this.chunks_on_gpu.put(pos, on_gpu);
-            }
-        }
-
-        std.log.info("average chunk gen time: {} ns", .{@as(f64, @floatFromInt(gen_time_ns)) / @as(f64, @floatFromInt(chunks))});
-        std.log.info("average chunk mesh time: {} ns", .{@as(f64, @floatFromInt(mesh_time_ns)) / @as(f64, @floatFromInt(chunks))});
-        std.log.info("average chunk tranfer time: {} ns", .{@as(f64, @floatFromInt(transfer_time_ns)) / @as(f64, @floatFromInt(chunks))});
-    }
+    try this.loadChunks(alloc);
 
     this.chunk_face_lookup = try this.device.initBuffer(.{
         .alloc = alloc,
@@ -241,6 +202,36 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.instance.deinit(alloc);
     this.window.deinit();
     this.event_queue.deinit();
+}
+
+fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
+    const render_radius = 16;
+    const diameter = render_radius * 2 + 1;
+    const chunks = diameter * diameter;
+    var gen_time_ns: usize = 0;
+    var mesh_time_ns: usize = 0;
+    var timer = try std.time.Timer.start();
+
+    var x: i32 = -render_radius;
+    while (x <= render_radius) : (x += 1) {
+        var y: i32 = -render_radius;
+        while (y <= render_radius) : (y += 1) {
+            const pos: Chunk.ChunkPos = .{ x, y, 0 };
+            timer.reset();
+            const chunk = try alloc.create(Chunk);
+            gen_time_ns += timer.read();
+            chunk.init(pos);
+
+            try this.chunks.put(pos, chunk);
+        }
+    }
+
+    timer.reset();
+    try ChunkMesh.meshMany(this.device, &this.chunks, &this.chunks_on_gpu, alloc);
+    mesh_time_ns += timer.read();
+
+    std.log.info("average chunk gen time: {} ns", .{@as(f64, @floatFromInt(gen_time_ns)) / @as(f64, @floatFromInt(chunks))});
+    std.log.info("average chunk mesh time: {} ns", .{@as(f64, @floatFromInt(mesh_time_ns)) / @as(f64, @floatFromInt(chunks))});
 }
 
 pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {

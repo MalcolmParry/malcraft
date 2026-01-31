@@ -74,10 +74,9 @@ pub const face_table = blk: {
     break :blk result;
 };
 
-pub fn build(mesh: *ChunkMesh, chunk: *Chunk, alloc: std.mem.Allocator) !void {
-    var faces = try std.ArrayList(PerFace).initCapacity(alloc, (32 * 32 * 32 / 2) * 6);
-    errdefer faces.deinit(alloc);
+const max_faces = (32 * 32 * 32 / 2) * 6;
 
+pub fn build(faces: *std.ArrayList(PerFace), chunk: *const Chunk) void {
     var iter: Chunk.Iterator = .{};
     while (iter.next()) |pos| {
         const block = chunk.getBlock(pos);
@@ -97,9 +96,91 @@ pub fn build(mesh: *ChunkMesh, chunk: *Chunk, alloc: std.mem.Allocator) !void {
             faces.appendAssumeCapacity(face);
         }
     }
+}
 
-    mesh.per_face = try faces.toOwnedSlice(alloc);
-    std.log.info("faces {}", .{mesh.per_face.len});
+const MeshJob = struct {
+    chunk: *const Chunk,
+    faces: std.ArrayList(PerFace),
+    chunk_pos: Chunk.ChunkPos,
+};
+
+pub fn meshMany(device: gpu.Device, chunks: *const std.AutoHashMap(Chunk.ChunkPos, *Chunk), meshes_on_gpu: *std.AutoArrayHashMap(Chunk.ChunkPos, OnGpu), alloc: std.mem.Allocator) !void {
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const aalloc = arena.allocator();
+
+    const chunk_count = chunks.count();
+    const jobs: []MeshJob = try aalloc.alloc(MeshJob, chunk_count);
+    const all_faces = try aalloc.alloc(PerFace, max_faces * chunk_count);
+
+    var chunk_iter = chunks.iterator();
+    for (jobs, 0..) |*job, i| {
+        const chunk = chunk_iter.next().?;
+
+        job.* = .{
+            .chunk = chunk.value_ptr.*,
+            .faces = .initBuffer(all_faces[i * max_faces .. (i + 1) * max_faces]),
+            .chunk_pos = chunk.key_ptr.*,
+        };
+    }
+
+    var index: std.atomic.Value(usize) = .init(0);
+    const cpus = std.Thread.getCpuCount() catch 1;
+    const threads = try aalloc.alloc(std.Thread, @min(chunk_count, @max(1, cpus)));
+    for (threads) |*thread| {
+        thread.* = try .spawn(.{}, meshingWorker, .{ jobs, &index });
+    }
+
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    const data = try aalloc.alloc([]const u8, chunk_count);
+    for (jobs, data) |job, *faces| {
+        faces.* = std.mem.sliceAsBytes(job.faces.items);
+    }
+
+    const buffers = try aalloc.alloc(gpu.Buffer, chunk_count);
+    const regions = try aalloc.alloc(gpu.Buffer.Region, chunk_count);
+
+    for (buffers, regions, jobs) |*buffer, *region, job| {
+        buffer.* = try .init(device, .{
+            .alloc = alloc,
+            .loc = .device,
+            .usage = .{
+                .vertex = true,
+                .dst = true,
+            },
+            .size = job.faces.items.len * @sizeOf(PerFace),
+        });
+
+        region.* = .{
+            .buffer = buffer.*,
+            .offset = 0,
+            .size_or_whole = .whole,
+        };
+    }
+    errdefer for (buffers) |buffer| buffer.deinit(device, alloc);
+
+    try device.setBufferRegions(regions, data);
+
+    try meshes_on_gpu.ensureUnusedCapacity(chunk_count);
+    for (jobs, buffers) |job, buffer| {
+        meshes_on_gpu.putAssumeCapacity(job.chunk_pos, .{
+            .vertex_buffer = buffer,
+            .face_count = job.faces.items.len,
+        });
+    }
+}
+
+fn meshingWorker(jobs: []MeshJob, index: *std.atomic.Value(usize)) void {
+    while (true) {
+        const i = index.fetchAdd(1, .monotonic);
+        if (i >= jobs.len) break;
+
+        const job = &jobs[i];
+        build(&job.faces, job.chunk);
+    }
 }
 
 pub fn deinit(mesh: *ChunkMesh, alloc: std.mem.Allocator) void {

@@ -57,7 +57,7 @@ pub fn init(this: *Chunk, chunk_pos: ChunkPos) void {
     }
 }
 
-pub inline fn isOpaqueSafe(this: *Chunk, pos: BlockPos) bool {
+pub inline fn isOpaqueSafe(this: *const Chunk, pos: BlockPos) bool {
     if (@reduce(.Or, pos < @as(Pos, @splat(0))))
         return false;
 
@@ -67,7 +67,7 @@ pub inline fn isOpaqueSafe(this: *Chunk, pos: BlockPos) bool {
     return this.getBlock(@intCast(pos)).isOpaque();
 }
 
-pub inline fn getBlock(this: *Chunk, pos: Pos) BlockId {
+pub inline fn getBlock(this: *const Chunk, pos: Pos) BlockId {
     return this.blocks[pos[2]][pos[1]][pos[0]];
 }
 
