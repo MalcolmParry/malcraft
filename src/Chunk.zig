@@ -8,6 +8,7 @@ pub const ChunkPos = BlockPos;
 pub const T = u5;
 pub const Pos = @Vector(3, u5);
 pub const len = 32;
+pub const size: ChunkPos = @splat(len);
 
 /// indexed with blocks[z][y][x]
 /// dont use, use getters and setters instead
@@ -57,16 +58,6 @@ pub fn init(this: *Chunk, chunk_pos: ChunkPos) void {
     }
 }
 
-pub inline fn isOpaqueSafe(this: *const Chunk, pos: BlockPos) bool {
-    if (@reduce(.Or, pos < @as(Pos, @splat(0))))
-        return false;
-
-    if (@reduce(.Or, pos > @as(Pos, @splat(len - 1))))
-        return false;
-
-    return this.getBlock(@intCast(pos)).isOpaque();
-}
-
 pub inline fn getBlock(this: *const Chunk, pos: Pos) BlockId {
     return this.blocks[pos[2]][pos[1]][pos[0]];
 }
@@ -78,8 +69,9 @@ pub inline fn setBlock(this: *Chunk, pos: Pos, val: BlockId) void {
 pub const Iterator = struct {
     pos: @Vector(3, u8) = @splat(0),
 
-    pub fn next(this: *Iterator) ?Pos {
+    pub inline fn next(this: *Iterator) ?Pos {
         const result = this.pos;
+        if (result[2] == len) return null;
 
         this.pos[0] += 1;
         if (this.pos[0] == len) {
@@ -91,6 +83,6 @@ pub const Iterator = struct {
             }
         }
 
-        return if (result[2] == len) null else @intCast(result);
+        return @intCast(result);
     }
 };

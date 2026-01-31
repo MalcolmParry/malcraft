@@ -76,7 +76,7 @@ pub const face_table = blk: {
 
 const max_faces = (32 * 32 * 32 / 2) * 6;
 
-pub fn build(faces: *std.ArrayList(PerFace), chunk: *const Chunk) void {
+pub fn build(faces: *std.ArrayList(PerFace), chunk: *const Chunk, adjacent_chunks: *[6]?*const Chunk) void {
     var iter: Chunk.Iterator = .{};
     while (iter.next()) |pos| {
         const block = chunk.getBlock(pos);
@@ -85,7 +85,7 @@ pub fn build(faces: *std.ArrayList(PerFace), chunk: *const Chunk) void {
 
         for (Face.direction_table, 0..) |offset, i| {
             const adjacent = ipos + offset;
-            if (chunk.isOpaqueSafe(adjacent)) continue;
+            if (isOpaqueSafe(chunk, adjacent_chunks, adjacent)) continue;
             const face: PerFace = .{
                 .x = pos[0],
                 .y = pos[1],
@@ -98,8 +98,35 @@ pub fn build(faces: *std.ArrayList(PerFace), chunk: *const Chunk) void {
     }
 }
 
+pub inline fn isOpaqueSafe(chunk: *const Chunk, adjacent_chunks: *[6]?*const Chunk, pos: Chunk.BlockPos) bool {
+    @setRuntimeSafety(false);
+
+    inline for (0..3) |axis| {
+        if (pos[axis] < 0) {
+            if (adjacent_chunks[axis * 2 + 1]) |adjacent| {
+                const new_pos = pos + Face.direction_table[axis * 2] * Chunk.size;
+                return adjacent.getBlock(@intCast(new_pos)).isOpaque();
+            }
+
+            return false;
+        }
+
+        if (pos[axis] >= Chunk.len) {
+            if (adjacent_chunks[axis * 2]) |adjacent| {
+                const new_pos = pos - Face.direction_table[axis * 2] * Chunk.size;
+                return adjacent.getBlock(@intCast(new_pos)).isOpaque();
+            }
+
+            return false;
+        }
+    }
+
+    return chunk.getBlock(@intCast(pos)).isOpaque();
+}
+
 const MeshJob = struct {
     chunk: *const Chunk,
+    adjacent_chunks: [6]?*const Chunk,
     faces: std.ArrayList(PerFace),
     chunk_pos: Chunk.ChunkPos,
 };
@@ -115,12 +142,22 @@ pub fn meshMany(device: gpu.Device, chunks: *const std.AutoHashMap(Chunk.ChunkPo
 
     var chunk_iter = chunks.iterator();
     for (jobs, 0..) |*job, i| {
-        const chunk = chunk_iter.next().?;
+        const kv = chunk_iter.next().?;
+        const chunk = kv.value_ptr.*;
+        const pos = kv.key_ptr.*;
 
         job.* = .{
-            .chunk = chunk.value_ptr.*,
+            .chunk = chunk,
+            .adjacent_chunks = .{
+                chunks.get(pos + @as(Chunk.BlockPos, .{ 1, 0, 0 })),
+                chunks.get(pos + @as(Chunk.BlockPos, .{ -1, 0, 0 })),
+                chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 1, 0 })),
+                chunks.get(pos + @as(Chunk.BlockPos, .{ 0, -1, 0 })),
+                chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, 1 })),
+                chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, -1 })),
+            },
             .faces = .initBuffer(all_faces[i * max_faces .. (i + 1) * max_faces]),
-            .chunk_pos = chunk.key_ptr.*,
+            .chunk_pos = pos,
         };
     }
 
@@ -179,7 +216,7 @@ fn meshingWorker(jobs: []MeshJob, index: *std.atomic.Value(usize)) void {
         if (i >= jobs.len) break;
 
         const job = &jobs[i];
-        build(&job.faces, job.chunk);
+        build(&job.faces, job.chunk, &job.adjacent_chunks);
     }
 }
 

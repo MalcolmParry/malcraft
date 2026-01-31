@@ -206,8 +206,6 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
 
 fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
     const render_radius = 16;
-    const diameter = render_radius * 2 + 1;
-    const chunks = diameter * diameter;
     var gen_time_ns: usize = 0;
     var mesh_time_ns: usize = 0;
     var timer = try std.time.Timer.start();
@@ -230,8 +228,8 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
     try ChunkMesh.meshMany(this.device, &this.chunks, &this.chunks_on_gpu, alloc);
     mesh_time_ns += timer.read();
 
-    std.log.info("average chunk gen time: {} ns", .{@as(f64, @floatFromInt(gen_time_ns)) / @as(f64, @floatFromInt(chunks))});
-    std.log.info("average chunk mesh time: {} ns", .{@as(f64, @floatFromInt(mesh_time_ns)) / @as(f64, @floatFromInt(chunks))});
+    std.log.info("chunk gen time: {} ns", .{gen_time_ns});
+    std.log.info("chunk mesh time: {} ns", .{mesh_time_ns});
 }
 
 pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
@@ -266,7 +264,7 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
             const q = math.quatFromEuler(this.camera.euler);
             move_vector = math.quatMulVec(q, move_vector);
             move_vector = math.normalize(move_vector);
-            move_vector *= @splat(dt * 15);
+            move_vector *= @splat(dt * 40);
             this.camera.pos += move_vector;
         }
     }
