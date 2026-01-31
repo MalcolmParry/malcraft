@@ -7,6 +7,7 @@ const ChunkMesh = @import("ChunkMesh.zig");
 
 const Renderer = @This();
 
+destruct_queue: std.ArrayList(gpu.AnyObject),
 event_queue: mw.EventQueue,
 window: mw.Window,
 instance: gpu.Instance,
@@ -36,6 +37,10 @@ camera: struct {
 },
 
 pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
+    this.destruct_queue = try .initCapacity(alloc, 32);
+    errdefer gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
+    errdefer this.destruct_queue.deinit(alloc);
+
     this.event_queue = try .init(alloc);
     errdefer this.event_queue.deinit();
 
@@ -56,11 +61,17 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     this.presented_fences = try alloc.alloc(gpu.Fence, this.display.imageCount());
     errdefer alloc.free(this.presented_fences);
-    for (this.presented_fences) |*fence| fence.* = try .init(this.device, true);
+    for (this.presented_fences) |*fence| {
+        fence.* = try .init(this.device, true);
+        try this.destruct_queue.append(alloc, .{ .fence = fence.* });
+    }
 
     this.image_available_semaphores = try alloc.alloc(gpu.Semaphore, this.display.imageCount());
     errdefer alloc.free(this.image_available_semaphores);
-    for (this.image_available_semaphores) |*semaphore| semaphore.* = try .init(this.device);
+    for (this.image_available_semaphores) |*semaphore| {
+        semaphore.* = try .init(this.device);
+        try this.destruct_queue.append(alloc, .{ .semaphore = semaphore.* });
+    }
 
     try this.initFramesInFlight(alloc);
     errdefer this.deinitFramesInFlight(alloc);
@@ -112,7 +123,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         },
         .size = @sizeOf(@TypeOf(ChunkMesh.face_table)),
     });
-    errdefer this.chunk_face_lookup.deinit(this.device, alloc);
+    try this.destruct_queue.append(alloc, .{ .buffer = this.chunk_face_lookup });
 
     try this.device.setBufferRegions(
         &.{this.chunk_face_lookup.region()},
@@ -130,10 +141,10 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             },
         },
     });
-    errdefer this.chunk_resource_layout.deinit(this.device, alloc);
+    try this.destruct_queue.append(alloc, .{ .resource_layout = this.chunk_resource_layout });
 
     this.chunk_resource_set = try .init(this.device, this.chunk_resource_layout, alloc);
-    errdefer this.chunk_resource_set.deinit(this.device, alloc);
+    try this.destruct_queue.append(alloc, .{ .resource_set = this.chunk_resource_set });
 
     try this.chunk_resource_set.update(this.device, &.{.{
         .binding = 0,
@@ -141,10 +152,10 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     }}, alloc);
 
     this.chunk_shader_vertex = try makeShader(this, alloc, "res/shaders/chunk_opaque.vert.spv", .vertex);
-    errdefer this.chunk_shader_vertex.deinit(this.device, alloc);
+    try this.destruct_queue.append(alloc, .{ .shader = this.chunk_shader_vertex });
 
     this.chunk_shader_pixel = try makeShader(this, alloc, "res/shaders/chunk_opaque.frag.spv", .pixel);
-    errdefer this.chunk_shader_pixel.deinit(this.device, alloc);
+    try this.destruct_queue.append(alloc, .{ .shader = this.chunk_shader_pixel });
 
     this.chunk_pipeline = try .init(this.device, .{
         .alloc = alloc,
@@ -178,7 +189,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             .compare_op = .less,
         },
     });
-    errdefer this.chunk_pipeline.deinit(this.device, alloc);
+    try this.destruct_queue.append(alloc, .{ .graphics_pipeline = this.chunk_pipeline });
 
     this.frame_timer = try .start();
     this.total_timer = try .start();
@@ -206,21 +217,11 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     }
     this.chunks.deinit();
 
-    this.chunk_face_lookup.deinit(this.device, alloc);
-    this.chunk_pipeline.deinit(this.device, alloc);
-    this.chunk_shader_pixel.deinit(this.device, alloc);
-    this.chunk_shader_vertex.deinit(this.device, alloc);
-    this.chunk_resource_set.deinit(this.device, alloc);
-    this.chunk_resource_layout.deinit(this.device, alloc);
     this.deinitFramesInFlight(alloc);
-
-    for (this.presented_fences, this.image_available_semaphores) |fence, semaphore| {
-        fence.deinit(this.device);
-        semaphore.deinit(this.device);
-    }
-
     alloc.free(this.image_available_semaphores);
     alloc.free(this.presented_fences);
+    gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
+    this.destruct_queue.deinit(alloc);
     this.display.deinit(alloc);
     this.device.deinit(alloc);
     this.instance.deinit(alloc);
@@ -265,6 +266,7 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
 
 pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
     if (this.dirty_swapchain) {
+        std.log.info("rebuilding swapchain", .{});
         try gpu.Fence.waitMany(this.presented_fences, this.device, .all, std.time.ns_per_s);
         const new_viewport = this.window.getFramebufferSize();
         try this.display.rebuild(new_viewport, alloc);
@@ -272,6 +274,8 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
             x.deinitViewportDependants(this, alloc);
             try x.initViewportDependants(this, alloc);
         }
+
+        this.dirty_swapchain = false;
     }
 
     try gpu.Fence.waitMany(this.presented_fences, this.device, .single, std.time.ns_per_s);
