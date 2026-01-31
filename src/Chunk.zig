@@ -13,7 +13,7 @@ pub const len = 32;
 /// dont use, use getters and setters instead
 blocks: [len][len][len]BlockId,
 
-pub const BlockId = enum {
+pub const BlockId = enum(u2) {
     air,
     grass,
     stone,
