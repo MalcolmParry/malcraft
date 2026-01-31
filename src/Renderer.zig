@@ -16,9 +16,8 @@ per_frame_in_flight: []PerFrameInFlight,
 frame_timer: std.time.Timer,
 last_cursor: @Vector(2, f32),
 
-chunk: Chunk,
-mesh: ChunkMesh,
-mesh_on_gpu: ChunkMesh.OnGpu,
+chunks: std.AutoHashMap(Chunk.ChunkPos, *Chunk),
+chunks_on_gpu: std.AutoArrayHashMap(Chunk.ChunkPos, ChunkMesh.OnGpu),
 
 chunk_shader_vertex: gpu.Shader,
 chunk_shader_pixel: gpu.Shader,
@@ -46,6 +45,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     this.display = try .init(this.device, &this.window, alloc);
     errdefer this.display.deinit(alloc);
+    std.log.info("display size: {}", .{this.display.imageSize()});
 
     try this.initFramesInFlight(alloc);
     errdefer this.deinitFramesInFlight(alloc);
@@ -84,10 +84,43 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         try fence.wait(this.device, std.time.ns_per_s);
     }
 
-    this.chunk.init(.{ 0, 0, 0 });
-    try this.mesh.build(&this.chunk, alloc);
-    try this.mesh_on_gpu.init(this.device, &this.mesh, alloc);
-    errdefer this.mesh_on_gpu.deinit(this.device, alloc);
+    this.chunks = .init(alloc);
+    this.chunks_on_gpu = .init(alloc);
+    const render_radius = 1;
+    {
+        const chunks = (render_radius * 2) * (render_radius * 2);
+        var gen_time_ns: usize = 0;
+        var mesh_time_ns: usize = 0;
+        var timer = try std.time.Timer.start();
+
+        var x: i32 = -render_radius;
+        while (x < render_radius) : (x += 1) {
+            var y: i32 = -render_radius;
+            while (y < render_radius) : (y += 1) {
+                const pos: Chunk.ChunkPos = .{ x, y, 0 };
+                timer.reset();
+                const chunk = try alloc.create(Chunk);
+                gen_time_ns += timer.read();
+                chunk.init(pos);
+
+                try this.chunks.put(pos, chunk);
+
+                var mesh: ChunkMesh = undefined;
+                timer.reset();
+                try mesh.build(chunk, alloc);
+                mesh_time_ns += timer.read();
+                defer mesh.deinit(alloc);
+
+                var on_gpu: ChunkMesh.OnGpu = undefined;
+                try on_gpu.init(this.device, &mesh, alloc);
+                errdefer on_gpu.deinit(this.device, alloc);
+                try this.chunks_on_gpu.put(pos, on_gpu);
+            }
+        }
+
+        std.log.info("average chunk gen time: {} ns", .{@as(f32, @floatFromInt(gen_time_ns)) / @as(f32, @floatFromInt(chunks))});
+        std.log.info("average chunk mesh time: {} ns", .{@as(f32, @floatFromInt(mesh_time_ns)) / @as(f32, @floatFromInt(chunks))});
+    }
 
     this.chunk_shader_vertex = try makeShader(this, alloc, "res/shaders/chunk_opaque.vert.spv", .vertex);
     errdefer this.chunk_shader_vertex.deinit(this.device, alloc);
@@ -109,11 +142,13 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             .depth_format = .d32_sfloat,
         },
         .shader_set = this.chunk_shader_set,
-        .push_constant_ranges = &.{.{
-            .stages = .{ .vertex = true },
-            .offset = 0,
-            .size = 64,
-        }},
+        .push_constant_ranges = &.{
+            .{
+                .stages = .{ .vertex = true },
+                .offset = 0,
+                .size = 64 + 12,
+            },
+        },
         .cull_mode = .front,
         .depth_mode = .{
             .testing = true,
@@ -131,10 +166,20 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 }
 
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
-    this.mesh.deinit(alloc);
-
     this.device.waitUntilIdle();
-    this.mesh_on_gpu.deinit(this.device, alloc);
+
+    var chunk_on_gpu_iter = this.chunks_on_gpu.iterator();
+    while (chunk_on_gpu_iter.next()) |on_gpu| {
+        on_gpu.value_ptr.deinit(this.device, alloc);
+    }
+    this.chunks_on_gpu.deinit();
+
+    var chunk_iter = this.chunks.iterator();
+    while (chunk_iter.next()) |chunk| {
+        alloc.destroy(chunk.value_ptr.*);
+    }
+    this.chunks.deinit();
+
     this.chunk_pipeline.deinit(this.device, alloc);
     this.chunk_shader_set.deinit(this.device, alloc);
     this.chunk_shader_pixel.deinit(this.device, alloc);
@@ -239,13 +284,11 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
         .offset = 0,
         .size = 64,
     }, @ptrCast(&push_constants));
-    render_pass.cmdBindVertexBuffer(this.device, this.mesh_on_gpu.vertex_buffer.region());
 
-    render_pass.cmdDraw(.{
-        .device = this.device,
-        .vertex_count = @intCast(this.mesh.per_vertex.len),
-        .indexed = false,
-    });
+    var chunk_mesh_iter = this.chunks_on_gpu.iterator();
+    while (chunk_mesh_iter.next()) |kv| {
+        this.drawChunk(render_pass, kv.key_ptr.*, kv.value_ptr.*);
+    }
 
     render_pass.cmdEnd(this.device);
 
@@ -267,6 +310,28 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
 
     _ = try this.display.presentImage(image_index, &.{per_frame.render_finished_semaphore}, per_frame.presented_fence);
     this.frame_index = (this.frame_index + 1) % this.display.imageCount();
+}
+
+fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.ChunkPos, on_gpu: ChunkMesh.OnGpu) void {
+    const packed_pos: [3]i32 = math.toArray(pos);
+
+    render_pass.cmdPushConstants(
+        this.device,
+        this.chunk_pipeline,
+        .{
+            .stages = .{ .vertex = true },
+            .offset = 64,
+            .size = 12,
+        },
+        @ptrCast(std.mem.sliceAsBytes(&packed_pos)),
+    );
+
+    render_pass.cmdBindVertexBuffer(this.device, on_gpu.vertex_buffer.region());
+    render_pass.cmdDraw(.{
+        .device = this.device,
+        .vertex_count = @intCast(on_gpu.vertex_count),
+        .indexed = false,
+    });
 }
 
 fn initFramesInFlight(this: *Renderer, alloc: std.mem.Allocator) !void {
@@ -341,6 +406,7 @@ const PerFrameInFlight = struct {
 const ChunkMesh = struct {
     const OnGpu = struct {
         vertex_buffer: gpu.Buffer,
+        vertex_count: usize,
 
         fn init(this: *OnGpu, device: gpu.Device, mesh: *ChunkMesh, alloc: std.mem.Allocator) !void {
             this.vertex_buffer = try .init(device, .{
@@ -353,6 +419,7 @@ const ChunkMesh = struct {
                 .size = mesh.per_vertex.len * @sizeOf(PerVertex),
             });
             errdefer this.vertex_buffer.deinit(device, alloc);
+            this.vertex_count = mesh.per_vertex.len;
 
             try device.setBufferRegions(
                 &.{this.vertex_buffer.region()},

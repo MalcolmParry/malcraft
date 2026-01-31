@@ -7,6 +7,7 @@ layout(location = 0) toPixel vec3 pColor;
 layout(location = 1) toPixel vec3 pNormal;
 layout(push_constant) uniform PushConstants {
     mat4 vp;
+    ivec3 chunkPos;
 } constants;
 
 #ifdef _VERTEX
@@ -16,7 +17,7 @@ layout(location=1) in vec3 iColor;
 layout(location=2) in vec3 iNormal;
 
 void main() {
-    gl_Position = constants.vp * vec4(iPos, 1);
+    gl_Position = constants.vp * vec4(iPos + constants.chunkPos * 32, 1);
     pColor = iColor;
     pNormal = iNormal;
 }
