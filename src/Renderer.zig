@@ -20,6 +20,7 @@ total_timer: std.time.Timer,
 frame_count: usize,
 last_cursor: @Vector(2, f32),
 dirty_swapchain: bool,
+wireframe: bool,
 
 chunks: std.AutoHashMap(Chunk.ChunkPos, *Chunk),
 chunks_on_gpu: std.AutoArrayHashMap(Chunk.ChunkPos, ChunkMesh.OnGpu),
@@ -34,6 +35,10 @@ camera: struct {
     pos: math.Vec3,
     euler: math.Vec3,
 },
+
+pub const Input = struct {
+    wireframe: bool = false,
+};
 
 pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.destruct_queue = try .initCapacity(alloc, 32);
@@ -149,40 +154,9 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.chunk_shader_pixel = try makeShader(this, alloc, "res/shaders/chunk_opaque.frag.spv", .pixel);
     try this.destruct_queue.append(alloc, .{ .shader = this.chunk_shader_pixel });
 
-    this.chunk_pipeline = try .init(this.device, .{
-        .alloc = alloc,
-        .render_target_desc = .{
-            .color_format = this.display.imageFormat(),
-            .depth_format = .d32_sfloat,
-        },
-        .push_constant_ranges = &.{
-            .{
-                .stages = .{ .vertex = true },
-                .offset = 0,
-                .size = 64 + 12,
-            },
-        },
-        .resource_layouts = &.{this.chunk_resource_layout},
-        .shaders = &.{
-            this.chunk_shader_vertex,
-            this.chunk_shader_pixel,
-        },
-        .vertex_input_bindings = &.{.{
-            .binding = 0,
-            .rate = .per_instance,
-            .fields = &.{
-                .{ .type = .uint32 },
-            },
-        }},
-        .polygon_mode = .fill,
-        .cull_mode = .front,
-        .depth_mode = .{
-            .testing = true,
-            .writing = true,
-            .compare_op = .less,
-        },
-    });
-    try this.destruct_queue.append(alloc, .{ .graphics_pipeline = this.chunk_pipeline });
+    this.wireframe = false;
+    try this.initChunkPipeline(alloc);
+    errdefer this.chunk_pipeline.deinit(this.device, alloc);
 
     this.frame_timer = try .start();
     this.total_timer = try .start();
@@ -211,6 +185,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.chunks.deinit();
 
     this.deinitFramesInFlight(alloc);
+    this.chunk_pipeline.deinit(this.device, alloc);
     gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
     this.destruct_queue.deinit(alloc);
     this.display.deinit(alloc);
@@ -255,7 +230,7 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
     std.log.info("chunk mesh time: {} ns", .{mesh_time_ns});
 }
 
-pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
+pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     if (this.dirty_swapchain) {
         std.log.info("rebuilding swapchain", .{});
         const fences = try alloc.alloc(gpu.Fence, this.per_frame_in_flight.len);
@@ -276,6 +251,14 @@ pub fn render(this: *@This(), alloc: std.mem.Allocator) !void {
 
     const per_frame = &this.per_frame_in_flight[this.frame_index];
     try per_frame.presented_fence.wait(this.device, std.time.ns_per_s);
+    gpu.AnyObject.deinitAllReversed(per_frame.trash.items, this.device, alloc);
+    per_frame.trash.clearRetainingCapacity();
+
+    if (input.wireframe) {
+        try per_frame.trash.append(alloc, .{ .graphics_pipeline = this.chunk_pipeline });
+        this.wireframe = !this.wireframe;
+        try this.initChunkPipeline(alloc);
+    }
 
     const viewport = this.window.getFramebufferSize();
     const viewport_f: math.Vec2 = @floatFromInt(viewport);
@@ -453,6 +436,42 @@ fn deinitFramesInFlight(this: *Renderer, alloc: std.mem.Allocator) void {
     alloc.free(this.per_frame_in_flight);
 }
 
+fn initChunkPipeline(this: *Renderer, alloc: std.mem.Allocator) !void {
+    this.chunk_pipeline = try .init(this.device, .{
+        .alloc = alloc,
+        .render_target_desc = .{
+            .color_format = this.display.imageFormat(),
+            .depth_format = .d32_sfloat,
+        },
+        .push_constant_ranges = &.{
+            .{
+                .stages = .{ .vertex = true },
+                .offset = 0,
+                .size = 64 + 12,
+            },
+        },
+        .resource_layouts = &.{this.chunk_resource_layout},
+        .shaders = &.{
+            this.chunk_shader_vertex,
+            this.chunk_shader_pixel,
+        },
+        .vertex_input_bindings = &.{.{
+            .binding = 0,
+            .rate = .per_instance,
+            .fields = &.{
+                .{ .type = .uint32 },
+            },
+        }},
+        .polygon_mode = if (this.wireframe) .line else .fill,
+        .cull_mode = .front,
+        .depth_mode = .{
+            .testing = true,
+            .writing = true,
+            .compare_op = .less,
+        },
+    });
+}
+
 const PerFrameInFlight = struct {
     presented_fence: gpu.Fence,
     render_finished_semaphore: gpu.Semaphore,
@@ -460,6 +479,7 @@ const PerFrameInFlight = struct {
     cmd_encoder: gpu.CommandEncoder,
     depth_image: gpu.Image,
     depth_image_view: gpu.Image.View,
+    trash: std.ArrayList(gpu.AnyObject),
 
     pub fn init(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) !void {
         this.presented_fence = try .init(renderer.device, true);
@@ -476,9 +496,13 @@ const PerFrameInFlight = struct {
 
         try this.initViewportDependants(renderer, alloc);
         errdefer this.deinitViewportDependants(renderer, alloc);
+
+        this.trash = .empty;
     }
 
     pub fn deinit(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) void {
+        gpu.AnyObject.deinitAllReversed(this.trash.items, renderer.device, alloc);
+        this.trash.deinit(alloc);
         this.deinitViewportDependants(renderer, alloc);
         this.cmd_encoder.deinit(renderer.device);
         this.image_available_semaphore.deinit(renderer.device);

@@ -1,5 +1,6 @@
 const std = @import("std");
 const App = @import("App.zig");
+const Renderer = @import("Renderer.zig");
 
 pub fn main() !void {
     var alloc_obj = std.heap.DebugAllocator(.{}).init;
@@ -13,12 +14,14 @@ pub fn main() !void {
     const renderer = &app.renderer;
     while (!(should_close or renderer.window.shouldClose())) {
         renderer.window.update();
+        var renderer_input: Renderer.Input = .{};
         while (renderer.event_queue.pending()) {
             switch (renderer.event_queue.pop()) {
                 .resize => |_| renderer.dirty_swapchain = true,
                 .key_down => |key| {
                     switch (key) {
                         .escape => should_close = true,
+                        .f => renderer_input.wireframe = true,
                         else => {},
                     }
                 },
@@ -26,6 +29,6 @@ pub fn main() !void {
             }
         }
 
-        try renderer.render(alloc);
+        try renderer.render(renderer_input, alloc);
     }
 }
