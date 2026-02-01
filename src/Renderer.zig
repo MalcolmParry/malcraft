@@ -168,6 +168,9 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.camera = .{
         .pos = .{ 0, 0, 23 },
         .euler = .{ 0, 0, 0 },
+        .v_fov = math.rad(90.0),
+        .near = 0.1,
+        .far = 2000,
     };
 }
 
@@ -203,7 +206,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
 }
 
 fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
-    const render_radius = 12;
+    const render_radius = 32;
     var gen_time_ns: usize = 0;
     var mesh_time_ns: usize = 0;
     var timer = try std.time.Timer.start();
@@ -436,14 +439,13 @@ fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constant
 }
 
 fn frustumPlanes(cam: Camera, aspect_ratio: f32) [6]Plane {
-    _ = cam;
-    const hy = Camera.v_fov / 2;
+    const hy = cam.v_fov / 2;
     const ty = @tan(hy);
     const tx = ty * aspect_ratio;
 
     return .{
-        .{ .n = .{ 1, 0, 0 }, .d = -Camera.near }, // near
-        .{ .n = .{ -1, 0, 0 }, .d = Camera.far }, // far
+        .{ .n = .{ 1, 0, 0 }, .d = -cam.near }, // near
+        .{ .n = .{ -1, 0, 0 }, .d = cam.far }, // far
         .{ .n = .{ tx, 1, 0 }, .d = 0 }, // left
         .{ .n = .{ tx, -1, 0 }, .d = 0 }, // right
         .{ .n = .{ ty, 0, 1 }, .d = 0 }, // bottom
