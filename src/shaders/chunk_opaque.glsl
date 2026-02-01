@@ -45,23 +45,33 @@ vec3 color_lookup[3] = {
     vec3(0.5, 0.5, 0.5),
 };
 
-vec3 normal_lookup[6] = {
-    vec3( 1,  0,  0),
-    vec3(-1,  0,  0),
-    vec3( 0,  1,  0),
-    vec3( 0, -1,  0),
-    vec3( 0,  0,  1),
-    vec3( 0,  0, -1),
+// vec3 normal_lookup[6] = {
+//     vec3( 1,  0,  0),
+//     vec3(-1,  0,  0),
+//     vec3( 0,  1,  0),
+//     vec3( 0, -1,  0),
+//     vec3( 0,  0,  1),
+//     vec3( 0,  0, -1),
+// };
+
+float light_lookup[6] = {
+    max(0, dot(vec3( 1,  0,  0), sunDir)) * 0.7 + 0.3,
+    max(0, dot(vec3(-1,  0,  0), sunDir)) * 0.7 + 0.3,
+    max(0, dot(vec3( 0,  1,  0), sunDir)) * 0.7 + 0.3,
+    max(0, dot(vec3( 0, -1,  0), sunDir)) * 0.7 + 0.3,
+    max(0, dot(vec3( 0,  0,  1), sunDir)) * 0.7 + 0.3,
+    max(0, dot(vec3( 0,  0, -1), sunDir)) * 0.7 + 0.3,
 };
 
 void main() {
     uint face = pPacked & 0x7;
     uint block = pPacked >> 3;
 
-    vec3 normal = normal_lookup[face];
+    // vec3 normal = normal_lookup[face];
 
-    float diffuse = max(0, dot(normal, sunDir));
-    float light = diffuse * 0.7 + 0.3;
+    // float diffuse = max(0, dot(normal, sunDir));
+    // float light = diffuse * 0.7 + 0.3;
+    float light = light_lookup[face];
 
     oColor = vec4(color_lookup[block], 1) * light;
 }

@@ -33,10 +33,7 @@ chunk_resource_set: gpu.ResourceSet,
 chunk_shader_vertex: gpu.Shader,
 chunk_shader_pixel: gpu.Shader,
 chunk_pipeline: gpu.GraphicsPipeline,
-camera: struct {
-    pos: math.Vec3,
-    euler: math.Vec3,
-},
+camera: Camera,
 
 pub const Input = struct {
     wireframe: bool = false,
@@ -164,7 +161,6 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     try this.initChunkPipeline(alloc);
     errdefer this.chunk_pipeline.deinit(this.device, alloc);
 
-    this.frame_timer = try .start();
     this.total_timer = try .start();
     this.frame_count = 0;
     this.last_cursor = .{ 0, 0 };
@@ -207,7 +203,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
 }
 
 fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
-    const render_radius = 32;
+    const render_radius = 12;
     var gen_time_ns: usize = 0;
     var mesh_time_ns: usize = 0;
     var timer = try std.time.Timer.start();
@@ -223,7 +219,10 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
                 const chunk = try alloc.create(Chunk);
                 chunk.init(pos);
                 const blocks: *[32 * 32 * 32]Chunk.BlockId = @ptrCast(&chunk.blocks);
-                if (std.mem.allEqual(Chunk.BlockId, blocks, .air)) continue;
+                if (std.mem.allEqual(Chunk.BlockId, blocks, .air)) {
+                    alloc.destroy(chunk);
+                    continue;
+                }
                 gen_time_ns += timer.read();
 
                 try this.chunks.put(pos, chunk);
@@ -241,6 +240,9 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
 }
 
 pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
+    if (this.frame_count == 0)
+        this.frame_timer = try .start();
+
     if (this.dirty_swapchain) {
         std.log.info("rebuilding swapchain", .{});
         const fences = try alloc.alloc(gpu.Fence, this.per_frame_in_flight.len);
@@ -317,14 +319,6 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         }
     }
 
-    const vp_mat = math.matMulMany(.{
-        math.perspective(aspect_ratio, math.rad(90.0), 0.1, 2000),
-        math.rotateEuler(this.camera.euler),
-        math.translate(-this.camera.pos),
-    });
-
-    const push_constants = math.toArray(vp_mat);
-
     const image_index = blk: switch (try this.display.acquireImageIndex(per_frame.image_available_semaphore, null, std.time.ns_per_s)) {
         .success => |x| x,
         .suboptimal => |x| {
@@ -361,19 +355,8 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         .image_size = this.display.imageSize(),
     });
 
-    render_pass.cmdBindPipeline(this.device, this.chunk_pipeline, this.display.imageSize());
-    render_pass.cmdBindResourceSets(this.device, this.chunk_pipeline, &.{this.chunk_resource_set}, 0);
-    render_pass.cmdBindVertexBuffer(this.device, 0, this.chunk_face_buffer.region());
-    render_pass.cmdPushConstants(this.device, this.chunk_pipeline, .{
-        .stages = .{ .vertex = true },
-        .offset = 0,
-        .size = 64,
-    }, @ptrCast(&push_constants));
-
-    var chunk_mesh_iter = this.chunks_on_gpu.iterator();
-    while (chunk_mesh_iter.next()) |kv| {
-        this.drawChunk(render_pass, kv.key_ptr.*, kv.value_ptr.*);
-    }
+    const push_constants = math.toArray(this.camera.vp(aspect_ratio));
+    this.drawChunks(render_pass, push_constants, aspect_ratio);
 
     render_pass.cmdEnd(this.device);
 
@@ -407,6 +390,97 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     this.frame_count += 1;
     this.frame_index = (this.frame_index + 1) % this.per_frame_in_flight.len;
 }
+
+fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constants: [16]f32, aspect_ratio: f32) void {
+    render_pass.cmdBindPipeline(this.device, this.chunk_pipeline, this.display.imageSize());
+    render_pass.cmdBindResourceSets(this.device, this.chunk_pipeline, &.{this.chunk_resource_set}, 0);
+    render_pass.cmdBindVertexBuffer(this.device, 0, this.chunk_face_buffer.region());
+    render_pass.cmdPushConstants(this.device, this.chunk_pipeline, .{
+        .stages = .{ .vertex = true },
+        .offset = 0,
+        .size = 64,
+    }, @ptrCast(&push_constants));
+
+    // frustum culling stuff
+    const frustum_planes = frustumPlanes(this.camera, aspect_ratio);
+    const q = math.quatFromEuler(this.camera.euler);
+    const forward = math.quatMulVec(q, math.dir_forward);
+    const right = math.quatMulVec(q, math.dir_right);
+    const up = math.quatMulVec(q, math.dir_up);
+    const af = @abs(forward);
+    const ar = @abs(right);
+    const au = @abs(up);
+
+    var chunk_mesh_iter = this.chunks_on_gpu.iterator();
+    while (chunk_mesh_iter.next()) |kv| {
+        const pos: math.Vec3 = @floatFromInt(kv.key_ptr.* * Chunk.size);
+        const chunk_size_f = math.i2f(math.Vec3, Chunk.size);
+        // extent
+        const e_ws = chunk_size_f / math.splat3(f32, 2);
+        // center
+        const c_ws = pos + e_ws;
+        const c_vs = pointToViewSpace(c_ws, this.camera.pos, forward, right, up);
+        const e_vs = pointToViewSpace(e_ws, @splat(0), af, ar, au);
+        const min = c_vs - e_vs;
+        const max = c_vs + e_vs;
+
+        const culled = blk: for (frustum_planes) |p| {
+            if (!aabbInPlane(min, max, p)) {
+                break :blk true;
+            }
+        } else false;
+
+        if (!culled)
+            this.drawChunk(render_pass, kv.key_ptr.*, kv.value_ptr.*);
+    }
+}
+
+fn frustumPlanes(cam: Camera, aspect_ratio: f32) [6]Plane {
+    _ = cam;
+    const hy = Camera.v_fov / 2;
+    const ty = @tan(hy);
+    const tx = ty * aspect_ratio;
+
+    return .{
+        .{ .n = .{ 1, 0, 0 }, .d = -Camera.near }, // near
+        .{ .n = .{ -1, 0, 0 }, .d = Camera.far }, // far
+        .{ .n = .{ tx, 1, 0 }, .d = 0 }, // left
+        .{ .n = .{ tx, -1, 0 }, .d = 0 }, // right
+        .{ .n = .{ ty, 0, 1 }, .d = 0 }, // bottom
+        .{ .n = .{ ty, 0, -1 }, .d = 0 }, // top
+    };
+}
+
+fn aabbInPlane(min: math.Vec3, max: math.Vec3, p: Plane) bool {
+    const c = (min + max) / math.splat3(f32, 2);
+    const e = (max - min) / math.splat3(f32, 2);
+
+    const n = p.n;
+    const s = math.dot(n, c) + p.d;
+    const r = math.dot(@abs(n), e);
+
+    if (s + r < 0) return false;
+    return true;
+}
+
+fn pointToViewSpace(
+    point: math.Vec3,
+    cam_pos: math.Vec3,
+    forward: math.Vec3,
+    right: math.Vec3,
+    up: math.Vec3,
+) math.Vec3 {
+    return .{
+        math.dot(point - cam_pos, forward),
+        math.dot(point - cam_pos, right),
+        math.dot(point - cam_pos, up),
+    };
+}
+
+const Plane = struct {
+    n: math.Vec3,
+    d: f32,
+};
 
 fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.ChunkPos, on_gpu: ChunkMesh.OnGpu) void {
     const packed_pos: [3]i32 = math.toArray(pos);
@@ -560,3 +634,26 @@ fn makeShader(this: *Renderer, alloc: std.mem.Allocator, file_name: []const u8, 
 
     return shader;
 }
+
+const Camera = struct {
+    pos: math.Vec3,
+    euler: math.Vec3,
+    v_fov: f32,
+    near: f32,
+    far: f32,
+
+    fn view(this: Camera) math.Mat4 {
+        return math.matMulMany(.{
+            math.rotateEuler(this.euler),
+            math.translate(-this.pos),
+        });
+    }
+
+    fn proj(this: Camera, aspect_ratio: f32) math.Mat4 {
+        return math.perspective(aspect_ratio, this.v_fov, this.near, this.far);
+    }
+
+    fn vp(this: Camera, aspect_ratio: f32) math.Mat4 {
+        return math.matMul(this.proj(aspect_ratio), this.view());
+    }
+};

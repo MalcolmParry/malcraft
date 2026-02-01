@@ -56,10 +56,9 @@ pub fn init(this: *Chunk, chunk_pos: ChunkPos) void {
 
         const m = @sin(x / 50 + (y / 70) * @sin(x / 100));
 
-        const height_diff_x: f32 = 8 * (@sin((nx + 3 * ny) + 3 * @sin((3 * nx - ny) + @sin(nx + ny / 2))) + @sin(9 * nx) / 3) + 20 * (m * m * m * m * m);
-        const height_diff = height_diff_x;
+        const height_diff: f32 = 8 * (@sin((nx + 3 * ny) + 3 * @sin((3 * nx - ny) + @sin(nx + ny / 2))) + @sin(9 * nx) / 3) + 20 * (m * m * m * m * m);
 
-        const grass_height: u32 = @as(u32, @intFromFloat(height_diff)) + 16;
+        const grass_height: i32 = @as(i32, @intFromFloat(height_diff)) + 16;
 
         this.setBlock(chunk_rel, switch (std.math.order(block_pos[2], grass_height)) {
             .gt => .air,
