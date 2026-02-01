@@ -13,6 +13,7 @@ window: mw.Window,
 instance: gpu.Instance,
 device: gpu.Device,
 display: gpu.Display,
+images_initialized: []bool,
 frame_index: usize,
 per_frame_in_flight: []PerFrameInFlight,
 frame_timer: std.time.Timer,
@@ -41,10 +42,6 @@ pub const Input = struct {
 };
 
 pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
-    this.destruct_queue = try .initCapacity(alloc, 32);
-    errdefer this.destruct_queue.deinit(alloc);
-    errdefer gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
-
     this.event_queue = try .init(alloc);
     errdefer this.event_queue.deinit();
 
@@ -63,16 +60,24 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     errdefer this.display.deinit(alloc);
     std.log.info("display size: {}", .{this.display.imageSize()});
 
+    this.images_initialized = try alloc.alloc(bool, this.display.imageCount());
+    errdefer alloc.free(this.images_initialized);
+    @memset(this.images_initialized, false);
+
+    this.destruct_queue = try .initCapacity(alloc, 32);
+    errdefer this.destruct_queue.deinit(alloc);
+    errdefer gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
+
     this.frame_index = 0;
     try this.initFramesInFlight(alloc);
     errdefer this.deinitFramesInFlight(alloc);
 
     // transition depth
     {
-        const transitons = try alloc.alloc(gpu.CommandEncoder.MemoryBarrier, this.per_frame_in_flight.len);
-        defer alloc.free(transitons);
+        const transitions = try alloc.alloc(gpu.CommandEncoder.MemoryBarrier, this.per_frame_in_flight.len);
+        defer alloc.free(transitions);
 
-        for (transitons, this.per_frame_in_flight) |*transition, *per_frame| {
+        for (transitions, this.per_frame_in_flight) |*transition, *per_frame| {
             transition.* = .{ .image = .{
                 .image = per_frame.depth_image,
                 .aspect = .{ .depth = true },
@@ -95,7 +100,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         defer fence.deinit(this.device);
 
         try cmd_encoder.begin(this.device);
-        cmd_encoder.cmdMemoryBarrier(this.device, transitons);
+        cmd_encoder.cmdMemoryBarrier(this.device, transitions);
         try cmd_encoder.end(this.device);
         try this.device.submitCommands(.{
             .encoder = cmd_encoder,
@@ -188,6 +193,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.chunk_pipeline.deinit(this.device, alloc);
     gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
     this.destruct_queue.deinit(alloc);
+    alloc.free(this.images_initialized);
     this.display.deinit(alloc);
     this.device.deinit(alloc);
     this.instance.deinit(alloc);
@@ -245,6 +251,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
             try x.initViewportDependants(this, alloc);
         }
 
+        @memset(this.images_initialized, false);
         this.dirty_swapchain = false;
         return;
     }
@@ -331,7 +338,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         .{ .image = .{
             .image = this.display.image(image_index),
             .aspect = .{ .color = true },
-            .old_layout = .undefined,
+            .old_layout = if (this.images_initialized[image_index]) .present_src else .undefined,
             .new_layout = .color_attachment,
             .src_stage = .{ .pipeline_start = true },
             .dst_stage = .{ .color_attachment_output = true },
