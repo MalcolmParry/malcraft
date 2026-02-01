@@ -10,8 +10,6 @@ layout(location = 0) toPixel flat uint pPacked;
 layout(location=0) in uint iPacked;
 layout(set=0,binding=0) uniform UniformBufferObject {
     vec3 face_table[6 * 6];
-    vec3 normal_table[6];
-    vec3 color_table[3];
 } ubo;
 
 layout(push_constant) uniform PushConstants {

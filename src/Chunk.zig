@@ -41,14 +41,25 @@ pub fn init(this: *Chunk, chunk_pos: ChunkPos) void {
     var iter: Iterator = .{};
     while (iter.next()) |chunk_rel| {
         const block_pos = pos + @as(BlockPos, @intCast(chunk_rel));
+        const f_block_pos: math.Vec3 = @floatFromInt(block_pos);
+        const x, const y, _ = f_block_pos;
+        const nx = x / 50;
+        const ny = y / 50;
 
-        const height_diff: i8 = @intFromFloat(
-            @sin(
-                @as(f32, @floatFromInt(block_pos[0])),
-            ) * 2,
-        );
+        // const height_diff: f32 = @sin(
+        //     x / 4,
+        // ) * 2 + @sin(
+        //     y / 16,
+        // ) * 6 + 5 * @sin(
+        //     (x + @sin(x)) / 50,
+        // );
 
-        const grass_height: u8 = @intCast(height_diff + 16);
+        const m = @sin(x / 50 + (y / 70) * @sin(x / 100));
+
+        const height_diff_x: f32 = 8 * (@sin((nx + 3 * ny) + 3 * @sin((3 * nx - ny) + @sin(nx + ny / 2))) + @sin(9 * nx) / 3) + 20 * (m * m * m * m * m);
+        const height_diff = height_diff_x;
+
+        const grass_height: u32 = @as(u32, @intFromFloat(height_diff)) + 16;
 
         this.setBlock(chunk_rel, switch (std.math.order(block_pos[2], grass_height)) {
             .gt => .air,

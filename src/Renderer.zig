@@ -26,6 +26,7 @@ wireframe: bool,
 chunks: std.AutoHashMap(Chunk.ChunkPos, *Chunk),
 chunks_on_gpu: std.AutoArrayHashMap(Chunk.ChunkPos, ChunkMesh.OnGpu),
 
+chunk_face_buffer: gpu.Buffer,
 chunk_face_lookup: gpu.Buffer,
 chunk_resource_layout: gpu.ResourceSet.Layout,
 chunk_resource_set: gpu.ResourceSet,
@@ -206,7 +207,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
 }
 
 fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
-    const render_radius = 1;
+    const render_radius = 32;
     var gen_time_ns: usize = 0;
     var mesh_time_ns: usize = 0;
     var timer = try std.time.Timer.start();
@@ -216,12 +217,14 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
         var y: i32 = -render_radius;
         while (y <= render_radius) : (y += 1) {
             var z: i32 = -1;
-            while (z <= 0) : (z += 1) {
+            while (z <= 2) : (z += 1) {
                 const pos: Chunk.ChunkPos = .{ x, y, z };
                 timer.reset();
                 const chunk = try alloc.create(Chunk);
-                gen_time_ns += timer.read();
                 chunk.init(pos);
+                const blocks: *[32 * 32 * 32]Chunk.BlockId = @ptrCast(&chunk.blocks);
+                if (std.mem.allEqual(Chunk.BlockId, blocks, .air)) continue;
+                gen_time_ns += timer.read();
 
                 try this.chunks.put(pos, chunk);
             }
@@ -229,7 +232,8 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
     }
 
     timer.reset();
-    try ChunkMesh.meshMany(this.device, &this.chunks, &this.chunks_on_gpu, alloc);
+    try ChunkMesh.meshMany(this.device, &this.chunks, &this.chunks_on_gpu, &this.chunk_face_buffer, alloc);
+    try this.destruct_queue.append(alloc, .{ .buffer = this.chunk_face_buffer });
     mesh_time_ns += timer.read();
 
     std.log.info("chunk gen time: {} ns", .{gen_time_ns});
@@ -314,7 +318,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     }
 
     const vp_mat = math.matMulMany(.{
-        math.perspective(aspect_ratio, math.rad(90.0), 0.1, 1000),
+        math.perspective(aspect_ratio, math.rad(90.0), 0.1, 2000),
         math.rotateEuler(this.camera.euler),
         math.translate(-this.camera.pos),
     });
@@ -359,6 +363,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
 
     render_pass.cmdBindPipeline(this.device, this.chunk_pipeline, this.display.imageSize());
     render_pass.cmdBindResourceSets(this.device, this.chunk_pipeline, &.{this.chunk_resource_set}, 0);
+    render_pass.cmdBindVertexBuffer(this.device, 0, this.chunk_face_buffer.region());
     render_pass.cmdPushConstants(this.device, this.chunk_pipeline, .{
         .stages = .{ .vertex = true },
         .offset = 0,
@@ -417,11 +422,11 @@ fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.Chu
         @ptrCast(std.mem.sliceAsBytes(&packed_pos)),
     );
 
-    render_pass.cmdBindVertexBuffer(this.device, 0, on_gpu.vertex_buffer.region());
     render_pass.cmdDraw(.{
         .device = this.device,
         .vertex_count = 6,
         .instance_count = @intCast(on_gpu.face_count),
+        .first_instance = @intCast(on_gpu.face_offset),
         .indexed = false,
     });
 }

@@ -7,8 +7,8 @@ const Chunk = @import("Chunk.zig");
 const ChunkMesh = @This();
 
 pub const OnGpu = struct {
-    vertex_buffer: gpu.Buffer,
     face_count: usize,
+    face_offset: usize,
 
     pub fn init(this: *OnGpu, device: gpu.Device, mesh: *ChunkMesh, alloc: std.mem.Allocator) !void {
         this.vertex_buffer = try .init(device, .{
@@ -30,7 +30,9 @@ pub const OnGpu = struct {
     }
 
     pub fn deinit(this: *OnGpu, device: gpu.Device, alloc: std.mem.Allocator) void {
-        this.vertex_buffer.deinit(device, alloc);
+        _ = this;
+        _ = device;
+        _ = alloc;
     }
 };
 
@@ -131,7 +133,7 @@ const MeshJob = struct {
     chunk_pos: Chunk.ChunkPos,
 };
 
-pub fn meshMany(device: gpu.Device, chunks: *const std.AutoHashMap(Chunk.ChunkPos, *Chunk), meshes_on_gpu: *std.AutoArrayHashMap(Chunk.ChunkPos, OnGpu), alloc: std.mem.Allocator) !void {
+pub fn meshMany(device: gpu.Device, chunks: *const std.AutoHashMap(Chunk.ChunkPos, *Chunk), meshes_on_gpu: *std.AutoArrayHashMap(Chunk.ChunkPos, OnGpu), buffer: *gpu.Buffer, alloc: std.mem.Allocator) !void {
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
     const aalloc = arena.allocator();
@@ -173,41 +175,40 @@ pub fn meshMany(device: gpu.Device, chunks: *const std.AutoHashMap(Chunk.ChunkPo
     }
 
     const data = try aalloc.alloc([]const u8, chunk_count);
+    var total_faces: usize = 0;
     for (jobs, data) |job, *faces| {
         faces.* = std.mem.sliceAsBytes(job.faces.items);
+        total_faces += job.faces.items.len;
     }
 
-    const buffers = try aalloc.alloc(gpu.Buffer, chunk_count);
+    buffer.* = try device.initBuffer(.{
+        .alloc = alloc,
+        .loc = .device,
+        .usage = .{
+            .vertex = true,
+            .dst = true,
+        },
+        .size = total_faces * @sizeOf(PerFace),
+    });
+    errdefer device.deinit(alloc);
     const regions = try aalloc.alloc(gpu.Buffer.Region, chunk_count);
 
-    for (buffers, regions, jobs) |*buffer, *region, job| {
-        buffer.* = try .init(device, .{
-            .alloc = alloc,
-            .loc = .device,
-            .usage = .{
-                .vertex = true,
-                .dst = true,
-            },
-            .size = job.faces.items.len * @sizeOf(PerFace),
-        });
-
+    var offset: usize = 0;
+    try meshes_on_gpu.ensureUnusedCapacity(chunk_count);
+    for (regions, jobs) |*region, job| {
         region.* = .{
             .buffer = buffer.*,
-            .offset = 0,
-            .size_or_whole = .whole,
+            .offset = offset * @sizeOf(PerFace),
+            .size_or_whole = .{ .size = job.faces.items.len * @sizeOf(PerFace) },
         };
+        meshes_on_gpu.putAssumeCapacity(job.chunk_pos, .{
+            .face_count = job.faces.items.len,
+            .face_offset = offset,
+        });
+        offset += job.faces.items.len;
     }
-    errdefer for (buffers) |buffer| buffer.deinit(device, alloc);
 
     try device.setBufferRegions(regions, data);
-
-    try meshes_on_gpu.ensureUnusedCapacity(chunk_count);
-    for (jobs, buffers) |job, buffer| {
-        meshes_on_gpu.putAssumeCapacity(job.chunk_pos, .{
-            .vertex_buffer = buffer,
-            .face_count = job.faces.items.len,
-        });
-    }
 }
 
 fn meshingWorker(jobs: []MeshJob, index: *std.atomic.Value(usize)) void {
