@@ -485,7 +485,11 @@ const Plane = struct {
 };
 
 fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.ChunkPos, on_gpu: ChunkMesh.OnGpu) void {
-    const packed_pos: [3]i32 = math.toArray(pos);
+    const push_constants: ChunkPushConstants = .{
+        .x = @intCast(pos[0]),
+        .y = @intCast(pos[1]),
+        .z = @intCast(pos[2]),
+    };
 
     render_pass.cmdPushConstants(
         this.device,
@@ -493,9 +497,9 @@ fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.Chu
         .{
             .stages = .{ .vertex = true },
             .offset = 64,
-            .size = 12,
+            .size = 8,
         },
-        @ptrCast(std.mem.sliceAsBytes(&packed_pos)),
+        @ptrCast(std.mem.asBytes(&push_constants)),
     );
 
     render_pass.cmdDraw(.{
@@ -535,7 +539,7 @@ fn initChunkPipeline(this: *Renderer, alloc: std.mem.Allocator) !void {
             .{
                 .stages = .{ .vertex = true },
                 .offset = 0,
-                .size = 64 + 12,
+                .size = 64 + 8,
             },
         },
         .resource_layouts = &.{this.chunk_resource_layout},
@@ -636,6 +640,13 @@ fn makeShader(this: *Renderer, alloc: std.mem.Allocator, file_name: []const u8, 
 
     return shader;
 }
+
+const ChunkPushConstants = packed struct(u64) {
+    x: i21,
+    y: i21,
+    z: i21,
+    padding: u1 = undefined,
+};
 
 const Camera = struct {
     pos: math.Vec3,

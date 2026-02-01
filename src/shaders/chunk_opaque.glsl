@@ -1,5 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 
 #include "core.hglsl"
 
@@ -14,17 +15,32 @@ layout(set=0,binding=0) uniform UniformBufferObject {
 
 layout(push_constant) uniform PushConstants {
     mat4 vp;
-    ivec3 chunkPos;
+    // 21 bits per component
+    uint64_t packedChunkPos;
 } constants;
 
+int unpackI21(uint64_t packed, uint shift) {
+    uint raw = uint(packed >> shift);
+
+    return int(raw << uint(32 - 21)) >> (32 - 21);
+}
+
 void main() {
-    uint x =     (iPacked >> 00) & 0x1f;
-    uint y =     (iPacked >> 05) & 0x1f;
-    uint z =     (iPacked >> 10) & 0x1f;
+    uvec3 rel_pos = uvec3(
+        (iPacked >> 00) & 0x1f,
+        (iPacked >> 05) & 0x1f,
+        (iPacked >> 10) & 0x1f
+    );
     uint face =  (iPacked >> 15) & 0x07;
     uint block = (iPacked >> 18) & 0x03;
 
-    ivec3 block_pos = ivec3(x, y, z) + constants.chunkPos * 32;
+    ivec3 chunk_pos = ivec3(
+        unpackI21(constants.packedChunkPos,  0),
+        unpackI21(constants.packedChunkPos, 21),
+        unpackI21(constants.packedChunkPos, 42)
+    );
+
+    ivec3 block_pos = ivec3(rel_pos) + chunk_pos * 32;
     vec3 face_pos = ubo.face_table[face * 6 + gl_VertexIndex];
 
     gl_Position = constants.vp * vec4(face_pos + vec3(block_pos), 1);
