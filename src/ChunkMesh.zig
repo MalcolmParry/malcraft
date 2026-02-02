@@ -190,7 +190,7 @@ pub fn meshMany(device: gpu.Device, chunks: *const std.AutoHashMap(Chunk.ChunkPo
         },
         .size = total_faces * @sizeOf(PerFace),
     });
-    errdefer device.deinit(alloc);
+    errdefer buffer.deinit(alloc);
     const regions = try aalloc.alloc(gpu.Buffer.Region, chunk_count);
 
     var offset: usize = 0;
