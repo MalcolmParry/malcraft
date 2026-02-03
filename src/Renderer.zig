@@ -3,7 +3,8 @@ const mw = @import("mwengine");
 const gpu = mw.gpu;
 const math = mw.math;
 const Chunk = @import("Chunk.zig");
-const ChunkMesh = @import("ChunkMesh.zig");
+const ChunkMesher = @import("ChunkMesher.zig");
+const ChunkMeshAllocator = @import("ChunkMeshAllocator.zig");
 
 const Renderer = @This();
 
@@ -24,9 +25,10 @@ dirty_swapchain: bool,
 wireframe: bool,
 
 chunks: std.AutoHashMap(Chunk.ChunkPos, *Chunk),
-chunks_on_gpu: std.AutoArrayHashMap(Chunk.ChunkPos, ChunkMesh.OnGpu),
+chunk_mesh_loaded: std.AutoArrayHashMap(Chunk.ChunkPos, ChunkMesher.GpuLoaded),
 
-chunk_face_buffer: gpu.Buffer,
+chunk_mesh_alloc: ChunkMeshAllocator,
+chunk_mesher: ChunkMesher,
 chunk_face_lookup: gpu.Buffer,
 chunk_resource_layout: gpu.ResourceSet.Layout,
 chunk_resource_set: gpu.ResourceSet,
@@ -110,8 +112,14 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         try fence.wait(this.device, std.time.ns_per_s);
     }
 
+    try this.chunk_mesh_alloc.init(this.device, alloc);
+    errdefer this.chunk_mesh_alloc.deinit();
+
+    try this.chunk_mesher.init(&this.chunk_mesh_alloc, alloc);
+    errdefer this.chunk_mesher.deinit();
+
     this.chunks = .init(alloc);
-    this.chunks_on_gpu = .init(alloc);
+    this.chunk_mesh_loaded = .init(alloc);
     try this.loadChunks(alloc);
 
     this.chunk_face_lookup = try this.device.initBuffer(.{
@@ -121,13 +129,13 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             .uniform = true,
             .dst = true,
         },
-        .size = @sizeOf(@TypeOf(ChunkMesh.face_table)),
+        .size = @sizeOf(@TypeOf(ChunkMesher.face_table)),
     });
     try this.destruct_queue.append(alloc, .{ .buffer = this.chunk_face_lookup });
 
     try this.device.setBufferRegions(
         &.{this.chunk_face_lookup.region()},
-        &.{std.mem.sliceAsBytes(&ChunkMesh.face_table)},
+        &.{std.mem.sliceAsBytes(&ChunkMesher.face_table)},
     );
 
     this.chunk_resource_layout = try .init(this.device, .{
@@ -177,11 +185,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.device.waitUntilIdle();
 
-    var chunk_on_gpu_iter = this.chunks_on_gpu.iterator();
-    while (chunk_on_gpu_iter.next()) |on_gpu| {
-        on_gpu.value_ptr.deinit(this.device, alloc);
-    }
-    this.chunks_on_gpu.deinit();
+    this.chunk_mesh_loaded.deinit();
 
     var chunk_iter = this.chunks.iterator();
     while (chunk_iter.next()) |chunk| {
@@ -193,6 +197,8 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.chunk_pipeline.deinit(this.device, alloc);
     gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
     this.destruct_queue.deinit(alloc);
+    this.chunk_mesher.deinit();
+    this.chunk_mesh_alloc.deinit();
     alloc.free(this.images_initialized);
     this.display.deinit(alloc);
     this.device.deinit(alloc);
@@ -234,8 +240,7 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
     }
 
     timer.reset();
-    try ChunkMesh.meshMany(this.device, &this.chunks, &this.chunks_on_gpu, &this.chunk_face_buffer, alloc);
-    try this.destruct_queue.append(alloc, .{ .buffer = this.chunk_face_buffer });
+    try this.chunk_mesher.meshMany(&this.chunks, &this.chunk_mesh_loaded);
     mesh_time_ns += timer.read();
 
     std.log.info("chunk gen time: {} ns", .{gen_time_ns});
@@ -397,7 +402,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
 fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constants: [16]f32, aspect_ratio: f32) void {
     render_pass.cmdBindPipeline(this.device, this.chunk_pipeline, this.display.imageSize());
     render_pass.cmdBindResourceSets(this.device, this.chunk_pipeline, &.{this.chunk_resource_set}, 0);
-    render_pass.cmdBindVertexBuffer(this.device, 0, this.chunk_face_buffer.region());
+    render_pass.cmdBindVertexBuffer(this.device, 0, this.chunk_mesh_alloc.buffer.region());
     render_pass.cmdPushConstants(this.device, this.chunk_pipeline, .{
         .stages = .{ .vertex = true },
         .offset = 0,
@@ -414,7 +419,7 @@ fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constant
     const ar = @abs(right);
     const au = @abs(up);
 
-    var chunk_mesh_iter = this.chunks_on_gpu.iterator();
+    var chunk_mesh_iter = this.chunk_mesh_loaded.iterator();
     while (chunk_mesh_iter.next()) |kv| {
         const pos: math.Vec3 = @floatFromInt(kv.key_ptr.* * Chunk.size);
         const chunk_size_f = math.i2f(math.Vec3, Chunk.size);
@@ -484,7 +489,7 @@ const Plane = struct {
     d: f32,
 };
 
-fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.ChunkPos, on_gpu: ChunkMesh.OnGpu) void {
+fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.ChunkPos, loaded_mesh: ChunkMesher.GpuLoaded) void {
     const push_constants: ChunkPushConstants = .{
         .x = @intCast(pos[0]),
         .y = @intCast(pos[1]),
@@ -505,8 +510,8 @@ fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.Chu
     render_pass.cmdDraw(.{
         .device = this.device,
         .vertex_count = 6,
-        .instance_count = @intCast(on_gpu.face_count),
-        .first_instance = @intCast(on_gpu.face_offset),
+        .instance_count = @intCast(loaded_mesh.face_count),
+        .first_instance = @intCast(loaded_mesh.face_offset),
         .indexed = false,
     });
 }
