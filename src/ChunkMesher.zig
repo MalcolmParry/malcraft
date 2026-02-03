@@ -103,18 +103,18 @@ pub fn meshMany(this: *ChunkMesher) !void {
     this.thread_info.run();
     this.thread_info.waitUntilDone();
 
-    const data = try aalloc.alloc([]const u8, jobs.len);
+    const faces = try aalloc.alloc([]const PerFace, jobs.len);
     var total_faces: usize = 0;
     var index: usize = 0;
     for (jobs) |job| {
         if (job.faces.items.len == 0) continue;
 
-        data[index] = std.mem.sliceAsBytes(job.faces.items);
+        faces[index] = job.faces.items;
         total_faces += job.faces.items.len;
         index += 1;
     }
 
-    const regions = try aalloc.alloc(gpu.Buffer.Region, index);
+    const loaded_meshes = try aalloc.alloc(GpuLoaded, index);
 
     var offset: usize = 0;
     try this.loaded_meshes.ensureUnusedCapacity(index);
@@ -122,25 +122,26 @@ pub fn meshMany(this: *ChunkMesher) !void {
     for (jobs) |job| {
         if (job.faces.items.len == 0) continue;
 
-        const result = try this.mesh_alloc.allocate(job.faces.items.len);
-
-        regions[index] = result.buffer_region;
-        this.loaded_meshes.putAssumeCapacity(job.chunk_pos, result.gpu_loaded_mesh);
+        const loaded_mesh = try this.mesh_alloc.allocate(job.faces.items.len);
+        loaded_meshes[index] = loaded_mesh;
+        this.loaded_meshes.putAssumeCapacity(job.chunk_pos, loaded_mesh);
         offset += job.faces.items.len;
         index += 1;
     }
 
-    try this.mesh_alloc.writeBuffers(regions, data[0..index]);
+    try this.mesh_alloc.writeChunks(loaded_meshes, faces[0..index]);
     this.queue_start += jobs.len;
 }
 
 const MeshThreadInfo = struct {
-    phase: std.atomic.Value(u32) = .init(0),
-    done: std.atomic.Value(u32) = .init(0),
-    stop: std.atomic.Value(bool) = .init(false),
-    thread_count: u32,
+    const cl = std.atomic.cache_line;
 
-    index: std.atomic.Value(u32) = .init(0),
+    phase: std.atomic.Value(u32) align(cl) = .init(0),
+    done: std.atomic.Value(u32) align(cl) = .init(0),
+    stop: std.atomic.Value(bool) = .init(false),
+
+    index: std.atomic.Value(u32) align(cl) = .init(0),
+    thread_count: u32 align(cl),
     chunks: *const std.AutoHashMap(Chunk.ChunkPos, *Chunk),
     jobs: []MeshJob,
 

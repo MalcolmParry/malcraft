@@ -100,7 +100,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         defer fence.deinit(this.device);
 
         try cmd_encoder.begin(this.device);
-        cmd_encoder.cmdMemoryBarrier(this.device, transitions);
+        try cmd_encoder.cmdMemoryBarrier(this.device, transitions, alloc);
         try cmd_encoder.end(this.device);
         try this.device.submitCommands(.{
             .encoder = cmd_encoder,
@@ -352,7 +352,9 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     };
 
     try per_frame.cmd_encoder.begin(this.device);
-    per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
+    try this.chunk_mesh_alloc.upload(this.device, per_frame.cmd_encoder);
+
+    try per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
         .{ .image = .{
             .image = this.display.image(image_index),
             .aspect = .{ .color = true },
@@ -363,7 +365,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
             .src_access = .{},
             .dst_access = .{ .color_attachment_write = true },
         } },
-    });
+    }, alloc);
 
     const render_pass = per_frame.cmd_encoder.cmdBeginRenderPass(.{
         .device = this.device,
@@ -380,7 +382,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
 
     render_pass.cmdEnd(this.device);
 
-    per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
+    try per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
         .{ .image = .{
             .image = this.display.image(image_index),
             .aspect = .{ .color = true },
@@ -391,7 +393,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
             .src_access = .{ .color_attachment_write = true },
             .dst_access = .{},
         } },
-    });
+    }, alloc);
 
     try per_frame.cmd_encoder.end(this.device);
     try this.device.submitCommands(.{
