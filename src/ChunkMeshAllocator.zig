@@ -20,19 +20,24 @@ const FreeRegion = struct {
     node: std.DoublyLinkedList.Node = .{},
 };
 
-pub fn init(this: *ChunkMeshAllocator, device: gpu.Device, alloc: std.mem.Allocator) !void {
-    this.staging = try .init(device, .{
-        .alloc = alloc,
+const InitInfo = struct {
+    device: gpu.Device,
+    alloc: std.mem.Allocator,
+};
+
+pub fn init(this: *ChunkMeshAllocator, info: InitInfo) !void {
+    this.staging = try .init(info.device, .{
+        .alloc = info.alloc,
         .loc = .host,
         .size = staging_size,
         .usage = .{
             .src = true,
         },
     });
-    errdefer this.staging.deinit(device, alloc);
+    errdefer this.staging.deinit(info.device, info.alloc);
 
-    this.buffer = try .init(device, .{
-        .alloc = alloc,
+    this.buffer = try .init(info.device, .{
+        .alloc = info.alloc,
         .loc = .device,
         .size = buffer_size,
         .usage = .{
@@ -40,10 +45,10 @@ pub fn init(this: *ChunkMeshAllocator, device: gpu.Device, alloc: std.mem.Alloca
             .dst = true,
         },
     });
-    errdefer this.buffer.deinit(device, alloc);
+    errdefer this.buffer.deinit(info.device, info.alloc);
 
-    const free_region = try alloc.create(FreeRegion);
-    errdefer alloc.destroy(free_region);
+    const free_region = try info.alloc.create(FreeRegion);
+    errdefer info.alloc.destroy(free_region);
     free_region.* = .{
         .offset = 0,
         .size = buffer_size,
@@ -52,8 +57,8 @@ pub fn init(this: *ChunkMeshAllocator, device: gpu.Device, alloc: std.mem.Alloca
     this.free_list = .{};
     this.free_list.append(&free_region.node);
 
-    this.alloc = alloc;
-    this.device = device;
+    this.alloc = info.alloc;
+    this.device = info.device;
 }
 
 pub fn deinit(this: *ChunkMeshAllocator) void {

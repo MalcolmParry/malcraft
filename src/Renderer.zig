@@ -112,15 +112,36 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         try fence.wait(this.device, std.time.ns_per_s);
     }
 
-    try this.chunk_mesh_alloc.init(this.device, alloc);
-    errdefer this.chunk_mesh_alloc.deinit();
-
-    try this.chunk_mesher.init(&this.chunk_mesh_alloc, alloc);
-    errdefer this.chunk_mesher.deinit();
-
     this.chunks = .init(alloc);
     this.chunk_mesh_loaded = .init(alloc);
     try this.loadChunks(alloc);
+
+    try this.chunk_mesh_alloc.init(.{
+        .device = this.device,
+        .alloc = alloc,
+    });
+    errdefer this.chunk_mesh_alloc.deinit();
+
+    {
+        const queue = try alloc.alloc(Chunk.ChunkPos, this.chunks.count());
+        defer alloc.free(queue);
+
+        var iter = this.chunks.iterator();
+        var i: usize = 0;
+        while (iter.next()) |kv| {
+            queue[i] = kv.key_ptr.*;
+            i += 1;
+        }
+
+        try this.chunk_mesher.init(.{
+            .mesh_alloc = &this.chunk_mesh_alloc,
+            .alloc = alloc,
+            .chunks = &this.chunks,
+            .loaded_meshes = &this.chunk_mesh_loaded,
+            .queue = queue,
+        });
+    }
+    errdefer this.chunk_mesher.deinit();
 
     this.chunk_face_lookup = try this.device.initBuffer(.{
         .alloc = alloc,
@@ -212,9 +233,8 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
 }
 
 fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
-    const render_radius = 32;
+    const render_radius = 3;
     var gen_time_ns: usize = 0;
-    var mesh_time_ns: usize = 0;
     var timer = try std.time.Timer.start();
 
     var x: i32 = -render_radius;
@@ -227,11 +247,6 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
                 timer.reset();
                 const chunk = try alloc.create(Chunk);
                 chunk.init(pos);
-                const blocks: *[32 * 32 * 32]Chunk.BlockId = @ptrCast(&chunk.blocks);
-                if (std.mem.allEqual(Chunk.BlockId, blocks, .air)) {
-                    alloc.destroy(chunk);
-                    continue;
-                }
                 gen_time_ns += timer.read();
 
                 try this.chunks.put(pos, chunk);
@@ -239,12 +254,7 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
         }
     }
 
-    timer.reset();
-    try this.chunk_mesher.meshMany(&this.chunks, &this.chunk_mesh_loaded);
-    mesh_time_ns += timer.read();
-
     std.log.info("chunk gen time: {} ns", .{gen_time_ns});
-    std.log.info("chunk mesh time: {} ns", .{mesh_time_ns});
 }
 
 pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
@@ -274,6 +284,8 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     try per_frame.presented_fence.wait(this.device, std.time.ns_per_s);
     gpu.AnyObject.deinitAllReversed(per_frame.trash.items, this.device, alloc);
     per_frame.trash.clearRetainingCapacity();
+
+    try this.chunk_mesher.meshMany();
 
     if (input.wireframe) {
         try per_frame.trash.append(alloc, .{ .graphics_pipeline = this.chunk_pipeline });

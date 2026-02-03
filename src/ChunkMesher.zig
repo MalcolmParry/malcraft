@@ -25,102 +25,143 @@ pub const PerFace = packed struct(u32) {
 alloc: std.mem.Allocator,
 arena: std.heap.ArenaAllocator,
 mesh_alloc: *ChunkMeshAllocator,
+thread_info: MeshThreadInfo,
+threads: []std.Thread,
+queue: []MeshJob,
+queue_start: usize,
+loaded_meshes: *std.AutoArrayHashMap(Chunk.ChunkPos, GpuLoaded),
 
-pub fn init(this: *ChunkMesher, mesh_alloc: *ChunkMeshAllocator, alloc: std.mem.Allocator) !void {
-    this.alloc = alloc;
-    this.arena = .init(alloc);
-    this.mesh_alloc = mesh_alloc;
-}
+pub const InitInfo = struct {
+    alloc: std.mem.Allocator,
+    mesh_alloc: *ChunkMeshAllocator,
+    queue: []Chunk.ChunkPos,
+    chunks: *const std.AutoHashMap(Chunk.ChunkPos, *Chunk),
+    loaded_meshes: *std.AutoArrayHashMap(Chunk.ChunkPos, GpuLoaded),
+};
 
-pub fn deinit(this: *ChunkMesher) void {
-    this.arena.deinit();
-}
+pub fn init(this: *ChunkMesher, info: InitInfo) !void {
+    this.alloc = info.alloc;
+    this.arena = .init(info.alloc);
+    this.mesh_alloc = info.mesh_alloc;
+    this.loaded_meshes = info.loaded_meshes;
 
-pub fn meshMany(this: *ChunkMesher, chunks: *const std.AutoHashMap(Chunk.ChunkPos, *Chunk), meshes_on_gpu: *std.AutoArrayHashMap(Chunk.ChunkPos, GpuLoaded)) !void {
-    _ = this.arena.reset(.retain_capacity);
-    const aalloc = this.arena.allocator();
+    const thread_count = @max(1, std.Thread.getCpuCount() catch 1);
+    this.threads = try info.alloc.alloc(std.Thread, thread_count);
+    errdefer info.alloc.free(this.threads);
 
-    std.log.info("meshing started", .{});
-    const chunk_count: u32 = @min(chunks.count(), 500);
-    const jobs: []MeshJob = try aalloc.alloc(MeshJob, chunk_count);
-    const all_faces = try aalloc.alloc(PerFace, max_faces * chunk_count);
-
-    var chunk_iter = chunks.iterator();
-    for (jobs, 0..chunk_count) |*job, i| {
-        const kv = chunk_iter.next().?;
-        const pos = kv.key_ptr.*;
-
+    this.queue_start = 0;
+    this.queue = try info.alloc.alloc(MeshJob, info.queue.len);
+    errdefer info.alloc.free(this.queue);
+    for (this.queue, info.queue) |*job, pos| {
         job.* = .{
-            .faces = .initBuffer(all_faces[i * max_faces .. (i + 1) * max_faces]),
+            .faces = .empty,
             .chunk_pos = pos,
         };
     }
 
-    var info: MeshThreadInfo = .{
-        .chunks = chunks,
-        .jobs = jobs,
+    this.thread_info = .{
+        .thread_count = @intCast(thread_count),
+        .chunks = info.chunks,
+        .jobs = undefined,
     };
 
-    const cpus: u32 = @intCast(std.Thread.getCpuCount() catch 1);
-    const thread_count = @min(chunk_count, @max(1, cpus));
-    const threads = try aalloc.alloc(std.Thread, thread_count);
-    for (threads) |*thread| {
-        thread.* = try .spawn(.{}, worker, .{&info});
+    for (this.threads) |*thread| {
+        thread.* = try .spawn(.{}, worker, .{&this.thread_info});
     }
 
-    while (true) {
-        const cur = info.done.load(.acquire);
-        if (cur >= thread_count) break;
-        std.Thread.Futex.wait(&info.done, cur);
-    }
+    this.thread_info.waitUntilDone();
+}
 
-    info.done.store(0, .monotonic);
-    _ = info.phase.fetchAdd(1, .release);
-    std.Thread.Futex.wake(&info.phase, cpus);
+pub fn deinit(this: *ChunkMesher) void {
+    this.thread_info.shutdown();
 
-    while (true) {
-        const cur = info.done.load(.acquire);
-        if (cur >= thread_count) break;
-        std.Thread.Futex.wait(&info.done, cur);
-    }
-
-    info.stop.store(1, .monotonic);
-    std.Thread.Futex.wake(&info.phase, cpus);
-
-    for (threads) |thread| {
+    for (this.threads) |thread| {
         thread.join();
     }
 
-    const data = try aalloc.alloc([]const u8, chunk_count);
-    var total_faces: usize = 0;
-    for (jobs, data) |job, *faces| {
-        faces.* = std.mem.sliceAsBytes(job.faces.items);
-        total_faces += job.faces.items.len;
+    this.alloc.free(this.queue);
+    this.alloc.free(this.threads);
+    this.arena.deinit();
+}
+
+const max_jobs = 12;
+pub fn meshMany(this: *ChunkMesher) !void {
+    _ = this.arena.reset(.retain_capacity);
+    const aalloc = this.arena.allocator();
+
+    const unfinished_jobs = this.queue[this.queue_start..];
+    const jobs = if (unfinished_jobs.len <= max_jobs) unfinished_jobs else unfinished_jobs[0..max_jobs];
+    if (jobs.len == 0) return;
+    const all_faces = try aalloc.alloc(PerFace, max_faces * jobs.len);
+
+    for (jobs, 0..) |*job, i| {
+        job.faces = .initBuffer(all_faces[i * max_faces .. (i + 1) * max_faces]);
     }
 
-    const regions = try aalloc.alloc(gpu.Buffer.Region, chunk_count);
+    this.thread_info.index.store(0, .monotonic);
+    this.thread_info.jobs = jobs;
+    this.thread_info.run();
+    this.thread_info.waitUntilDone();
+
+    const data = try aalloc.alloc([]const u8, jobs.len);
+    var total_faces: usize = 0;
+    var index: usize = 0;
+    for (jobs) |job| {
+        if (job.faces.items.len == 0) continue;
+
+        data[index] = std.mem.sliceAsBytes(job.faces.items);
+        total_faces += job.faces.items.len;
+        index += 1;
+    }
+
+    const regions = try aalloc.alloc(gpu.Buffer.Region, index);
 
     var offset: usize = 0;
-    try meshes_on_gpu.ensureUnusedCapacity(chunk_count);
-    for (regions, jobs) |*region, job| {
+    try this.loaded_meshes.ensureUnusedCapacity(index);
+    index = 0;
+    for (jobs) |job| {
+        if (job.faces.items.len == 0) continue;
+
         const result = try this.mesh_alloc.allocate(job.faces.items.len);
 
-        region.* = result.buffer_region;
-        meshes_on_gpu.putAssumeCapacity(job.chunk_pos, result.gpu_loaded_mesh);
+        regions[index] = result.buffer_region;
+        this.loaded_meshes.putAssumeCapacity(job.chunk_pos, result.gpu_loaded_mesh);
         offset += job.faces.items.len;
+        index += 1;
     }
 
-    try this.mesh_alloc.writeBuffers(regions, data);
+    try this.mesh_alloc.writeBuffers(regions, data[0..index]);
+    this.queue_start += jobs.len;
 }
 
 const MeshThreadInfo = struct {
     phase: std.atomic.Value(u32) = .init(0),
     done: std.atomic.Value(u32) = .init(0),
-    stop: std.atomic.Value(u32) = .init(0),
+    stop: std.atomic.Value(bool) = .init(false),
+    thread_count: u32,
 
     index: std.atomic.Value(u32) = .init(0),
     chunks: *const std.AutoHashMap(Chunk.ChunkPos, *Chunk),
     jobs: []MeshJob,
+
+    fn waitUntilDone(this: *MeshThreadInfo) void {
+        while (true) {
+            const cur = this.done.load(.acquire);
+            if (cur >= this.thread_count) break;
+            std.Thread.Futex.wait(&this.done, cur);
+        }
+    }
+
+    fn run(this: *MeshThreadInfo) void {
+        this.done.store(0, .monotonic);
+        _ = this.phase.fetchAdd(1, .release);
+        std.Thread.Futex.wake(&this.phase, this.thread_count);
+    }
+
+    fn shutdown(this: *MeshThreadInfo) void {
+        this.stop.store(true, .monotonic);
+        std.Thread.Futex.wake(&this.phase, this.thread_count);
+    }
 };
 
 const MeshJob = struct {
@@ -135,7 +176,7 @@ fn worker(info: *MeshThreadInfo) void {
 
     while (true) {
         while (true) {
-            if (info.stop.load(.monotonic) != 0) return;
+            if (info.stop.load(.monotonic)) return;
 
             const cur = info.phase.load(.acquire);
             if (cur != seen_phase) {
