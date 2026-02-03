@@ -5,8 +5,8 @@ const math = mw.math;
 const ChunkMesher = @import("ChunkMesher.zig");
 
 const ChunkMeshAllocator = @This();
-const buffer_size = 1024 * 1024 * 512;
-const staging_size = 1024 * 1024;
+pub const buffer_size = 1024 * 1024 * 512;
+pub const staging_size = 1024 * 1024 * 32;
 
 staging: gpu.Buffer,
 mapping: []ChunkMesher.PerFace,
@@ -97,8 +97,11 @@ pub fn writeChunks(this: *ChunkMeshAllocator, on_gpu: []ChunkMesher.GpuLoaded, o
 
     var face: usize = 0;
     for (on_cpu, on_gpu) |x, y| {
-        @memcpy(this.mapping[face .. face + x.len], x);
+        const offset_bytes = face * @sizeOf(ChunkMesher.PerFace);
         const size_bytes = y.face_count * @sizeOf(ChunkMesher.PerFace);
+
+        if (offset_bytes + size_bytes >= staging_size) @panic("staging buffer overflow");
+        @memcpy(this.mapping[face .. face + x.len], x);
 
         this.buffer_copy_src.appendAssumeCapacity(.{
             .buffer = this.staging,

@@ -233,7 +233,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
 }
 
 fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
-    const render_radius = 3;
+    const render_radius = 32;
     var gen_time_ns: usize = 0;
     var timer = try std.time.Timer.start();
 
