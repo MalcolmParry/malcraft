@@ -33,7 +33,7 @@ pub fn init(this: *ChunkMesher, mesh_alloc: *ChunkMeshAllocator, alloc: std.mem.
 }
 
 pub fn deinit(this: *ChunkMesher) void {
-    _ = this;
+    this.arena.deinit();
 }
 
 pub fn meshMany(this: *ChunkMesher, chunks: *const std.AutoHashMap(Chunk.ChunkPos, *Chunk), meshes_on_gpu: *std.AutoArrayHashMap(Chunk.ChunkPos, GpuLoaded)) !void {
