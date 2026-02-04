@@ -207,6 +207,8 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.device.waitUntilIdle();
 
     this.chunk_mesh_loaded.deinit();
+    this.chunk_mesher.deinit();
+    this.chunk_mesh_alloc.deinit();
 
     var chunk_iter = this.chunks.iterator();
     while (chunk_iter.next()) |chunk| {
@@ -218,8 +220,6 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.chunk_pipeline.deinit(this.device, alloc);
     gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
     this.destruct_queue.deinit(alloc);
-    this.chunk_mesher.deinit();
-    this.chunk_mesh_alloc.deinit();
     alloc.free(this.images_initialized);
     this.display.deinit(alloc);
     this.device.deinit(alloc);
