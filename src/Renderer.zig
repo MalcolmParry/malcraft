@@ -1,4 +1,5 @@
 const std = @import("std");
+const options = @import("options");
 const mw = @import("mwengine");
 const gpu = mw.gpu;
 const math = mw.math;
@@ -49,7 +50,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     errdefer this.window.deinit();
     try this.window.setCursorMode(.disabled);
 
-    this.instance = try .init(true, alloc);
+    this.instance = try .init(options.runtime_safety, alloc);
     errdefer this.instance.deinit(alloc);
 
     const phys_device = try this.instance.bestPhysicalDevice();

@@ -23,6 +23,10 @@ pub fn build(b: *Build) !void {
     });
     exe.root_module.addImport("mwengine", mwengine);
 
+    const options = b.addOptions();
+    options.addOption(bool, "runtime_safety", optimize != .ReleaseFast);
+    exe.root_module.addOptions("options", options);
+
     const exe_install = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&exe_install.step);
     try buildShaders(b, b.getInstallStep());
