@@ -124,23 +124,18 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     errdefer this.chunk_mesh_alloc.deinit();
 
     {
-        const queue = try alloc.alloc(Chunk.ChunkPos, this.chunks.count());
-        defer alloc.free(queue);
-
-        var iter = this.chunks.iterator();
-        var i: usize = 0;
-        while (iter.next()) |kv| {
-            queue[i] = kv.key_ptr.*;
-            i += 1;
-        }
-
         try this.chunk_mesher.init(.{
             .mesh_alloc = &this.chunk_mesh_alloc,
             .alloc = alloc,
             .chunks = &this.chunks,
             .loaded_meshes = &this.chunk_mesh_loaded,
-            .queue = queue,
         });
+
+        try this.chunk_mesher.thread_info.queue.ensureUnusedCapacity(alloc, this.chunks.count());
+        var iter = this.chunks.iterator();
+        while (iter.next()) |kv| {
+            this.chunk_mesher.thread_info.queue.pushBackAssumeCapacity(kv.key_ptr.*);
+        }
     }
     errdefer this.chunk_mesher.deinit();
 
@@ -234,7 +229,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
 }
 
 fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
-    const render_radius = 32;
+    const render_radius = if (options.runtime_safety) 3 else 32;
     var gen_time_ns: usize = 0;
     var timer = try std.time.Timer.start();
 

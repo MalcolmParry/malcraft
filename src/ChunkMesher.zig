@@ -1,5 +1,6 @@
 const std = @import("std");
 const mw = @import("mwengine");
+const Deque = @import("deque.zig").Deque;
 const math = mw.math;
 const gpu = mw.gpu;
 const Chunk = @import("Chunk.zig");
@@ -30,13 +31,10 @@ threads: []std.Thread,
 loaded_meshes: *std.AutoArrayHashMap(Chunk.ChunkPos, GpuLoaded),
 meshing_buffer: []PerFace,
 per_thread: []PerThread,
-queue: []MeshJob,
-queue_start: usize,
 
 pub const InitInfo = struct {
     alloc: std.mem.Allocator,
     mesh_alloc: *ChunkMeshAllocator,
-    queue: []Chunk.ChunkPos,
     chunks: *const std.AutoHashMap(Chunk.ChunkPos, *Chunk),
     loaded_meshes: *std.AutoArrayHashMap(Chunk.ChunkPos, GpuLoaded),
 };
@@ -63,20 +61,11 @@ pub fn init(this: *ChunkMesher, info: InitInfo) !void {
         };
     }
 
-    this.queue_start = 0;
-    this.queue = try info.alloc.alloc(MeshJob, info.queue.len);
-    errdefer info.alloc.free(this.queue);
-    for (this.queue, info.queue) |*job, pos| {
-        job.* = .{
-            .faces = &.{},
-            .chunk_pos = pos,
-        };
-    }
-
     this.thread_info = .{
         .thread_count = thread_count,
         .chunks = info.chunks,
-        .jobs = undefined,
+        .queue = .empty,
+        .faces = undefined,
     };
 
     for (this.threads, 0..) |*thread, i| {
@@ -96,10 +85,10 @@ pub fn deinit(this: *ChunkMesher) void {
         thread.join();
     }
 
+    this.thread_info.queue.deinit(this.alloc);
     for (this.per_thread) |x| x.arena.deinit();
     this.alloc.free(this.per_thread);
     this.alloc.free(this.meshing_buffer);
-    this.alloc.free(this.queue);
     this.alloc.free(this.threads);
     this.arena.deinit();
 }
@@ -109,45 +98,47 @@ pub fn meshMany(this: *ChunkMesher) !void {
     _ = this.arena.reset(.retain_capacity);
     const arena = this.arena.allocator();
 
-    const jobs = this.queue[this.queue_start..];
-    if (jobs.len == 0) return;
+    const job_count = this.thread_info.queue.len;
+    if (job_count == 0) return;
 
     this.thread_info.index.store(0, .monotonic);
-    this.thread_info.jobs = jobs;
+    this.thread_info.faces = try arena.alloc([]PerFace, job_count);
     this.thread_info.run();
     this.thread_info.waitUntilDone();
     const completed = this.thread_info.completed.load(.monotonic);
-    const completed_jobs = jobs[0..completed];
+    const all_faces = this.thread_info.faces[0..completed];
 
-    const faces = try arena.alloc([]const PerFace, completed);
     var total_faces: usize = 0;
-    var index: usize = 0;
-    for (completed_jobs) |job| {
-        if (job.faces.len == 0) continue;
+    var mesh_count: usize = 0;
+    for (all_faces) |faces| {
+        if (faces.len == 0) continue;
 
-        faces[index] = job.faces;
-        total_faces += job.faces.len;
-        index += 1;
+        total_faces += faces.len;
+        mesh_count += 1;
     }
 
-    const loaded_meshes = try arena.alloc(GpuLoaded, index);
+    const loaded_meshes = try arena.alloc(GpuLoaded, mesh_count);
+    const non_empty_faces = try arena.alloc([]PerFace, mesh_count);
 
     var offset: usize = 0;
-    try this.loaded_meshes.ensureUnusedCapacity(index);
-    index = 0;
-    for (completed_jobs) |job| {
-        if (job.faces.len == 0) continue;
+    try this.loaded_meshes.ensureUnusedCapacity(mesh_count);
+    var index: usize = 0;
+    for (all_faces, 0..) |faces, full_i| {
+        if (faces.len == 0) continue;
 
-        const loaded_mesh = try this.mesh_alloc.allocate(job.faces.len);
-        this.loaded_meshes.putAssumeCapacity(job.chunk_pos, loaded_mesh);
+        const pos = this.thread_info.queue.at(full_i);
+        const loaded_mesh = try this.mesh_alloc.allocate(faces.len);
+        this.loaded_meshes.putAssumeCapacity(pos, loaded_mesh);
         loaded_meshes[index] = loaded_mesh;
-        offset += job.faces.len;
+        non_empty_faces[index] = faces;
+        offset += faces.len;
         index += 1;
     }
 
-    try this.mesh_alloc.writeChunks(loaded_meshes, faces[0..index]);
+    try this.mesh_alloc.writeChunks(loaded_meshes, non_empty_faces[0..index]);
     for (this.per_thread) |*x| _ = x.arena.reset(.retain_capacity);
-    this.queue_start += completed;
+    this.thread_info.queue.head += completed;
+    this.thread_info.queue.len -= completed;
 }
 
 const MeshThreadInfo = struct {
@@ -161,7 +152,8 @@ const MeshThreadInfo = struct {
     completed: std.atomic.Value(u32) align(cl) = .init(0),
     thread_count: u32 align(cl),
     chunks: *const std.AutoHashMap(Chunk.ChunkPos, *Chunk),
-    jobs: []MeshJob,
+    queue: Deque(Chunk.ChunkPos),
+    faces: [][]PerFace,
 
     fn waitUntilDone(this: *MeshThreadInfo) void {
         while (true) {
@@ -187,12 +179,6 @@ const MeshThreadInfo = struct {
 const PerThread = struct {
     meshing_buffer: *[max_faces]PerFace,
     arena: std.heap.ArenaAllocator,
-};
-
-const MeshJob = struct {
-    chunk_pos: Chunk.ChunkPos,
-    /// allocated by per-thread arena
-    faces: []PerFace,
 };
 
 fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
@@ -221,22 +207,22 @@ fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
         while (true) {
             if (timer.read() > target_mesh_time_ns) break;
             const i = info.index.fetchAdd(1, .monotonic);
-            if (i >= info.jobs.len) break;
+            if (i >= info.queue.len) break;
 
-            const job = &info.jobs[i];
-            const chunk = info.chunks.get(job.chunk_pos).?;
+            const pos = info.queue.at(i);
+            const chunk = info.chunks.get(pos).?;
             const adjacent_chunks: [6]?*const Chunk = .{
-                info.chunks.get(job.chunk_pos + @as(Chunk.BlockPos, .{ 1, 0, 0 })),
-                info.chunks.get(job.chunk_pos + @as(Chunk.BlockPos, .{ -1, 0, 0 })),
-                info.chunks.get(job.chunk_pos + @as(Chunk.BlockPos, .{ 0, 1, 0 })),
-                info.chunks.get(job.chunk_pos + @as(Chunk.BlockPos, .{ 0, -1, 0 })),
-                info.chunks.get(job.chunk_pos + @as(Chunk.BlockPos, .{ 0, 0, 1 })),
-                info.chunks.get(job.chunk_pos + @as(Chunk.BlockPos, .{ 0, 0, -1 })),
+                info.chunks.get(pos + @as(Chunk.BlockPos, .{ 1, 0, 0 })),
+                info.chunks.get(pos + @as(Chunk.BlockPos, .{ -1, 0, 0 })),
+                info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 1, 0 })),
+                info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, -1, 0 })),
+                info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, 1 })),
+                info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, -1 })),
             };
 
             faces.clearRetainingCapacity();
             mesh(&faces, chunk, &adjacent_chunks);
-            job.faces = arena.dupe(PerFace, faces.items) catch @panic("");
+            info.faces[i] = arena.dupe(PerFace, faces.items) catch @panic("");
             _ = info.completed.fetchAdd(1, .monotonic);
         }
 
