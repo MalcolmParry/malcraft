@@ -35,7 +35,7 @@ per_thread: []PerThread,
 pub const InitInfo = struct {
     alloc: std.mem.Allocator,
     mesh_alloc: *ChunkMeshAllocator,
-    chunks: *const std.AutoHashMap(Chunk.ChunkPos, *Chunk),
+    chunks: *const std.AutoHashMap(Chunk.ChunkPos, Chunk),
     loaded_meshes: *std.AutoArrayHashMap(Chunk.ChunkPos, GpuLoaded),
 };
 
@@ -151,7 +151,7 @@ const MeshThreadInfo = struct {
     index: std.atomic.Value(u32) align(cl) = .init(0),
     completed: std.atomic.Value(u32) align(cl) = .init(0),
     thread_count: u32 align(cl),
-    chunks: *const std.AutoHashMap(Chunk.ChunkPos, *Chunk),
+    chunks: *const std.AutoHashMap(Chunk.ChunkPos, Chunk),
     queue: Deque(Chunk.ChunkPos),
     faces: [][]PerFace,
 
@@ -180,6 +180,8 @@ const PerThread = struct {
     meshing_buffer: *[max_faces]PerFace,
     arena: std.heap.ArenaAllocator,
 };
+
+pub const AdjacentChunks = [6]?Chunk;
 
 fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
     var timer = std.time.Timer.start() catch @panic("");
@@ -211,7 +213,7 @@ fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
 
             const pos = info.queue.at(i);
             const chunk = info.chunks.get(pos).?;
-            const adjacent_chunks: [6]?*const Chunk = .{
+            const adjacent_chunks: AdjacentChunks = .{
                 info.chunks.get(pos + @as(Chunk.BlockPos, .{ 1, 0, 0 })),
                 info.chunks.get(pos + @as(Chunk.BlockPos, .{ -1, 0, 0 })),
                 info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 1, 0 })),
@@ -231,7 +233,7 @@ fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
     }
 }
 
-pub fn mesh(faces: *std.ArrayList(PerFace), chunk: *const Chunk, adjacent_chunks: *const [6]?*const Chunk) void {
+pub fn mesh(faces: *std.ArrayList(PerFace), chunk: Chunk, adjacent_chunks: *const AdjacentChunks) void {
     var iter: Chunk.Iterator = .{};
     while (iter.next()) |pos| {
         const block = chunk.getBlock(pos);
@@ -254,7 +256,7 @@ pub fn mesh(faces: *std.ArrayList(PerFace), chunk: *const Chunk, adjacent_chunks
     }
 }
 
-pub inline fn isOpaqueSafe(chunk: *const Chunk, adjacent_chunks: *const [6]?*const Chunk, pos: Chunk.BlockPos) bool {
+pub inline fn isOpaqueSafe(chunk: Chunk, adjacent_chunks: *const AdjacentChunks, pos: Chunk.BlockPos) bool {
     @setRuntimeSafety(false);
 
     inline for (0..3) |axis| {

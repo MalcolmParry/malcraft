@@ -26,7 +26,7 @@ last_cursor: @Vector(2, f32),
 dirty_swapchain: bool,
 wireframe: bool,
 
-chunks: std.AutoHashMap(Chunk.ChunkPos, *Chunk),
+chunks: std.AutoHashMap(Chunk.ChunkPos, Chunk),
 chunk_mesh_loaded: std.AutoArrayHashMap(Chunk.ChunkPos, ChunkMesher.GpuLoaded),
 
 world_gen: WorldGenerator,
@@ -120,7 +120,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     try this.world_gen.init(alloc);
     errdefer this.world_gen.deinit();
 
-    try this.loadChunks(alloc);
+    try this.loadChunks();
 
     try this.chunk_mesh_alloc.init(.{
         .device = this.device,
@@ -211,8 +211,8 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.world_gen.deinit();
 
     var chunk_iter = this.chunks.iterator();
-    while (chunk_iter.next()) |chunk| {
-        alloc.destroy(chunk.value_ptr.*);
+    while (chunk_iter.next()) |kv| {
+        kv.value_ptr.deinit(alloc);
     }
     this.chunks.deinit();
 
@@ -232,7 +232,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     std.log.info("mean fps {}", .{fps});
 }
 
-fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
+fn loadChunks(this: *@This()) !void {
     const render_radius = if (options.runtime_safety) 3 else 32;
     var gen_time_ns: usize = 0;
     var timer = try std.time.Timer.start();
@@ -245,8 +245,7 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
             while (z <= 2) : (z += 1) {
                 const pos: Chunk.ChunkPos = .{ x, y, z };
                 timer.reset();
-                const chunk = try alloc.create(Chunk);
-                try this.world_gen.generate(chunk, pos);
+                const chunk = try this.world_gen.generate(pos);
                 gen_time_ns += timer.read();
 
                 try this.chunks.put(pos, chunk);

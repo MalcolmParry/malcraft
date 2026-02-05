@@ -22,12 +22,18 @@ pub fn deinit(gen: *WorldGenerator) void {
     gen.height_map.deinit(gen.alloc);
 }
 
-pub fn generate(gen: *WorldGenerator, chunk: *Chunk, chunk_pos: Chunk.ChunkPos) !void {
+pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.ChunkPos) !Chunk {
+    const map = try gen.getOrCreateHeightMap(.{ chunk_pos[0], chunk_pos[1] });
+    if (isAllOneBlock(map, chunk_pos[2])) |only_block|
+        return .{ .data = .{ .single = only_block } };
+
     const pos = chunk_pos * Chunk.size;
+    var chunk: Chunk = .{ .data = .{
+        .one_to_one = try gen.alloc.create(Chunk.OneToOne),
+    } };
 
     var iter: Chunk.Iterator = .{};
     while (iter.next()) |chunk_rel| {
-        const map = try gen.getOrCreateHeightMap(.{ chunk_pos[0], chunk_pos[1] });
         const block_pos = pos + @as(Chunk.BlockPos, @intCast(chunk_rel));
         const grass_height = map[chunk_rel[1]][chunk_rel[0]];
 
@@ -37,6 +43,21 @@ pub fn generate(gen: *WorldGenerator, chunk: *Chunk, chunk_pos: Chunk.ChunkPos) 
             .lt => .stone,
         });
     }
+
+    return chunk;
+}
+
+fn isAllOneBlock(map: *ChunkHeightMap, cs_z: i32) ?Chunk.BlockId {
+    const bs_z = cs_z * Chunk.len;
+
+    for (0..Chunk.len) |y| {
+        for (0..Chunk.len) |x| {
+            if (map.*[y][x] >= bs_z)
+                return null;
+        }
+    }
+
+    return .air;
 }
 
 fn getOrCreateHeightMap(gen: *WorldGenerator, pos: i32x2) !*ChunkHeightMap {

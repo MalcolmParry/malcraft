@@ -9,10 +9,16 @@ pub const T = u5;
 pub const Pos = @Vector(3, u5);
 pub const len = 32;
 pub const size: ChunkPos = @splat(len);
+pub const block_count = len * len * len;
 
-/// indexed with blocks[z][y][x]
-/// dont use, use getters and setters instead
-blocks: [len][len][len]BlockId,
+pub const OneToOne = [len][len][len]BlockId;
+
+data: union(enum) {
+    single: BlockId,
+    /// indexed with blocks[z][y][x]
+    /// dont use, use getters and setters instead
+    one_to_one: *OneToOne,
+},
 
 pub const BlockId = enum(u2) {
     air,
@@ -35,28 +41,42 @@ pub const BlockId = enum(u2) {
     }
 };
 
-pub inline fn getBlock(this: *const Chunk, pos: Pos) BlockId {
-    return this.blocks[pos[2]][pos[1]][pos[0]];
+pub fn deinit(chunk: *Chunk, alloc: std.mem.Allocator) void {
+    switch (chunk.data) {
+        .single => {},
+        .one_to_one => |data| alloc.free(data),
+    }
 }
 
-pub inline fn setBlock(this: *Chunk, pos: Pos, val: BlockId) void {
-    this.blocks[pos[2]][pos[1]][pos[0]] = val;
+pub inline fn getBlock(chunk: *const Chunk, pos: Pos) BlockId {
+    return switch (chunk.data) {
+        .single => |single| single,
+        .one_to_one => |data| data[pos[2]][pos[1]][pos[0]],
+    };
+}
+
+pub inline fn setBlock(chunk: *Chunk, pos: Pos, val: BlockId) void {
+    switch (chunk.data) {
+        // TODO:
+        .single => @panic("not implemented yet"),
+        .one_to_one => |data| data[pos[2]][pos[1]][pos[0]] = val,
+    }
 }
 
 pub const Iterator = struct {
     pos: @Vector(3, u8) = @splat(0),
 
-    pub inline fn next(this: *Iterator) ?Pos {
-        const result = this.pos;
+    pub inline fn next(iter: *Iterator) ?Pos {
+        const result = iter.pos;
         if (result[2] == len) return null;
 
-        this.pos[0] += 1;
-        if (this.pos[0] == len) {
-            this.pos[0] = 0;
-            this.pos[1] += 1;
-            if (this.pos[1] == len) {
-                this.pos[1] = 0;
-                this.pos[2] += 1;
+        iter.pos[0] += 1;
+        if (iter.pos[0] == len) {
+            iter.pos[0] = 0;
+            iter.pos[1] += 1;
+            if (iter.pos[1] == len) {
+                iter.pos[1] = 0;
+                iter.pos[2] += 1;
             }
         }
 
