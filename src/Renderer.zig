@@ -142,6 +142,17 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         this.chunk_mesher.thread_info.queue.pushBackAssumeCapacity(kv.key_ptr.*);
     }
 
+    {
+        const queue = this.chunk_mesher.thread_info.queue.buffer[0..this.chunk_mesher.thread_info.queue.len];
+        std.mem.sort(Chunk.ChunkPos, queue, {}, struct {
+            fn lessThanFn(_: void, left: Chunk.ChunkPos, right: Chunk.ChunkPos) bool {
+                const f_left: math.Vec3 = @floatFromInt(left);
+                const f_right: math.Vec3 = @floatFromInt(right);
+                return math.lengthSqr(f_left) < math.lengthSqr(f_right);
+            }
+        }.lessThanFn);
+    }
+
     this.chunk_face_lookup = try this.device.initBuffer(.{
         .alloc = alloc,
         .loc = .device,
@@ -198,7 +209,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         .euler = .{ 0, 0, 0 },
         .v_fov = math.rad(90.0),
         .near = 0.1,
-        .far = 2000,
+        .far = 10_000,
     };
 }
 
@@ -234,16 +245,16 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
 
 fn loadChunks(this: *@This()) !void {
     const render_radius = if (options.runtime_safety) 3 else 32;
-    const vertical_render_radius = if (options.runtime_safety) 1 else 3;
+    const vertical_render_radius = if (options.runtime_safety) 1 else 5;
     var gen_time_ns: usize = 0;
     var timer = try std.time.Timer.start();
 
-    var x: i32 = -render_radius;
-    while (x <= render_radius) : (x += 1) {
+    var z: i32 = -vertical_render_radius;
+    while (z <= vertical_render_radius) : (z += 1) {
         var y: i32 = -render_radius;
         while (y <= render_radius) : (y += 1) {
-            var z: i32 = -vertical_render_radius;
-            while (z <= vertical_render_radius) : (z += 1) {
+            var x: i32 = -render_radius;
+            while (x <= render_radius) : (x += 1) {
                 const pos: Chunk.ChunkPos = .{ x, y, z };
                 timer.reset();
                 const chunk = try this.world_gen.generate(pos);
@@ -255,6 +266,7 @@ fn loadChunks(this: *@This()) !void {
     }
 
     std.log.info("chunk gen time: {} ns", .{gen_time_ns});
+    std.log.info("chunk count {}", .{this.chunks.count()});
 }
 
 pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
@@ -318,6 +330,8 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         var speed: f32 = 40;
         if (this.window.isKeyDown(.left_shift))
             speed = 200;
+        if (this.window.isKeyDown(.left_control))
+            speed = 1000;
 
         if (!math.eql(move_vector, @as(math.Vec3, @splat(0)))) {
             const q = math.quatFromEuler(this.camera.euler);

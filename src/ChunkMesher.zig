@@ -94,11 +94,12 @@ pub fn deinit(this: *ChunkMesher) void {
 }
 
 const target_mesh_time_ns = 4_000_000;
+const max_chunks_meshed = 500;
 pub fn meshMany(this: *ChunkMesher) !void {
     _ = this.arena.reset(.retain_capacity);
     const arena = this.arena.allocator();
 
-    const job_count = this.thread_info.queue.len;
+    const job_count = @min(this.thread_info.queue.len, max_chunks_meshed);
     if (job_count == 0) return;
 
     this.thread_info.index.store(0, .monotonic);
@@ -108,19 +109,15 @@ pub fn meshMany(this: *ChunkMesher) !void {
     const completed = this.thread_info.completed.load(.monotonic);
     const all_faces = this.thread_info.faces[0..completed];
 
-    var total_faces: usize = 0;
     var mesh_count: usize = 0;
     for (all_faces) |faces| {
         if (faces.len == 0) continue;
-
-        total_faces += faces.len;
         mesh_count += 1;
     }
 
     const loaded_meshes = try arena.alloc(GpuLoaded, mesh_count);
     const non_empty_faces = try arena.alloc([]PerFace, mesh_count);
 
-    var offset: usize = 0;
     try this.loaded_meshes.ensureUnusedCapacity(mesh_count);
     var index: usize = 0;
     for (all_faces, 0..) |faces, full_i| {
@@ -131,13 +128,13 @@ pub fn meshMany(this: *ChunkMesher) !void {
         this.loaded_meshes.putAssumeCapacity(pos, loaded_mesh);
         loaded_meshes[index] = loaded_mesh;
         non_empty_faces[index] = faces;
-        offset += faces.len;
         index += 1;
     }
 
-    try this.mesh_alloc.writeChunks(loaded_meshes, non_empty_faces[0..index]);
+    try this.mesh_alloc.writeChunks(loaded_meshes, non_empty_faces);
     for (this.per_thread) |*x| _ = x.arena.reset(.retain_capacity);
     this.thread_info.queue.head += completed;
+    this.thread_info.queue.head %= this.thread_info.queue.buffer.len;
     this.thread_info.queue.len -= completed;
 }
 
@@ -189,10 +186,10 @@ fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
     const arena = per_thread.arena.allocator();
 
     var seen_phase = info.phase.load(.acquire);
-    _ = info.done.fetchAdd(1, .release);
-    std.Thread.Futex.wake(&info.done, 1);
-
     while (true) {
+        _ = info.done.fetchAdd(1, .release);
+        std.Thread.Futex.wake(&info.done, 1);
+
         while (true) {
             if (info.stop.load(.monotonic)) return;
 
@@ -206,10 +203,11 @@ fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
         }
 
         timer.reset();
+        var completed: u32 = 0;
         while (true) {
             if (timer.read() > target_mesh_time_ns) break;
             const i = info.index.fetchAdd(1, .monotonic);
-            if (i >= info.queue.len) break;
+            if (i >= info.faces.len) break;
 
             const pos = info.queue.at(i);
             const chunk = info.chunks.get(pos).?;
@@ -226,11 +224,10 @@ fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
             faces.clearRetainingCapacity();
             mesh(&faces, chunk, &adjacent_chunks);
             info.faces[i] = arena.dupe(PerFace, faces.items) catch @panic("");
-            _ = info.completed.fetchAdd(1, .monotonic);
+            completed += 1;
         }
 
-        _ = info.done.fetchAdd(1, .release);
-        std.Thread.Futex.wake(&info.done, 1);
+        _ = info.completed.fetchAdd(completed, .monotonic);
     }
 }
 
@@ -263,8 +260,6 @@ pub fn mesh(faces: *std.ArrayList(PerFace), chunk: Chunk, adjacent_chunks: *cons
 }
 
 pub inline fn isOpaqueSafe(chunk: Chunk, adjacent_chunks: *const AdjacentChunks, pos: Chunk.BlockPos) bool {
-    @setRuntimeSafety(false);
-
     inline for (0..3) |axis| {
         if (pos[axis] < 0) {
             if (adjacent_chunks[axis * 2 + 1]) |adjacent| {
