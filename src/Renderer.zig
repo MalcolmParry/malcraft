@@ -234,6 +234,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
 
 fn loadChunks(this: *@This()) !void {
     const render_radius = if (options.runtime_safety) 3 else 32;
+    const vertical_render_radius = if (options.runtime_safety) 1 else 3;
     var gen_time_ns: usize = 0;
     var timer = try std.time.Timer.start();
 
@@ -241,8 +242,8 @@ fn loadChunks(this: *@This()) !void {
     while (x <= render_radius) : (x += 1) {
         var y: i32 = -render_radius;
         while (y <= render_radius) : (y += 1) {
-            var z: i32 = -1;
-            while (z <= 2) : (z += 1) {
+            var z: i32 = -vertical_render_radius;
+            while (z <= vertical_render_radius) : (z += 1) {
                 const pos: Chunk.ChunkPos = .{ x, y, z };
                 timer.reset();
                 const chunk = try this.world_gen.generate(pos);

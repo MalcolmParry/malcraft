@@ -213,6 +213,7 @@ fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
 
             const pos = info.queue.at(i);
             const chunk = info.chunks.get(pos).?;
+
             const adjacent_chunks: AdjacentChunks = .{
                 info.chunks.get(pos + @as(Chunk.BlockPos, .{ 1, 0, 0 })),
                 info.chunks.get(pos + @as(Chunk.BlockPos, .{ -1, 0, 0 })),
@@ -234,6 +235,11 @@ fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
 }
 
 pub fn mesh(faces: *std.ArrayList(PerFace), chunk: Chunk, adjacent_chunks: *const AdjacentChunks) void {
+    switch (chunk.data) {
+        .single => |single| if (single == .air) return,
+        .one_to_one => {},
+    }
+
     var iter: Chunk.Iterator = .{};
     while (iter.next()) |pos| {
         const block = chunk.getBlock(pos);

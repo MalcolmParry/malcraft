@@ -49,15 +49,21 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.ChunkPos) !Chunk {
 
 fn isAllOneBlock(map: *ChunkHeightMap, cs_z: i32) ?Chunk.BlockId {
     const bs_z = cs_z * Chunk.len;
+    const below = map.*[0][0] > bs_z;
 
     for (0..Chunk.len) |y| {
         for (0..Chunk.len) |x| {
-            if (map.*[y][x] >= bs_z)
-                return null;
+            if (below) {
+                if (map.*[y][x] <= bs_z + Chunk.len)
+                    return null;
+            } else {
+                if (map.*[y][x] >= bs_z)
+                    return null;
+            }
         }
     }
 
-    return .air;
+    return if (below) .stone else .air;
 }
 
 fn getOrCreateHeightMap(gen: *WorldGenerator, pos: i32x2) !*ChunkHeightMap {
