@@ -6,6 +6,7 @@ const math = mw.math;
 const Chunk = @import("Chunk.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
 const ChunkMeshAllocator = @import("ChunkMeshAllocator.zig");
+const WorldGenerator = @import("WorldGenerator.zig");
 
 const Renderer = @This();
 
@@ -28,6 +29,7 @@ wireframe: bool,
 chunks: std.AutoHashMap(Chunk.ChunkPos, *Chunk),
 chunk_mesh_loaded: std.AutoArrayHashMap(Chunk.ChunkPos, ChunkMesher.GpuLoaded),
 
+world_gen: WorldGenerator,
 chunk_mesh_alloc: ChunkMeshAllocator,
 chunk_mesher: ChunkMesher,
 chunk_face_lookup: gpu.Buffer,
@@ -115,6 +117,9 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     this.chunks = .init(alloc);
     this.chunk_mesh_loaded = .init(alloc);
+    try this.world_gen.init(alloc);
+    errdefer this.world_gen.deinit();
+
     try this.loadChunks(alloc);
 
     try this.chunk_mesh_alloc.init(.{
@@ -123,21 +128,19 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     });
     errdefer this.chunk_mesh_alloc.deinit();
 
-    {
-        try this.chunk_mesher.init(.{
-            .mesh_alloc = &this.chunk_mesh_alloc,
-            .alloc = alloc,
-            .chunks = &this.chunks,
-            .loaded_meshes = &this.chunk_mesh_loaded,
-        });
-
-        try this.chunk_mesher.thread_info.queue.ensureUnusedCapacity(alloc, this.chunks.count());
-        var iter = this.chunks.iterator();
-        while (iter.next()) |kv| {
-            this.chunk_mesher.thread_info.queue.pushBackAssumeCapacity(kv.key_ptr.*);
-        }
-    }
+    try this.chunk_mesher.init(.{
+        .mesh_alloc = &this.chunk_mesh_alloc,
+        .alloc = alloc,
+        .chunks = &this.chunks,
+        .loaded_meshes = &this.chunk_mesh_loaded,
+    });
     errdefer this.chunk_mesher.deinit();
+
+    try this.chunk_mesher.thread_info.queue.ensureUnusedCapacity(alloc, this.chunks.count());
+    var iter = this.chunks.iterator();
+    while (iter.next()) |kv| {
+        this.chunk_mesher.thread_info.queue.pushBackAssumeCapacity(kv.key_ptr.*);
+    }
 
     this.chunk_face_lookup = try this.device.initBuffer(.{
         .alloc = alloc,
@@ -191,7 +194,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.last_cursor = .{ 0, 0 };
     this.dirty_swapchain = false;
     this.camera = .{
-        .pos = .{ 0, 0, 23 },
+        .pos = .{ 0, 0, 35 },
         .euler = .{ 0, 0, 0 },
         .v_fov = math.rad(90.0),
         .near = 0.1,
@@ -205,6 +208,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.chunk_mesh_loaded.deinit();
     this.chunk_mesher.deinit();
     this.chunk_mesh_alloc.deinit();
+    this.world_gen.deinit();
 
     var chunk_iter = this.chunks.iterator();
     while (chunk_iter.next()) |chunk| {
@@ -242,7 +246,7 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
                 const pos: Chunk.ChunkPos = .{ x, y, z };
                 timer.reset();
                 const chunk = try alloc.create(Chunk);
-                chunk.init(pos);
+                try this.world_gen.generate(chunk, pos);
                 gen_time_ns += timer.read();
 
                 try this.chunks.put(pos, chunk);

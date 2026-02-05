@@ -35,39 +35,6 @@ pub const BlockId = enum(u2) {
     }
 };
 
-pub fn init(this: *Chunk, chunk_pos: ChunkPos) void {
-    const pos = chunk_pos * @as(BlockPos, @splat(len));
-
-    var iter: Iterator = .{};
-    while (iter.next()) |chunk_rel| {
-        const block_pos = pos + @as(BlockPos, @intCast(chunk_rel));
-        const f_block_pos: math.Vec3 = @floatFromInt(block_pos);
-        const x, const y, _ = f_block_pos;
-        const nx = x / 50;
-        const ny = y / 50;
-
-        // const height_diff: f32 = @sin(
-        //     x / 4,
-        // ) * 2 + @sin(
-        //     y / 16,
-        // ) * 6 + 5 * @sin(
-        //     (x + @sin(x)) / 50,
-        // );
-
-        const m = @sin(x / 50 + (y / 70) * @sin(x / 100));
-
-        const height_diff: f32 = 8 * (@sin((nx + 3 * ny) + 3 * @sin((3 * nx - ny) + @sin(nx + ny / 2))) + @sin(9 * nx) / 3) + 20 * (m * m * m * m * m);
-
-        const grass_height: i32 = @as(i32, @intFromFloat(height_diff)) + 16;
-
-        this.setBlock(chunk_rel, switch (std.math.order(block_pos[2], grass_height)) {
-            .gt => .air,
-            .eq => .grass,
-            .lt => .stone,
-        });
-    }
-}
-
 pub inline fn getBlock(this: *const Chunk, pos: Pos) BlockId {
     return this.blocks[pos[2]][pos[1]][pos[0]];
 }
