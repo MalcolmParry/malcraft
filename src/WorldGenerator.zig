@@ -2,16 +2,20 @@ const std = @import("std");
 const mw = @import("mwengine");
 const math = mw.math;
 const Chunk = @import("Chunk.zig");
+const ChunkMesher = @import("ChunkMesher.zig");
+const Deque = @import("deque.zig").Deque;
 
 const WorldGenerator = @This();
 const i32x2 = @Vector(2, i32);
 const ChunkHeightMap = [Chunk.len][Chunk.len]i32;
 height_map: std.AutoHashMapUnmanaged(i32x2, *ChunkHeightMap),
+queue: Deque(Chunk.ChunkPos),
 alloc: std.mem.Allocator,
 
 pub fn init(gen: *WorldGenerator, alloc: std.mem.Allocator) !void {
     gen.* = .{
         .height_map = .empty,
+        .queue = .empty,
         .alloc = alloc,
     };
 }
@@ -20,6 +24,27 @@ pub fn deinit(gen: *WorldGenerator) void {
     var iter = gen.height_map.iterator();
     while (iter.next()) |kv| gen.alloc.destroy(kv.value_ptr.*);
     gen.height_map.deinit(gen.alloc);
+    gen.queue.deinit(gen.alloc);
+}
+
+pub fn genMany(
+    gen: *WorldGenerator,
+    chunks: *std.AutoHashMap(Chunk.ChunkPos, Chunk),
+    mesher: *ChunkMesher,
+) !void {
+    try mesher.thread_info.queue.ensureUnusedCapacity(gen.alloc, gen.queue.len);
+
+    var iter = gen.queue.iterator();
+    while (iter.next()) |pos| {
+        const chunk = try gen.generate(pos);
+        try chunks.put(pos, chunk);
+        switch (chunk.data) {
+            .single => |block| if (block == .air) continue,
+            else => {},
+        }
+
+        mesher.thread_info.queue.pushBackAssumeCapacity(pos);
+    }
 }
 
 pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.ChunkPos) !Chunk {

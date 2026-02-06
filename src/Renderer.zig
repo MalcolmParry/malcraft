@@ -120,8 +120,6 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     try this.world_gen.init(alloc);
     errdefer this.world_gen.deinit();
 
-    try this.loadChunks();
-
     try this.chunk_mesh_alloc.init(.{
         .device = this.device,
         .alloc = alloc,
@@ -136,22 +134,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     });
     errdefer this.chunk_mesher.deinit();
 
-    try this.chunk_mesher.thread_info.queue.ensureUnusedCapacity(alloc, this.chunks.count());
-    var iter = this.chunks.iterator();
-    while (iter.next()) |kv| {
-        this.chunk_mesher.thread_info.queue.pushBackAssumeCapacity(kv.key_ptr.*);
-    }
-
-    {
-        const queue = this.chunk_mesher.thread_info.queue.buffer[0..this.chunk_mesher.thread_info.queue.len];
-        std.mem.sort(Chunk.ChunkPos, queue, {}, struct {
-            fn lessThanFn(_: void, left: Chunk.ChunkPos, right: Chunk.ChunkPos) bool {
-                const f_left: math.Vec3 = @floatFromInt(left);
-                const f_right: math.Vec3 = @floatFromInt(right);
-                return math.lengthSqr(f_left) < math.lengthSqr(f_right);
-            }
-        }.lessThanFn);
-    }
+    try this.loadChunks(alloc);
 
     this.chunk_face_lookup = try this.device.initBuffer(.{
         .alloc = alloc,
@@ -243,30 +226,38 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     std.log.info("mean fps {}", .{fps});
 }
 
-fn loadChunks(this: *@This()) !void {
+fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
     const render_radius = if (options.runtime_safety) 3 else 32;
     const vertical_render_radius = if (options.runtime_safety) 1 else 5;
-    var gen_time_ns: usize = 0;
-    var timer = try std.time.Timer.start();
+    const chunk_count = (render_radius * 2 + 1) * (render_radius * 2 + 1) * (vertical_render_radius * 2 + 1);
 
-    var z: i32 = -vertical_render_radius;
-    while (z <= vertical_render_radius) : (z += 1) {
+    try this.world_gen.queue.ensureUnusedCapacity(alloc, chunk_count);
+    var z: i32 = vertical_render_radius;
+    while (z >= -vertical_render_radius) : (z -= 1) {
         var y: i32 = -render_radius;
         while (y <= render_radius) : (y += 1) {
             var x: i32 = -render_radius;
             while (x <= render_radius) : (x += 1) {
                 const pos: Chunk.ChunkPos = .{ x, y, z };
-                timer.reset();
-                const chunk = try this.world_gen.generate(pos);
-                gen_time_ns += timer.read();
-
-                try this.chunks.put(pos, chunk);
+                try this.world_gen.queue.pushBack(alloc, pos);
+                try this.chunk_mesher.thread_info.queue.pushBack(alloc, pos);
             }
         }
     }
 
-    std.log.info("chunk gen time: {} ns", .{gen_time_ns});
-    std.log.info("chunk count {}", .{this.chunks.count()});
+    const queue = this.world_gen.queue.buffer[0..this.chunk_mesher.thread_info.queue.len];
+    std.mem.sort(Chunk.ChunkPos, queue, {}, struct {
+        fn lessThanFn(_: void, left: Chunk.ChunkPos, right: Chunk.ChunkPos) bool {
+            const f_left: math.Vec3 = @floatFromInt(left);
+            const f_right: math.Vec3 = @floatFromInt(right);
+            return math.lengthSqr(f_left) < math.lengthSqr(f_right);
+        }
+    }.lessThanFn);
+
+    var timer: std.time.Timer = try .start();
+    try this.world_gen.genMany(&this.chunks, &this.chunk_mesher);
+    std.log.info("world gen time: {} ns", .{timer.read()});
+    std.log.info("chunk count {}", .{chunk_count});
 }
 
 pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {

@@ -32,6 +32,8 @@ loaded_meshes: *std.AutoArrayHashMap(Chunk.ChunkPos, GpuLoaded),
 meshing_buffer: []PerFace,
 per_thread: []PerThread,
 
+meshing_time_ns: u64,
+
 pub const InitInfo = struct {
     alloc: std.mem.Allocator,
     mesh_alloc: *ChunkMeshAllocator,
@@ -44,6 +46,7 @@ pub fn init(this: *ChunkMesher, info: InitInfo) !void {
     this.arena = .init(info.alloc);
     this.mesh_alloc = info.mesh_alloc;
     this.loaded_meshes = info.loaded_meshes;
+    this.meshing_time_ns = 0;
 
     const thread_count: u8 = @min(255, @max(1, std.Thread.getCpuCount() catch 1));
     this.threads = try info.alloc.alloc(std.Thread, thread_count);
@@ -79,6 +82,7 @@ pub fn init(this: *ChunkMesher, info: InitInfo) !void {
 }
 
 pub fn deinit(this: *ChunkMesher) void {
+    std.log.info("chunk mesh time {} ns", .{this.meshing_time_ns});
     this.thread_info.shutdown();
 
     for (this.threads) |thread| {
@@ -96,6 +100,9 @@ pub fn deinit(this: *ChunkMesher) void {
 const target_mesh_time_ns = 4_000_000;
 const max_chunks_meshed = 500;
 pub fn meshMany(this: *ChunkMesher) !void {
+    var timer: std.time.Timer = try .start();
+    defer this.meshing_time_ns += timer.read();
+
     _ = this.arena.reset(.retain_capacity);
     const arena = this.arena.allocator();
 
@@ -232,9 +239,17 @@ fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
 }
 
 pub fn mesh(faces: *std.ArrayList(PerFace), chunk: Chunk, adjacent_chunks: *const AdjacentChunks) void {
-    switch (chunk.data) {
-        .single => |single| if (single == .air) return,
-        .one_to_one => {},
+    if (chunk.allAir()) return;
+    if (chunk.allOpaque()) {
+        const adjacent_all_opaque = blk: for (adjacent_chunks) |maybe_chunk| {
+            if (maybe_chunk) |adjacent| {
+                if (!adjacent.allOpaque())
+                    break :blk false;
+            } else break :blk false;
+        } else true;
+
+        if (adjacent_all_opaque)
+            return;
     }
 
     var iter: Chunk.Iterator = .{};

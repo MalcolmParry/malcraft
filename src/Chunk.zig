@@ -63,6 +63,21 @@ pub inline fn setBlock(chunk: *Chunk, pos: Pos, val: BlockId) void {
     }
 }
 
+pub fn allAir(chunk: *const Chunk) bool {
+    return switch (chunk.data) {
+        .single => |block| block == .air,
+        .one_to_one => false,
+    };
+}
+
+pub fn allOpaque(chunk: *const Chunk) bool {
+    return switch (chunk.data) {
+        .single => |block| block.isOpaque(),
+        // TODO: handle this case
+        else => false,
+    };
+}
+
 pub const Iterator = struct {
     pos: @Vector(3, u8) = @splat(0),
 
