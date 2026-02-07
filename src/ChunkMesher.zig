@@ -28,7 +28,6 @@ arena: std.heap.ArenaAllocator,
 mesh_alloc: *ChunkMeshAllocator,
 thread_info: MeshThreadInfo,
 threads: []std.Thread,
-loaded_meshes: *std.AutoArrayHashMap(Chunk.ChunkPos, GpuLoaded),
 meshing_buffer: []PerFace,
 per_thread: []PerThread,
 
@@ -38,14 +37,12 @@ pub const InitInfo = struct {
     alloc: std.mem.Allocator,
     mesh_alloc: *ChunkMeshAllocator,
     chunks: *const std.AutoHashMap(Chunk.ChunkPos, Chunk),
-    loaded_meshes: *std.AutoArrayHashMap(Chunk.ChunkPos, GpuLoaded),
 };
 
 pub fn init(this: *ChunkMesher, info: InitInfo) !void {
     this.alloc = info.alloc;
     this.arena = .init(info.alloc);
     this.mesh_alloc = info.mesh_alloc;
-    this.loaded_meshes = info.loaded_meshes;
     this.meshing_time_ns = 0;
 
     const thread_count: u8 = @min(255, @max(1, std.Thread.getCpuCount() catch 1));
@@ -98,7 +95,7 @@ pub fn deinit(this: *ChunkMesher) void {
 }
 
 const target_mesh_time_ns = 4_000_000;
-const max_chunks_meshed = 500;
+const max_chunks_meshed = 1000;
 pub fn meshMany(this: *ChunkMesher) !void {
     var timer: std.time.Timer = try .start();
     defer this.meshing_time_ns += timer.read();
@@ -116,29 +113,18 @@ pub fn meshMany(this: *ChunkMesher) !void {
     const completed = this.thread_info.completed.load(.monotonic);
     const all_faces = this.thread_info.faces[0..completed];
 
-    var mesh_count: usize = 0;
-    for (all_faces) |faces| {
-        if (faces.len == 0) continue;
-        mesh_count += 1;
-    }
-
-    const loaded_meshes = try arena.alloc(GpuLoaded, mesh_count);
-    const non_empty_faces = try arena.alloc([]PerFace, mesh_count);
-
-    try this.loaded_meshes.ensureUnusedCapacity(mesh_count);
+    try this.mesh_alloc.ensureCapacity(completed);
     var index: usize = 0;
     for (all_faces, 0..) |faces, full_i| {
         if (faces.len == 0) continue;
 
         const pos = this.thread_info.queue.at(full_i);
-        const loaded_mesh = try this.mesh_alloc.allocate(faces.len);
-        this.loaded_meshes.putAssumeCapacity(pos, loaded_mesh);
-        loaded_meshes[index] = loaded_mesh;
-        non_empty_faces[index] = faces;
+        try this.mesh_alloc.writeChunkAssumeCapacity(faces, pos);
         index += 1;
     }
 
-    try this.mesh_alloc.writeChunks(loaded_meshes, non_empty_faces);
+    std.debug.assert(index <= completed);
+    std.debug.assert(completed <= this.thread_info.queue.len);
     for (this.per_thread) |*x| _ = x.arena.reset(.retain_capacity);
     this.thread_info.queue.head += completed;
     this.thread_info.queue.head %= this.thread_info.queue.buffer.len;

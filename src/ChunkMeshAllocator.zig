@@ -3,17 +3,20 @@ const mw = @import("mwengine");
 const gpu = mw.gpu;
 const math = mw.math;
 const ChunkMesher = @import("ChunkMesher.zig");
+const Chunk = @import("Chunk.zig");
 
 const ChunkMeshAllocator = @This();
 pub const buffer_size = 1024 * 1024 * 512;
 pub const staging_size = 1024 * 1024 * 32;
 
 staging: gpu.Buffer,
+staging_face_offset: gpu.Size,
 mapping: []ChunkMesher.PerFace,
 buffer: gpu.Buffer,
 free_list: std.DoublyLinkedList,
 alloc: std.mem.Allocator,
 device: gpu.Device,
+loaded_meshes: std.AutoArrayHashMapUnmanaged(Chunk.ChunkPos, ChunkMesher.GpuLoaded),
 buffer_copy_src: std.ArrayList(gpu.Buffer.Region),
 buffer_copy_dst: std.ArrayList(gpu.Buffer.Region),
 memory_barriers: std.ArrayList(gpu.CommandEncoder.MemoryBarrier),
@@ -70,6 +73,8 @@ pub fn init(this: *ChunkMeshAllocator, info: InitInfo) !void {
     this.buffer_copy_src = .empty;
     this.buffer_copy_dst = .empty;
     this.memory_barriers = .empty;
+    this.loaded_meshes = .empty;
+    this.staging_face_offset = 0;
 }
 
 pub fn deinit(this: *ChunkMeshAllocator) void {
@@ -86,62 +91,65 @@ pub fn deinit(this: *ChunkMeshAllocator) void {
     this.buffer.deinit(this.device, this.alloc);
     this.staging.unmap(this.device);
     this.staging.deinit(this.device, this.alloc);
+    this.loaded_meshes.deinit(this.alloc);
 }
 
-pub fn writeChunks(this: *ChunkMeshAllocator, on_gpu: []ChunkMesher.GpuLoaded, on_cpu: []const []const ChunkMesher.PerFace) !void {
-    std.debug.assert(on_gpu.len == on_cpu.len);
+pub fn ensureCapacity(mesh_alloc: *ChunkMeshAllocator, count: usize) !void {
+    try mesh_alloc.buffer_copy_src.ensureUnusedCapacity(mesh_alloc.alloc, count);
+    try mesh_alloc.buffer_copy_dst.ensureUnusedCapacity(mesh_alloc.alloc, count);
+    try mesh_alloc.memory_barriers.ensureUnusedCapacity(mesh_alloc.alloc, count);
+    try mesh_alloc.loaded_meshes.ensureUnusedCapacity(mesh_alloc.alloc, count);
+}
 
-    try this.buffer_copy_src.ensureUnusedCapacity(this.alloc, on_gpu.len);
-    try this.buffer_copy_dst.ensureUnusedCapacity(this.alloc, on_gpu.len);
-    try this.memory_barriers.ensureUnusedCapacity(this.alloc, on_gpu.len);
+pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const ChunkMesher.PerFace, pos: Chunk.ChunkPos) !void {
+    const on_gpu = try this.allocate(on_cpu.len);
 
-    var face: usize = 0;
-    for (on_cpu, on_gpu) |x, y| {
-        const offset_bytes = face * @sizeOf(ChunkMesher.PerFace);
-        const size_bytes = y.face_count * @sizeOf(ChunkMesher.PerFace);
+    const staging_offset_bytes = this.staging_face_offset * @sizeOf(ChunkMesher.PerFace);
+    const size_bytes = on_gpu.face_count * @sizeOf(ChunkMesher.PerFace);
 
-        if (offset_bytes + size_bytes >= staging_size) @panic("staging buffer overflow");
-        @memcpy(this.mapping[face .. face + x.len], x);
+    if (staging_offset_bytes + size_bytes >= staging_size) @panic("staging buffer overflow");
+    @memcpy(this.mapping[this.staging_face_offset .. this.staging_face_offset + on_cpu.len], on_cpu);
 
-        this.buffer_copy_src.appendAssumeCapacity(.{
-            .buffer = this.staging,
-            .offset = face * @sizeOf(ChunkMesher.PerFace),
-            .size_or_whole = .{ .size = size_bytes },
-        });
+    this.buffer_copy_src.appendAssumeCapacity(.{
+        .buffer = this.staging,
+        .offset = staging_offset_bytes,
+        .size_or_whole = .{ .size = size_bytes },
+    });
 
-        const dst: gpu.Buffer.Region = .{
-            .buffer = this.buffer,
-            .offset = y.face_offset * @sizeOf(ChunkMesher.PerFace),
-            .size_or_whole = .{ .size = size_bytes },
-        };
-        this.buffer_copy_dst.appendAssumeCapacity(dst);
+    const dst: gpu.Buffer.Region = .{
+        .buffer = this.buffer,
+        .offset = on_gpu.face_offset * @sizeOf(ChunkMesher.PerFace),
+        .size_or_whole = .{ .size = size_bytes },
+    };
+    this.buffer_copy_dst.appendAssumeCapacity(dst);
 
-        this.memory_barriers.appendAssumeCapacity(.{ .buffer = .{
-            .region = dst,
-            .src_stage = .{ .transfer = true },
-            .dst_stage = .{ .vertex_input = true },
-            .src_access = .{ .transfer_write = true },
-            .dst_access = .{ .vertex_read = true },
-        } });
+    this.memory_barriers.appendAssumeCapacity(.{ .buffer = .{
+        .region = dst,
+        .src_stage = .{ .transfer = true },
+        .dst_stage = .{ .vertex_input = true },
+        .src_access = .{ .transfer_write = true },
+        .dst_access = .{ .vertex_read = true },
+    } });
+    this.loaded_meshes.putAssumeCapacityNoClobber(pos, on_gpu);
 
-        face += x.len;
-    }
+    this.staging_face_offset += on_cpu.len;
 }
 
 pub fn upload(this: *ChunkMeshAllocator, device: gpu.Device, cmd_encoder: gpu.CommandEncoder) !void {
     std.debug.assert(this.buffer_copy_src.items.len == this.buffer_copy_dst.items.len);
-
-    for (this.buffer_copy_src.items, this.buffer_copy_dst.items) |src, dst| {
-        cmd_encoder.cmdCopyBuffer(device, src, dst);
-    }
+    std.debug.assert(this.buffer_copy_src.items.len == this.memory_barriers.items.len);
 
     if (this.buffer_copy_src.items.len != 0) {
-        try cmd_encoder.cmdMemoryBarrier(this.device, this.memory_barriers.items, this.alloc);
-    }
+        for (this.buffer_copy_src.items, this.buffer_copy_dst.items) |src, dst| {
+            cmd_encoder.cmdCopyBuffer(device, src, dst);
+        }
 
-    this.buffer_copy_src.clearRetainingCapacity();
-    this.buffer_copy_dst.clearRetainingCapacity();
-    this.memory_barriers.clearRetainingCapacity();
+        try cmd_encoder.cmdMemoryBarrier(this.device, this.memory_barriers.items, this.alloc);
+        this.buffer_copy_src.clearRetainingCapacity();
+        this.buffer_copy_dst.clearRetainingCapacity();
+        this.memory_barriers.clearRetainingCapacity();
+        this.staging_face_offset = 0;
+    }
 }
 
 pub fn allocate(this: *ChunkMeshAllocator, face_count: usize) !ChunkMesher.GpuLoaded {

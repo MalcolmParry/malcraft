@@ -24,7 +24,7 @@ pub fn build(b: *Build) !void {
     exe.root_module.addImport("mwengine", mwengine);
 
     const options = b.addOptions();
-    options.addOption(bool, "runtime_safety", optimize != .ReleaseFast);
+    options.addOption(bool, "gpu_validation", b.option(bool, "gpu_validation", "") orelse (optimize != .ReleaseFast));
     exe.root_module.addOptions("options", options);
 
     const exe_install = b.addInstallArtifact(exe, .{});

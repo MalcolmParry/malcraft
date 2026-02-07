@@ -38,11 +38,7 @@ pub fn genMany(
     while (iter.next()) |pos| {
         const chunk = try gen.generate(pos);
         try chunks.put(pos, chunk);
-        switch (chunk.data) {
-            .single => |block| if (block == .air) continue,
-            else => {},
-        }
-
+        if (chunk.allAir()) continue;
         mesher.thread_info.queue.pushBackAssumeCapacity(pos);
     }
 }

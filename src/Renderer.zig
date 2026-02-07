@@ -27,7 +27,6 @@ dirty_swapchain: bool,
 wireframe: bool,
 
 chunks: std.AutoHashMap(Chunk.ChunkPos, Chunk),
-chunk_mesh_loaded: std.AutoArrayHashMap(Chunk.ChunkPos, ChunkMesher.GpuLoaded),
 
 world_gen: WorldGenerator,
 chunk_mesh_alloc: ChunkMeshAllocator,
@@ -52,7 +51,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     errdefer this.window.deinit();
     try this.window.setCursorMode(.disabled);
 
-    this.instance = try .init(options.runtime_safety, alloc);
+    this.instance = try .init(options.gpu_validation, alloc);
     errdefer this.instance.deinit(alloc);
 
     const phys_device = try this.instance.bestPhysicalDevice();
@@ -116,7 +115,6 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     }
 
     this.chunks = .init(alloc);
-    this.chunk_mesh_loaded = .init(alloc);
     try this.world_gen.init(alloc);
     errdefer this.world_gen.deinit();
 
@@ -130,7 +128,6 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         .mesh_alloc = &this.chunk_mesh_alloc,
         .alloc = alloc,
         .chunks = &this.chunks,
-        .loaded_meshes = &this.chunk_mesh_loaded,
     });
     errdefer this.chunk_mesher.deinit();
 
@@ -199,7 +196,6 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.device.waitUntilIdle();
 
-    this.chunk_mesh_loaded.deinit();
     this.chunk_mesher.deinit();
     this.chunk_mesh_alloc.deinit();
     this.world_gen.deinit();
@@ -227,11 +223,12 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
 }
 
 fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
-    const render_radius = if (options.runtime_safety) 3 else 32;
-    const vertical_render_radius = if (options.runtime_safety) 1 else 5;
+    const render_radius = 32;
+    const vertical_render_radius = 5;
     const chunk_count = (render_radius * 2 + 1) * (render_radius * 2 + 1) * (vertical_render_radius * 2 + 1);
 
     try this.world_gen.queue.ensureUnusedCapacity(alloc, chunk_count);
+    try this.chunk_mesher.thread_info.queue.ensureUnusedCapacity(alloc, chunk_count);
     var z: i32 = vertical_render_radius;
     while (z >= -vertical_render_radius) : (z -= 1) {
         var y: i32 = -render_radius;
@@ -239,13 +236,12 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
             var x: i32 = -render_radius;
             while (x <= render_radius) : (x += 1) {
                 const pos: Chunk.ChunkPos = .{ x, y, z };
-                try this.world_gen.queue.pushBack(alloc, pos);
-                try this.chunk_mesher.thread_info.queue.pushBack(alloc, pos);
+                this.world_gen.queue.pushBackAssumeCapacity(pos);
             }
         }
     }
 
-    const queue = this.world_gen.queue.buffer[0..this.chunk_mesher.thread_info.queue.len];
+    const queue = this.world_gen.queue.buffer[0..this.world_gen.queue.len];
     std.mem.sort(Chunk.ChunkPos, queue, {}, struct {
         fn lessThanFn(_: void, left: Chunk.ChunkPos, right: Chunk.ChunkPos) bool {
             const f_left: math.Vec3 = @floatFromInt(left);
@@ -438,7 +434,7 @@ fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constant
     const ar = @abs(right);
     const au = @abs(up);
 
-    var chunk_mesh_iter = this.chunk_mesh_loaded.iterator();
+    var chunk_mesh_iter = this.chunk_mesh_alloc.loaded_meshes.iterator();
     while (chunk_mesh_iter.next()) |kv| {
         const pos: math.Vec3 = @floatFromInt(kv.key_ptr.* * Chunk.size);
         const chunk_size_f = math.i2f(math.Vec3, Chunk.size);
