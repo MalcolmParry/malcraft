@@ -31,7 +31,6 @@ chunks: std.AutoHashMap(Chunk.ChunkPos, Chunk),
 world_gen: WorldGenerator,
 chunk_mesh_alloc: ChunkMeshAllocator,
 chunk_mesher: ChunkMesher,
-chunk_face_lookup: gpu.Buffer,
 chunk_resource_layout: gpu.ResourceSet.Layout,
 chunk_resource_set: gpu.ResourceSet,
 chunk_shader_vertex: gpu.Shader,
@@ -133,42 +132,14 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     try this.loadChunks(alloc);
 
-    this.chunk_face_lookup = try this.device.initBuffer(.{
-        .alloc = alloc,
-        .loc = .device,
-        .usage = .{
-            .uniform = true,
-            .dst = true,
-        },
-        .size = @sizeOf(@TypeOf(ChunkMesher.face_table)),
-    });
-    try this.destruct_queue.append(alloc, .{ .buffer = this.chunk_face_lookup });
-
-    try this.device.setBufferRegions(
-        &.{this.chunk_face_lookup.region()},
-        &.{std.mem.sliceAsBytes(&ChunkMesher.face_table)},
-    );
-
     this.chunk_resource_layout = try .init(this.device, .{
         .alloc = alloc,
-        .descriptors = &.{
-            .{
-                .t = .uniform,
-                .stages = .{ .vertex = true },
-                .binding = 0,
-                .count = 1,
-            },
-        },
+        .descriptors = &.{},
     });
     try this.destruct_queue.append(alloc, .{ .resource_layout = this.chunk_resource_layout });
 
     this.chunk_resource_set = try .init(this.device, this.chunk_resource_layout, alloc);
     try this.destruct_queue.append(alloc, .{ .resource_set = this.chunk_resource_set });
-
-    try this.chunk_resource_set.update(this.device, &.{.{
-        .binding = 0,
-        .data = .{ .uniform = &.{this.chunk_face_lookup.region()} },
-    }}, alloc);
 
     this.chunk_shader_vertex = try makeShader(this, alloc, "res/shaders/chunk_opaque.vert.spv", .vertex);
     try this.destruct_queue.append(alloc, .{ .shader = this.chunk_shader_vertex });
@@ -575,7 +546,7 @@ fn initChunkPipeline(this: *Renderer, alloc: std.mem.Allocator) !void {
             },
         }},
         .polygon_mode = if (this.wireframe) .line else .fill,
-        .cull_mode = .front,
+        .cull_mode = .back,
         .depth_mode = .{
             .testing = true,
             .writing = true,

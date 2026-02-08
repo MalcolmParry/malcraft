@@ -256,10 +256,6 @@ pub fn mesh(faces: *std.ArrayList(GreedyQuad), chunk: Chunk, adjacent_chunks: *c
             const face_dir: FaceDir = @enumFromInt(i);
             const adjacent = ipos + offset;
             if (isOpaqueSafe(chunk, adjacent_chunks, adjacent)) continue;
-            switch (face_dir) {
-                .north, .east => {},
-                else => continue,
-            }
 
             const face: GreedyQuad = .{
                 .block_id = block,
@@ -332,33 +328,4 @@ pub const FaceDir = enum(u3) {
         .{ 0, 0, 1 },
         .{ 0, 0, -1 },
     };
-};
-
-const normal_face: [6]@Vector(3, f32) = .{
-    .{ 0, -0.5, -0.5 },
-    .{ 0, 0.5, -0.5 },
-    .{ 0, 0.5, 0.5 },
-
-    .{ 0, -0.5, -0.5 },
-    .{ 0, 0.5, 0.5 },
-    .{ 0, -0.5, 0.5 },
-};
-
-pub const face_table = blk: {
-    var result: [6][6][4]f32 = undefined;
-
-    for (FaceDir.quat_table, 0..) |q, i| {
-        for (0..6) |ii| {
-            const f_offset: math.Vec3 = @floatFromInt(FaceDir.direction_table[i]);
-            const half_offset = f_offset / @as(math.Vec3, @splat(2.0));
-
-            var vert = normal_face[ii];
-            vert = math.quatMulVec(q, vert);
-            vert += half_offset;
-            const vec4 = math.changeSize(4, vert);
-            result[i][ii] = math.toArray(vec4);
-        }
-    }
-
-    break :blk result;
 };

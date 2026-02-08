@@ -4,20 +4,69 @@
 
 #include "core.hglsl"
 
+#define NORTH 0
+#define SOUTH 1
+#define EAST  2
+#define WEST  3
+#define UP    4
+#define DOWN  5
+
 layout(location = 0) toPixel flat uint pPacked;
 
 #ifdef _VERTEX
 
 layout(location=0) in uint iPacked;
-layout(set=0,binding=0) uniform UniformBufferObject {
-    vec3 face_table[6 * 6];
-} ubo;
 
 layout(push_constant) uniform PushConstants {
     mat4 vp;
     // 21 bits per component
     uint64_t packedChunkPos;
 } constants;
+
+ivec3 face_table[6 * 6] = {
+    // north
+    ivec3(1, 1, 0),
+    ivec3(1, 0, 0),
+    ivec3(1, 0, 1),
+    ivec3(1, 1, 0),
+    ivec3(1, 0, 1),
+    ivec3(1, 1, 1),
+    // south
+    ivec3(0, 0, 0),
+    ivec3(0, 1, 0),
+    ivec3(0, 1, 1),
+    ivec3(0, 0, 0),
+    ivec3(0, 1, 1),
+    ivec3(0, 0, 1),
+    //  east
+    ivec3(0, 1, 0),
+    ivec3(1, 1, 0),
+    ivec3(1, 1, 1),
+    ivec3(0, 1, 0),
+    ivec3(1, 1, 1),
+    ivec3(0, 1, 1),
+    // west
+    ivec3(0, 0, 0),
+    ivec3(1, 0, 1),
+    ivec3(1, 0, 0),
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 1),
+    ivec3(1, 0, 1),
+    // up
+    ivec3(0, 0, 1),
+    ivec3(0, 1, 1),
+    ivec3(1, 1, 1),
+    ivec3(0, 0, 1),
+    ivec3(1, 1, 1),
+    ivec3(1, 0, 1),
+    // down
+    ivec3(0, 0, 0),
+    ivec3(1, 1, 0),
+    ivec3(0, 1, 0),
+    ivec3(0, 0, 0),
+    ivec3(1, 0, 0),
+    ivec3(1, 1, 0),
+};
 
 int unpackI21(uint64_t packed, uint shift) {
     uint raw = uint(packed >> shift);
@@ -33,8 +82,8 @@ void main() {
         (iPacked >> 10) & 0x1f,
         (iPacked >> 15) & 0x1f
     );
-    // int w = (iPacked >> 20) & 0x3f;
-    // int h = (iPacked >> 26) & 0x3f;
+    // uint w = (iPacked >> 20) & 0x3f;
+    // uint h = (iPacked >> 26) & 0x3f;
 
     ivec3 chunk_pos = ivec3(
         unpackI21(constants.packedChunkPos,  0),
@@ -43,7 +92,7 @@ void main() {
     );
 
     ivec3 block_pos = ivec3(rel_pos) + chunk_pos * 32;
-    vec3 face_pos = ubo.face_table[face * 6 + gl_VertexIndex];
+    vec3 face_pos = face_table[face * 6 + gl_VertexIndex];
 
     gl_Position = constants.vp * vec4(face_pos + vec3(block_pos), 1);
     pPacked = face | (block << 3);
