@@ -26,13 +26,15 @@ int unpackI21(uint64_t packed, uint shift) {
 }
 
 void main() {
+    uint block = (iPacked >> 00) & 0x03;
+    uint face =  (iPacked >> 02) & 0x07;
     uvec3 rel_pos = uvec3(
-        (iPacked >> 00) & 0x1f,
         (iPacked >> 05) & 0x1f,
-        (iPacked >> 10) & 0x1f
+        (iPacked >> 10) & 0x1f,
+        (iPacked >> 15) & 0x1f
     );
-    uint face =  (iPacked >> 15) & 0x07;
-    uint block = (iPacked >> 18) & 0x03;
+    // int w = (iPacked >> 20) & 0x3f;
+    // int h = (iPacked >> 26) & 0x3f;
 
     ivec3 chunk_pos = ivec3(
         unpackI21(constants.packedChunkPos,  0),

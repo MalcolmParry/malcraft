@@ -223,8 +223,8 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
 }
 
 fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
-    const render_radius = 32;
-    const vertical_render_radius = 5;
+    const render_radius = 3;
+    const vertical_render_radius = 1;
     const chunk_count = (render_radius * 2 + 1) * (render_radius * 2 + 1) * (vertical_render_radius * 2 + 1);
 
     try this.world_gen.queue.ensureUnusedCapacity(alloc, chunk_count);

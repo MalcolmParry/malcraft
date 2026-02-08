@@ -11,7 +11,7 @@ pub const staging_size = 1024 * 1024 * 32;
 
 staging: gpu.Buffer,
 staging_face_offset: gpu.Size,
-mapping: []ChunkMesher.PerFace,
+mapping: []ChunkMesher.GreedyQuad,
 buffer: gpu.Buffer,
 free_list: std.DoublyLinkedList,
 alloc: std.mem.Allocator,
@@ -44,8 +44,8 @@ pub fn init(this: *ChunkMeshAllocator, info: InitInfo) !void {
     errdefer this.staging.deinit(info.device, info.alloc);
 
     const byte_mapping = try this.staging.map(info.device);
-    const face_mapping: [*]ChunkMesher.PerFace = @ptrCast(@alignCast(byte_mapping));
-    this.mapping = face_mapping[0 .. staging_size / @sizeOf(ChunkMesher.PerFace)];
+    const face_mapping: [*]ChunkMesher.GreedyQuad = @ptrCast(@alignCast(byte_mapping));
+    this.mapping = face_mapping[0 .. staging_size / @sizeOf(ChunkMesher.GreedyQuad)];
 
     this.buffer = try .init(info.device, .{
         .alloc = info.alloc,
@@ -101,11 +101,11 @@ pub fn ensureCapacity(mesh_alloc: *ChunkMeshAllocator, count: usize) !void {
     try mesh_alloc.loaded_meshes.ensureUnusedCapacity(mesh_alloc.alloc, count);
 }
 
-pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const ChunkMesher.PerFace, pos: Chunk.ChunkPos) !void {
+pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const ChunkMesher.GreedyQuad, pos: Chunk.ChunkPos) !void {
     const on_gpu = try this.allocate(on_cpu.len);
 
-    const staging_offset_bytes = this.staging_face_offset * @sizeOf(ChunkMesher.PerFace);
-    const size_bytes = on_gpu.face_count * @sizeOf(ChunkMesher.PerFace);
+    const staging_offset_bytes = this.staging_face_offset * @sizeOf(ChunkMesher.GreedyQuad);
+    const size_bytes = on_gpu.face_count * @sizeOf(ChunkMesher.GreedyQuad);
 
     if (staging_offset_bytes + size_bytes >= staging_size) @panic("staging buffer overflow");
     @memcpy(this.mapping[this.staging_face_offset .. this.staging_face_offset + on_cpu.len], on_cpu);
@@ -118,7 +118,7 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const Chunk
 
     const dst: gpu.Buffer.Region = .{
         .buffer = this.buffer,
-        .offset = on_gpu.face_offset * @sizeOf(ChunkMesher.PerFace),
+        .offset = on_gpu.face_offset * @sizeOf(ChunkMesher.GreedyQuad),
         .size_or_whole = .{ .size = size_bytes },
     };
     this.buffer_copy_dst.appendAssumeCapacity(dst);
@@ -152,8 +152,8 @@ pub fn upload(this: *ChunkMeshAllocator, device: gpu.Device, cmd_encoder: gpu.Co
     }
 }
 
-pub fn allocate(this: *ChunkMeshAllocator, face_count: usize) !ChunkMesher.GpuLoaded {
-    const byte_count = face_count * @sizeOf(ChunkMesher.PerFace);
+pub fn allocate(this: *ChunkMeshAllocator, quad_count: usize) !ChunkMesher.GpuLoaded {
+    const byte_count = quad_count * @sizeOf(ChunkMesher.GreedyQuad);
 
     var maybe_node = this.free_list.first;
     while (maybe_node) |node| : (maybe_node = node.next) {
@@ -161,7 +161,7 @@ pub fn allocate(this: *ChunkMeshAllocator, face_count: usize) !ChunkMesher.GpuLo
         if (free_region.size < byte_count) continue;
 
         const offset = free_region.offset;
-        const face_offset = offset / @sizeOf(ChunkMesher.PerFace);
+        const quad_offset = offset / @sizeOf(ChunkMesher.GreedyQuad);
 
         if (free_region.size == byte_count) {
             this.free_list.remove(node);
@@ -171,8 +171,8 @@ pub fn allocate(this: *ChunkMeshAllocator, face_count: usize) !ChunkMesher.GpuLo
         }
 
         return .{
-            .face_offset = @intCast(face_offset),
-            .face_count = @intCast(face_count),
+            .face_offset = @intCast(quad_offset),
+            .face_count = @intCast(quad_count),
         };
     }
 
