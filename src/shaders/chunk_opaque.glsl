@@ -82,8 +82,8 @@ void main() {
         (iPacked >> 10) & 0x1f,
         (iPacked >> 15) & 0x1f
     );
-    // uint w = (iPacked >> 20) & 0x3f;
-    // uint h = (iPacked >> 26) & 0x3f;
+    // uint w = ((iPacked >> 20) & 0x1f) + 1;
+    // uint h = ((iPacked >> 25) & 0x1f) + 1;
 
     ivec3 chunk_pos = ivec3(
         unpackI21(constants.packedChunkPos,  0),

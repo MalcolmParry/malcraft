@@ -20,10 +20,12 @@ pub const GreedyQuad = packed struct(u32) {
     x: u5,
     y: u5,
     z: u5,
-    // width and height currently ignored by shader
-    w: u6,
-    h: u6,
-    unused: u0 = undefined,
+    /// width and height currently ignored by shader
+    /// width  - 1 so range is 1-32
+    w: u5,
+    /// height - 1 so range is 1-32
+    h: u5,
+    unused: u2 = undefined,
 };
 
 alloc: std.mem.Allocator,
@@ -263,8 +265,8 @@ pub fn mesh(faces: *std.ArrayList(GreedyQuad), chunk: Chunk, adjacent_chunks: *c
                 .x = pos[0],
                 .y = pos[1],
                 .z = pos[2],
-                .w = 1,
-                .h = 1,
+                .w = 1 - 1,
+                .h = 1 - 1,
             };
             faces.appendAssumeCapacity(face);
         }
