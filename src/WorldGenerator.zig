@@ -29,15 +29,16 @@ pub fn deinit(gen: *WorldGenerator) void {
 
 pub fn genMany(
     gen: *WorldGenerator,
-    chunks: *std.AutoHashMap(Chunk.ChunkPos, Chunk),
+    chunks: *Chunk.Map,
     mesher: *ChunkMesher,
+    alloc: std.mem.Allocator,
 ) !void {
     try mesher.thread_info.queue.ensureUnusedCapacity(gen.alloc, gen.queue.len);
 
     var iter = gen.queue.iterator();
     while (iter.next()) |pos| {
         const chunk = try gen.generate(pos);
-        try chunks.put(pos, chunk);
+        try chunks.put(alloc, pos, chunk);
         if (chunk.allAir()) continue;
         mesher.thread_info.queue.pushBackAssumeCapacity(pos);
     }

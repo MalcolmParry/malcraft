@@ -23,7 +23,7 @@ layout(push_constant) uniform PushConstants {
     uint64_t packedChunkPos;
 } constants;
 
-ivec3 face_table[6 * 6] = {
+const ivec3 face_table[6 * 6] = {
     // north
     ivec3(1, 1, 0),
     ivec3(1, 0, 0),
@@ -104,15 +104,15 @@ void main() {
 
 layout(location = 0) out vec4 oColor;
 
-vec3 sunDir = normalize(vec3(-1, -2, 5));
+const vec3 sunDir = normalize(vec3(-1, -2, 5));
 
-vec3 color_lookup[3] = {
+const vec3 color_lookup[3] = {
     vec3(0.0, 0.0, 0.0),
     vec3(0.0, 1.0, 0.0),
     vec3(0.5, 0.5, 0.5),
 };
 
-// vec3 normal_lookup[6] = {
+// const vec3 normal_lookup[6] = {
 //     vec3( 1,  0,  0),
 //     vec3(-1,  0,  0),
 //     vec3( 0,  1,  0),
@@ -121,7 +121,7 @@ vec3 color_lookup[3] = {
 //     vec3( 0,  0, -1),
 // };
 
-float light_lookup[6] = {
+const float light_lookup[6] = {
     max(0, dot(vec3( 1,  0,  0), sunDir)) * 0.7 + 0.3,
     max(0, dot(vec3(-1,  0,  0), sunDir)) * 0.7 + 0.3,
     max(0, dot(vec3( 0,  1,  0), sunDir)) * 0.7 + 0.3,

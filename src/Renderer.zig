@@ -26,7 +26,7 @@ last_cursor: @Vector(2, f32),
 dirty_swapchain: bool,
 wireframe: bool,
 
-chunks: std.AutoHashMap(Chunk.ChunkPos, Chunk),
+chunks: Chunk.Map,
 
 world_gen: WorldGenerator,
 chunk_mesh_alloc: ChunkMeshAllocator,
@@ -113,7 +113,9 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         try fence.wait(this.device, std.time.ns_per_s);
     }
 
-    this.chunks = .init(alloc);
+    this.chunks = .empty;
+    errdefer this.chunks.deinit(alloc);
+
     try this.world_gen.init(alloc);
     errdefer this.world_gen.deinit();
 
@@ -175,7 +177,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     while (chunk_iter.next()) |kv| {
         kv.value_ptr.deinit(alloc);
     }
-    this.chunks.deinit();
+    this.chunks.deinit(alloc);
 
     this.deinitFramesInFlight(alloc);
     this.chunk_pipeline.deinit(this.device, alloc);
@@ -222,7 +224,7 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
     }.lessThanFn);
 
     var timer: std.time.Timer = try .start();
-    try this.world_gen.genMany(&this.chunks, &this.chunk_mesher);
+    try this.world_gen.genMany(&this.chunks, &this.chunk_mesher, alloc);
     std.log.info("world gen time: {} ns", .{timer.read()});
     std.log.info("chunk count {}", .{chunk_count});
 }

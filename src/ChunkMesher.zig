@@ -42,7 +42,7 @@ total_chunks_meshed: u64,
 pub const InitInfo = struct {
     alloc: std.mem.Allocator,
     mesh_alloc: *ChunkMeshAllocator,
-    chunks: *const std.AutoHashMap(Chunk.ChunkPos, Chunk),
+    chunks: *const Chunk.Map,
 };
 
 pub fn init(this: *ChunkMesher, info: InitInfo) !void {
@@ -151,7 +151,7 @@ const MeshThreadInfo = struct {
     index: std.atomic.Value(u32) align(cl) = .init(0),
     completed: std.atomic.Value(u32) align(cl) = .init(0),
     thread_count: u32 align(cl),
-    chunks: *const std.AutoHashMap(Chunk.ChunkPos, Chunk),
+    chunks: *const Chunk.Map,
     queue: Deque(Chunk.ChunkPos),
     faces: [][]GreedyQuad,
 
@@ -213,19 +213,19 @@ fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
             if (i >= info.faces.len) break;
 
             const pos = info.queue.at(i);
-            const chunk = info.chunks.get(pos).?;
 
-            const adjacent_chunks: AdjacentChunks = .{
-                info.chunks.get(pos + @as(Chunk.BlockPos, .{ 1, 0, 0 })),
-                info.chunks.get(pos + @as(Chunk.BlockPos, .{ -1, 0, 0 })),
-                info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 1, 0 })),
-                info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, -1, 0 })),
-                info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, 1 })),
-                info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, -1 })),
+            const refs: ChunkRefs = .{
+                .this = info.chunks.get(pos).?,
+                .north = info.chunks.get(pos + @as(Chunk.BlockPos, .{ 1, 0, 0 })),
+                .south = info.chunks.get(pos + @as(Chunk.BlockPos, .{ -1, 0, 0 })),
+                .east = info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 1, 0 })),
+                .west = info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, -1, 0 })),
+                .up = info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, 1 })),
+                .down = info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, -1 })),
             };
 
             faces.clearRetainingCapacity();
-            mesh(&faces, chunk, &adjacent_chunks);
+            mesh(&faces, refs);
             info.faces[i] = arena.dupe(GreedyQuad, faces.items) catch @panic("");
             completed += 1;
         }
@@ -234,10 +234,12 @@ fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
     }
 }
 
-pub fn mesh(faces: *std.ArrayList(GreedyQuad), chunk: Chunk, adjacent_chunks: *const AdjacentChunks) void {
+pub fn mesh(faces: *std.ArrayList(GreedyQuad), refs: ChunkRefs) void {
+    const chunk = refs.this;
+
     if (chunk.allAir()) return;
     if (chunk.allOpaque()) {
-        const adjacent_all_opaque = blk: for (adjacent_chunks) |maybe_chunk| {
+        const adjacent_all_opaque = blk: for (refs.adjacent()) |maybe_chunk| {
             if (maybe_chunk) |adjacent| {
                 if (!adjacent.allOpaque())
                     break :blk false;
@@ -257,7 +259,7 @@ pub fn mesh(faces: *std.ArrayList(GreedyQuad), chunk: Chunk, adjacent_chunks: *c
         for (FaceDir.direction_table, 0..) |offset, i| {
             const face_dir: FaceDir = @enumFromInt(i);
             const adjacent = ipos + offset;
-            if (isOpaqueSafe(chunk, adjacent_chunks, adjacent)) continue;
+            if (refs.isOpaqueSafe(adjacent)) continue;
 
             const face: GreedyQuad = .{
                 .block_id = block,
@@ -273,29 +275,60 @@ pub fn mesh(faces: *std.ArrayList(GreedyQuad), chunk: Chunk, adjacent_chunks: *c
     }
 }
 
-pub inline fn isOpaqueSafe(chunk: Chunk, adjacent_chunks: *const AdjacentChunks, pos: Chunk.BlockPos) bool {
-    inline for (0..3) |axis| {
-        if (pos[axis] < 0) {
-            if (adjacent_chunks[axis * 2 + 1]) |adjacent| {
-                const new_pos = pos + FaceDir.direction_table[axis * 2] * Chunk.size;
-                return adjacent.getBlock(@intCast(new_pos)).isOpaque();
-            }
+const ChunkRefs = struct {
+    this: Chunk,
+    north: ?Chunk,
+    south: ?Chunk,
+    east: ?Chunk,
+    west: ?Chunk,
+    up: ?Chunk,
+    down: ?Chunk,
 
-            return false;
-        }
-
-        if (pos[axis] >= Chunk.len) {
-            if (adjacent_chunks[axis * 2]) |adjacent| {
-                const new_pos = pos - FaceDir.direction_table[axis * 2] * Chunk.size;
-                return adjacent.getBlock(@intCast(new_pos)).isOpaque();
-            }
-
-            return false;
-        }
+    fn adjacent(refs: ChunkRefs) [6]?Chunk {
+        return .{
+            refs.north,
+            refs.south,
+            refs.east,
+            refs.west,
+            refs.up,
+            refs.down,
+        };
     }
 
-    return chunk.getBlock(@intCast(pos)).isOpaque();
-}
+    fn refFromFaceDir(refs: ChunkRefs, face_dir: FaceDir) ?Chunk {
+        return switch (face_dir) {
+            .north => refs.north,
+            .south => refs.south,
+            .east => refs.east,
+            .west => refs.west,
+            .up => refs.up,
+            .down => refs.down,
+        };
+    }
+
+    fn isOpaqueSafe(refs: ChunkRefs, pos: Chunk.BlockPos) bool {
+        inline for (0..3) |axis| {
+            const pos_dir: FaceDir = FaceDir.posDirFromAxis(axis);
+            const neg_dir = pos_dir.opposite();
+
+            if (pos[axis] < 0) {
+                return if (refs.refFromFaceDir(neg_dir)) |next|
+                    next.getBlock(@intCast(pos + pos_dir.dir() * Chunk.size)).isOpaque()
+                else
+                    false;
+            }
+
+            if (pos[axis] >= Chunk.len) {
+                return if (refs.refFromFaceDir(pos_dir)) |next|
+                    next.getBlock(@intCast(pos + neg_dir.dir() * Chunk.size)).isOpaque()
+                else
+                    false;
+            }
+        }
+
+        return refs.this.getBlock(@intCast(pos)).isOpaque();
+    }
+};
 
 pub const FaceDir = enum(u3) {
     north,
@@ -304,6 +337,21 @@ pub const FaceDir = enum(u3) {
     west,
     up,
     down,
+
+    pub inline fn posDirFromAxis(axis: u8) FaceDir {
+        return @enumFromInt(axis * 2);
+    }
+
+    pub inline fn opposite(face: FaceDir) FaceDir {
+        return switch (face) {
+            .north => .south,
+            .south => .north,
+            .east => .west,
+            .west => .east,
+            .up => .down,
+            .down => .up,
+        };
+    }
 
     pub inline fn quat(face: FaceDir) math.Quat {
         return quat_table[@intFromEnum(face)];

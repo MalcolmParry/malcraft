@@ -3,6 +3,7 @@ const mw = @import("mwengine");
 const math = mw.math;
 
 const Chunk = @This();
+pub const Map = std.AutoHashMapUnmanaged(ChunkPos, Chunk);
 pub const BlockPos = @Vector(3, i32);
 pub const ChunkPos = BlockPos;
 pub const T = u5;
