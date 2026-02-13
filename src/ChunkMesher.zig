@@ -212,20 +212,10 @@ fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
             const i = info.index.fetchAdd(1, .monotonic);
             if (i >= info.faces.len) break;
 
+            faces.clearRetainingCapacity();
             const pos = info.queue.at(i);
 
-            const refs: ChunkRefs = .{
-                .this = info.chunks.get(pos).?,
-                .north = info.chunks.get(pos + @as(Chunk.BlockPos, .{ 1, 0, 0 })),
-                .south = info.chunks.get(pos + @as(Chunk.BlockPos, .{ -1, 0, 0 })),
-                .east = info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 1, 0 })),
-                .west = info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, -1, 0 })),
-                .up = info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, 1 })),
-                .down = info.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, -1 })),
-            };
-
-            faces.clearRetainingCapacity();
-            mesh(&faces, refs);
+            greedyMeshWithFastExits(&faces, info.chunks, pos);
             info.faces[i] = arena.dupe(GreedyQuad, faces.items) catch @panic("");
             completed += 1;
         }
@@ -234,10 +224,20 @@ fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
     }
 }
 
-pub fn mesh(faces: *std.ArrayList(GreedyQuad), refs: ChunkRefs) void {
-    const chunk = refs.this;
-
+fn greedyMeshWithFastExits(quads: *std.ArrayList(GreedyQuad), chunks: *const Chunk.Map, pos: Chunk.ChunkPos) void {
+    const chunk = chunks.get(pos).?;
     if (chunk.allAir()) return;
+
+    const refs: ChunkRefs = .{
+        .this = chunk,
+        .north = chunks.get(pos + @as(Chunk.BlockPos, .{ 1, 0, 0 })),
+        .south = chunks.get(pos + @as(Chunk.BlockPos, .{ -1, 0, 0 })),
+        .east = chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 1, 0 })),
+        .west = chunks.get(pos + @as(Chunk.BlockPos, .{ 0, -1, 0 })),
+        .up = chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, 1 })),
+        .down = chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, -1 })),
+    };
+
     if (chunk.allOpaque()) {
         const adjacent_all_opaque = blk: for (refs.adjacent()) |maybe_chunk| {
             if (maybe_chunk) |adjacent| {
@@ -250,27 +250,77 @@ pub fn mesh(faces: *std.ArrayList(GreedyQuad), refs: ChunkRefs) void {
             return;
     }
 
-    var iter: Chunk.Iterator = .{};
-    while (iter.next()) |pos| {
-        const block = chunk.getBlock(pos);
-        if (block == .air) continue;
-        const ipos: Chunk.Pos = pos;
+    greedyMesh(quads, refs);
+}
 
-        for (FaceDir.direction_table, 0..) |offset, i| {
-            const face_dir: FaceDir = @enumFromInt(i);
-            const adjacent = ipos + offset;
-            if (refs.isOpaqueSafe(adjacent)) continue;
+// meshing algorithm from
+// https://youtu.be/qnGoGq7DWMc
+// https://github.com/TanTanDev/binary_greedy_mesher_demo
+const chunk_len_p = Chunk.len + 2;
+const Mask = u64;
+const MaskPlane = [chunk_len_p]Mask;
+fn greedyMesh(quads: *std.ArrayList(GreedyQuad), refs: ChunkRefs) void {
+    // first index is axis, second is how far along plane normal
+    var cols: [3][chunk_len_p]MaskPlane = @splat(@splat(@splat(0)));
 
-            const face: GreedyQuad = .{
-                .block_id = block,
-                .face_dir = face_dir,
-                .x = pos[0],
-                .y = pos[1],
-                .z = pos[2],
-                .w = 1 - 1,
-                .h = 1 - 1,
-            };
-            faces.appendAssumeCapacity(face);
+    for (0..chunk_len_p) |z| {
+        for (0..chunk_len_p) |y| {
+            for (0..chunk_len_p) |x| {
+                const pos_p: Chunk.BlockPos = .{ @intCast(x), @intCast(y), @intCast(z) };
+                const pos = pos_p - @as(Chunk.BlockPos, @splat(1));
+
+                if (refs.isOpaqueSafe(pos)) {
+                    // z,y - x axis
+                    cols[0][y][z] |= @as(Mask, 1) << @intCast(x);
+                    // x,z - y axis
+                    cols[1][z][x] |= @as(Mask, 1) << @intCast(y);
+                    // x,y - z axis
+                    cols[2][y][x] |= @as(Mask, 1) << @intCast(z);
+                }
+            }
+        }
+    }
+
+    var masks: [6][chunk_len_p]MaskPlane = undefined;
+    for (0..3) |axis| {
+        for (0..chunk_len_p) |z| {
+            for (0..chunk_len_p) |x| {
+                const col = cols[axis][z][x];
+                masks[axis * 2 + 0][z][x] = col & ~(col >> 1);
+                masks[axis * 2 + 1][z][x] = col & ~(col << 1);
+            }
+        }
+    }
+
+    for (0..6) |face_int| {
+        const face: FaceDir = @enumFromInt(face_int);
+
+        for (0..Chunk.len) |z| {
+            for (0..Chunk.len) |x| {
+                var col = (masks[face_int][z + 1][x + 1] >> 1) & 0xffff_ffff;
+
+                while (col != 0) {
+                    const y = @ctz(col);
+                    col &= col - 1;
+
+                    const pos_usize: @Vector(3, usize) = switch (face) {
+                        .north, .south => .{ y, z, x },
+                        .east, .west => .{ x, y, z },
+                        .up, .down => .{ x, z, y },
+                    };
+                    const pos: Chunk.Pos = @intCast(pos_usize);
+
+                    quads.appendAssumeCapacity(.{
+                        .block_id = refs.this.getBlock(pos),
+                        .face_dir = face,
+                        .x = pos[0],
+                        .y = pos[1],
+                        .z = pos[2],
+                        .w = 1 - 1,
+                        .h = 1 - 1,
+                    });
+                }
+            }
         }
     }
 }
@@ -307,26 +357,34 @@ const ChunkRefs = struct {
     }
 
     fn isOpaqueSafe(refs: ChunkRefs, pos: Chunk.BlockPos) bool {
-        inline for (0..3) |axis| {
-            const pos_dir: FaceDir = FaceDir.posDirFromAxis(axis);
-            const neg_dir = pos_dir.opposite();
-
-            if (pos[axis] < 0) {
-                return if (refs.refFromFaceDir(neg_dir)) |next|
-                    next.getBlock(@intCast(pos + pos_dir.dir() * Chunk.size)).isOpaque()
-                else
-                    false;
-            }
-
-            if (pos[axis] >= Chunk.len) {
-                return if (refs.refFromFaceDir(pos_dir)) |next|
-                    next.getBlock(@intCast(pos + neg_dir.dir() * Chunk.size)).isOpaque()
-                else
-                    false;
-            }
+        var axis_out_of_bounds: usize = 0;
+        for (0..3) |axis| {
+            if (pos[axis] < 0 or pos[axis] >= Chunk.len)
+                axis_out_of_bounds += 1;
         }
 
-        return refs.this.getBlock(@intCast(pos)).isOpaque();
+        return switch (axis_out_of_bounds) {
+            0 => refs.this.getBlock(@intCast(pos)).isOpaque(),
+            1 => inline for (0..3) |axis| {
+                const pos_dir: FaceDir = FaceDir.posDirFromAxis(axis);
+                const neg_dir = pos_dir.opposite();
+
+                if (pos[axis] < 0) {
+                    return if (refs.refFromFaceDir(neg_dir)) |next|
+                        next.getBlock(@intCast(pos + pos_dir.dir() * Chunk.size)).isOpaque()
+                    else
+                        false;
+                }
+
+                if (pos[axis] >= Chunk.len) {
+                    return if (refs.refFromFaceDir(pos_dir)) |next|
+                        next.getBlock(@intCast(pos + neg_dir.dir() * Chunk.size)).isOpaque()
+                    else
+                        false;
+                }
+            } else unreachable,
+            else => false,
+        };
     }
 };
 
