@@ -9,6 +9,10 @@ const ChunkMeshAllocator = @This();
 pub const buffer_size = 1024 * 1024 * 512;
 pub const staging_size = 1024 * 1024 * 32;
 
+comptime {
+    std.debug.assert(buffer_size / @sizeOf(ChunkMesher.GreedyQuad) < std.math.maxInt(u32));
+}
+
 staging: gpu.Buffer,
 staging_face_offset: gpu.Size,
 mapping: []ChunkMesher.GreedyQuad,

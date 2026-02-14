@@ -68,6 +68,96 @@ const ivec3 face_table[6 * 6] = {
     ivec3(1, 1, 0),
 };
 
+const ivec3 width_offset_table[6 * 6] = {
+    // north 
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 1),
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 1),
+    ivec3(0, 0, 1),
+    // south
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 1),
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 1),
+    ivec3(0, 0, 1),
+    // east
+    ivec3(0, 0, 0),
+    ivec3(1, 0, 0),
+    ivec3(1, 0, 0),
+    ivec3(0, 0, 0),
+    ivec3(1, 0, 0),
+    ivec3(0, 0, 0),
+    // west
+    ivec3(0, 0, 0),
+    ivec3(1, 0, 0),
+    ivec3(1, 0, 0),
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 0),
+    ivec3(1, 0, 0),
+    // up
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 0),
+    ivec3(1, 0, 0),
+    ivec3(0, 0, 0),
+    ivec3(1, 0, 0),
+    ivec3(1, 0, 0),
+    // down
+    ivec3(0, 0, 0),
+    ivec3(1, 0, 0),
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 0),
+    ivec3(1, 0, 0),
+    ivec3(1, 0, 0),
+};
+
+const ivec3 height_offset_table[6 * 6] = {
+    // north 
+    ivec3(0, 1, 0),
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 0),
+    ivec3(0, 1, 0),
+    ivec3(0, 0, 0),
+    ivec3(0, 1, 0),
+    // south
+    ivec3(0, 0, 0),
+    ivec3(0, 1, 0),
+    ivec3(0, 1, 0),
+    ivec3(0, 0, 0),
+    ivec3(0, 1, 0),
+    ivec3(0, 0, 0),
+    // east
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 1),
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 1),
+    ivec3(0, 0, 1),
+    // west
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 1),
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 1),
+    ivec3(0, 0, 1),
+    // up
+    ivec3(0, 0, 0),
+    ivec3(0, 1, 0),
+    ivec3(0, 1, 0),
+    ivec3(0, 0, 0),
+    ivec3(0, 1, 0),
+    ivec3(0, 0, 0),
+    // down
+    ivec3(0, 0, 0),
+    ivec3(0, 1, 0),
+    ivec3(0, 1, 0),
+    ivec3(0, 0, 0),
+    ivec3(0, 0, 0),
+    ivec3(0, 1, 0),
+};
+
 int unpackI21(uint64_t packed, uint shift) {
     uint raw = uint(packed >> shift);
 
@@ -82,8 +172,8 @@ void main() {
         (iPacked >> 10) & 0x1f,
         (iPacked >> 15) & 0x1f
     );
-    // uint w = ((iPacked >> 20) & 0x1f) + 1;
-    // uint h = ((iPacked >> 25) & 0x1f) + 1;
+    uint w = ((iPacked >> 20) & 0x1f);
+    uint h = ((iPacked >> 25) & 0x1f);
 
     ivec3 chunk_pos = ivec3(
         unpackI21(constants.packedChunkPos,  0),
@@ -92,7 +182,10 @@ void main() {
     );
 
     ivec3 block_pos = ivec3(rel_pos) + chunk_pos * 32;
-    vec3 face_pos = face_table[face * 6 + gl_VertexIndex];
+    uint i = face * 6 + gl_VertexIndex;
+    ivec3 width_offset = int(w) * width_offset_table[i];
+    ivec3 height_offset = int(h) * height_offset_table[i];
+    vec3 face_pos = face_table[i] + width_offset + height_offset;
 
     gl_Position = constants.vp * vec4(face_pos + vec3(block_pos), 1);
     pPacked = face | (block << 3);

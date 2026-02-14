@@ -33,11 +33,10 @@ arena: std.heap.ArenaAllocator,
 mesh_alloc: *ChunkMeshAllocator,
 thread_info: MeshThreadInfo,
 threads: []std.Thread,
-meshing_buffer: []GreedyQuad,
-per_thread: []PerThread,
 
 meshing_time_ns: u64,
 total_chunks_meshed: u64,
+face_count: u64,
 
 pub const InitInfo = struct {
     alloc: std.mem.Allocator,
@@ -51,22 +50,11 @@ pub fn init(this: *ChunkMesher, info: InitInfo) !void {
     this.mesh_alloc = info.mesh_alloc;
     this.meshing_time_ns = 0;
     this.total_chunks_meshed = 0;
+    this.face_count = 0;
 
     const thread_count: u8 = @min(255, @max(1, std.Thread.getCpuCount() catch 1));
     this.threads = try info.alloc.alloc(std.Thread, thread_count);
     errdefer info.alloc.free(this.threads);
-
-    this.meshing_buffer = try info.alloc.alloc(GreedyQuad, @as(usize, max_faces) * thread_count);
-    errdefer info.alloc.free(this.meshing_buffer);
-
-    this.per_thread = try info.alloc.alloc(PerThread, thread_count);
-    errdefer info.alloc.free(this.per_thread);
-    for (this.per_thread, 0..) |*x, i| {
-        x.* = .{
-            .meshing_buffer = @ptrCast(&this.meshing_buffer[@as(usize, max_faces) * i]),
-            .arena = .init(std.heap.page_allocator),
-        };
-    }
 
     this.thread_info = .{
         .thread_count = thread_count,
@@ -75,10 +63,9 @@ pub fn init(this: *ChunkMesher, info: InitInfo) !void {
         .faces = undefined,
     };
 
-    for (this.threads, 0..) |*thread, i| {
+    for (this.threads) |*thread| {
         thread.* = try .spawn(.{}, worker, .{
             &this.thread_info,
-            &this.per_thread[i],
         });
     }
 
@@ -89,6 +76,7 @@ pub fn deinit(this: *ChunkMesher) void {
     std.log.info("total chunk mesh time {} ns", .{this.meshing_time_ns});
     std.log.info("mesh time per chunk {} ns", .{this.meshing_time_ns / this.total_chunks_meshed});
     std.log.info("total chunks meshed {}", .{this.total_chunks_meshed});
+    std.log.info("total chunk quads {}", .{this.face_count});
     this.thread_info.shutdown();
 
     for (this.threads) |thread| {
@@ -96,9 +84,6 @@ pub fn deinit(this: *ChunkMesher) void {
     }
 
     this.thread_info.queue.deinit(this.alloc);
-    for (this.per_thread) |x| x.arena.deinit();
-    this.alloc.free(this.per_thread);
-    this.alloc.free(this.meshing_buffer);
     this.alloc.free(this.threads);
     this.arena.deinit();
 }
@@ -130,11 +115,11 @@ pub fn meshMany(this: *ChunkMesher) !void {
         const pos = this.thread_info.queue.at(full_i);
         try this.mesh_alloc.writeChunkAssumeCapacity(faces, pos);
         index += 1;
+        this.face_count += faces.len;
     }
 
     std.debug.assert(index <= completed);
     std.debug.assert(completed <= this.thread_info.queue.len);
-    for (this.per_thread) |*x| _ = x.arena.reset(.retain_capacity);
     this.thread_info.queue.head += completed;
     this.thread_info.queue.head %= this.thread_info.queue.buffer.len;
     this.thread_info.queue.len -= completed;
@@ -176,18 +161,34 @@ const MeshThreadInfo = struct {
     }
 };
 
-const PerThread = struct {
-    meshing_buffer: *[max_faces]GreedyQuad,
-    arena: std.heap.ArenaAllocator,
+const MeshingState = struct {
+    quads: std.ArrayList(GreedyQuad),
+    maps: [6]std.AutoArrayHashMapUnmanaged(Chunk.BlockId, MaskCube),
+
+    fn init(state: *MeshingState, alloc: std.mem.Allocator) !void {
+        state.quads = try .initCapacity(alloc, max_faces);
+        for (&state.maps) |*map| map.* = .empty;
+    }
+
+    fn deinit(state: *MeshingState, alloc: std.mem.Allocator) void {
+        state.quads.deinit(alloc);
+        for (&state.maps) |*map| map.deinit(alloc);
+    }
 };
 
-pub const AdjacentChunks = [6]?Chunk;
+fn worker(info: *MeshThreadInfo) void {
+    const mesher: *ChunkMesher = @fieldParentPtr("thread_info", info);
+    const alloc = mesher.alloc;
 
-fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
+    var arena_obj: std.heap.ArenaAllocator = .init(alloc);
+    defer arena_obj.deinit();
+    const arena = arena_obj.allocator();
+
+    var state: MeshingState = undefined;
+    state.init(alloc) catch @panic("");
+    defer state.deinit(alloc);
+
     var timer = std.time.Timer.start() catch @panic("");
-    var faces: std.ArrayList(GreedyQuad) = .initBuffer(per_thread.meshing_buffer);
-    const arena = per_thread.arena.allocator();
-
     var seen_phase = info.phase.load(.acquire);
     while (true) {
         _ = info.done.fetchAdd(1, .release);
@@ -207,16 +208,18 @@ fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
 
         timer.reset();
         var completed: u32 = 0;
+        _ = arena_obj.reset(.retain_capacity);
         while (true) {
             if (timer.read() > target_mesh_time_ns) break;
             const i = info.index.fetchAdd(1, .monotonic);
             if (i >= info.faces.len) break;
 
-            faces.clearRetainingCapacity();
+            state.quads.clearRetainingCapacity();
+            for (&state.maps) |*map| map.clearRetainingCapacity();
             const pos = info.queue.at(i);
 
-            greedyMeshWithFastExits(&faces, info.chunks, pos);
-            info.faces[i] = arena.dupe(GreedyQuad, faces.items) catch @panic("");
+            greedyMeshWithFastExits(alloc, &state, info.chunks, pos);
+            info.faces[i] = arena.dupe(GreedyQuad, state.quads.items) catch @panic("");
             completed += 1;
         }
 
@@ -224,7 +227,7 @@ fn worker(info: *MeshThreadInfo, per_thread: *PerThread) void {
     }
 }
 
-fn greedyMeshWithFastExits(quads: *std.ArrayList(GreedyQuad), chunks: *const Chunk.Map, pos: Chunk.ChunkPos) void {
+fn greedyMeshWithFastExits(alloc: std.mem.Allocator, state: *MeshingState, chunks: *const Chunk.Map, pos: Chunk.ChunkPos) void {
     const chunk = chunks.get(pos).?;
     if (chunk.allAir()) return;
 
@@ -250,18 +253,22 @@ fn greedyMeshWithFastExits(quads: *std.ArrayList(GreedyQuad), chunks: *const Chu
             return;
     }
 
-    greedyMesh(quads, refs);
+    greedyMesh(alloc, state, refs);
 }
 
 // meshing algorithm from
 // https://youtu.be/qnGoGq7DWMc
 // https://github.com/TanTanDev/binary_greedy_mesher_demo
 const chunk_len_p = Chunk.len + 2;
-const Mask = u64;
-const MaskPlane = [chunk_len_p]Mask;
-fn greedyMesh(quads: *std.ArrayList(GreedyQuad), refs: ChunkRefs) void {
+const MaskP = u64;
+const MaskPlaneP = [chunk_len_p]MaskP;
+const MaskCubeP = [chunk_len_p]MaskPlaneP;
+const Mask = u32;
+const MaskPlane = [Chunk.len]Mask;
+const MaskCube = [Chunk.len]MaskPlane;
+fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) void {
     // first index is axis, second is how far along plane normal
-    var cols: [3][chunk_len_p]MaskPlane = @splat(@splat(@splat(0)));
+    var cols: [3]MaskCubeP = @splat(@splat(@splat(0)));
 
     for (0..chunk_len_p) |z| {
         for (0..chunk_len_p) |y| {
@@ -271,17 +278,17 @@ fn greedyMesh(quads: *std.ArrayList(GreedyQuad), refs: ChunkRefs) void {
 
                 if (refs.isOpaqueSafe(pos)) {
                     // z,y - x axis
-                    cols[0][y][z] |= @as(Mask, 1) << @intCast(x);
+                    cols[0][y][z] |= @as(MaskP, 1) << @intCast(x);
                     // x,z - y axis
-                    cols[1][z][x] |= @as(Mask, 1) << @intCast(y);
+                    cols[1][z][x] |= @as(MaskP, 1) << @intCast(y);
                     // x,y - z axis
-                    cols[2][y][x] |= @as(Mask, 1) << @intCast(z);
+                    cols[2][y][x] |= @as(MaskP, 1) << @intCast(z);
                 }
             }
         }
     }
 
-    var masks: [6][chunk_len_p]MaskPlane = undefined;
+    var masks: [6]MaskCubeP = undefined;
     for (0..3) |axis| {
         for (0..chunk_len_p) |z| {
             for (0..chunk_len_p) |x| {
@@ -297,7 +304,7 @@ fn greedyMesh(quads: *std.ArrayList(GreedyQuad), refs: ChunkRefs) void {
 
         for (0..Chunk.len) |z| {
             for (0..Chunk.len) |x| {
-                var col = (masks[face_int][z + 1][x + 1] >> 1) & 0xffff_ffff;
+                var col = (masks[face_int][z + 1][x + 1] >> 1) & std.math.maxInt(Mask);
 
                 while (col != 0) {
                     const y = @ctz(col);
@@ -310,17 +317,72 @@ fn greedyMesh(quads: *std.ArrayList(GreedyQuad), refs: ChunkRefs) void {
                     };
                     const pos: Chunk.Pos = @intCast(pos_usize);
 
-                    quads.appendAssumeCapacity(.{
-                        .block_id = refs.this.getBlock(pos),
-                        .face_dir = face,
-                        .x = pos[0],
-                        .y = pos[1],
-                        .z = pos[2],
-                        .w = 1 - 1,
-                        .h = 1 - 1,
-                    });
+                    const res = state.maps[face_int].getOrPut(alloc, refs.this.getBlock(pos)) catch @panic("");
+                    if (!res.found_existing) res.value_ptr.* = @splat(@splat(0));
+                    res.value_ptr.*[y][x] |= @as(Mask, 1) << @intCast(z);
                 }
             }
+        }
+    }
+
+    for (&state.maps, 0..) |*map, face_int| {
+        const face: FaceDir = @enumFromInt(face_int);
+
+        var iter = map.iterator();
+        while (iter.next()) |kv| {
+            const block_id = kv.key_ptr.*;
+            const cube_ptr = kv.value_ptr;
+
+            for (0..Chunk.len) |z| {
+                greedyMeshBinaryPlane(&state.quads, cube_ptr.*[z], block_id, face, @intCast(z));
+            }
+        }
+    }
+}
+
+fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, block_id: Chunk.BlockId, face: FaceDir, z: u5) void {
+    var new = plane;
+
+    for (0..Chunk.len) |x_usize| {
+        const x: u5 = @intCast(x_usize);
+        const col = new[x];
+
+        var y_usize: usize = 0;
+        while (y_usize < Chunk.len) {
+            y_usize += @ctz(col >> @intCast(y_usize));
+            if (y_usize >= Chunk.len) continue;
+            const y: u5 = @intCast(y_usize);
+            const h = @ctz(~(col >> y));
+
+            const h_mask: Mask = @truncate((@as(u64, 1) << h) - 1);
+            const mask = h_mask << y;
+
+            var w: usize = 1;
+            while (x + w < Chunk.len) {
+                const next_h = (new[x + w] >> y) & h_mask;
+                if (next_h != h_mask) break;
+
+                new[x + w] &= ~mask;
+                w += 1;
+            }
+
+            const pos: Chunk.Pos = switch (face) {
+                .north, .south => .{ z, y, x },
+                .west, .east => .{ x, z, y },
+                .up, .down => .{ x, y, z },
+            };
+
+            quads.appendAssumeCapacity(.{
+                .block_id = block_id,
+                .face_dir = face,
+                .x = pos[0],
+                .y = pos[1],
+                .z = pos[2],
+                .w = @intCast(w - 1),
+                .h = @intCast(h - 1),
+            });
+
+            y_usize += h;
         }
     }
 }
