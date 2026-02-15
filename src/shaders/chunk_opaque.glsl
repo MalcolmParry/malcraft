@@ -198,7 +198,8 @@ void main() {
     uint lower = iPacked.x;
     uint upper = iPacked.y;
 
-    uint block = (lower >> 28) & 0x03;
+    uint flipped = (lower >> 28) & 0x1;
+    uint block = (lower >> 29) & 0x03;
     uint face =  (lower >>  0) & 0x07;
     uvec3 rel_pos = uvec3(
         (lower >>  3) & 0x1f,
@@ -213,7 +214,6 @@ void main() {
         unpackI21(constants.packedChunkPos, 21),
         unpackI21(constants.packedChunkPos, 42)
     );
-    uint flipped = 0;
 
     uint vindex = vindex_table[gl_VertexIndex + flipped * 6];
     uint i = face * 6 + vindex;

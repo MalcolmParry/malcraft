@@ -23,18 +23,19 @@ pub const GreedyQuad = packed struct(u64) {
     w: u5,
     /// height - 1 so range is 1-32
     h: u5,
+    flip: u1,
     block_id: Chunk.BlockId,
-    unused: u2 = undefined,
+    unused: u1 = undefined,
     // 32 bit boundary
     ao_corners: AoCorners,
     unused2: u24 = undefined,
 };
 
 const AoCorners = packed struct(u8) {
-    ao_bl: u2,
-    ao_br: u2,
-    ao_tl: u2,
-    ao_tr: u2,
+    bl: u2,
+    br: u2,
+    tl: u2,
+    tr: u2,
 };
 
 alloc: std.mem.Allocator,
@@ -354,26 +355,27 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) v
                         }
                     }
 
-                    const corner_bl: u8 = if (ao_bits & 1 > 0) 1 else 0;
-                    const corner_br: u8 = if (ao_bits & 2 > 0) 1 else 0;
-                    const corner_tl: u8 = if (ao_bits & 4 > 0) 1 else 0;
-                    const corner_tr: u8 = if (ao_bits & 8 > 0) 1 else 0;
+                    const corner_bl = ao_bits & 1 > 0;
+                    const corner_br = ao_bits & 2 > 0;
+                    const corner_tl = ao_bits & 4 > 0;
+                    const corner_tr = ao_bits & 8 > 0;
 
-                    const side_b: u8 = if (ao_bits & 32 > 0) 1 else 0;
-                    const side_t: u8 = if (ao_bits & 16 > 0) 1 else 0;
-                    const side_l: u8 = if (ao_bits & 64 > 0) 1 else 0;
-                    const side_r: u8 = if (ao_bits & 128 > 0) 1 else 0;
+                    const side_b = ao_bits & 32 > 0;
+                    const side_t = ao_bits & 16 > 0;
+                    const side_l = ao_bits & 64 > 0;
+                    const side_r = ao_bits & 128 > 0;
 
-                    const ao_corners: AoCorners = .{
-                        .ao_bl = @intCast(corner_bl + side_b + side_l),
-                        .ao_br = @intCast(corner_br + side_b + side_r),
-                        .ao_tl = @intCast(corner_tl + side_t + side_l),
-                        .ao_tr = @intCast(corner_tr + side_t + side_r),
+                    const ao: AoCorners = .{
+                        .bl = aoCorner(corner_bl, side_b, side_l),
+                        .br = aoCorner(corner_br, side_b, side_r),
+                        .tl = aoCorner(corner_tl, side_t, side_l),
+                        .tr = aoCorner(corner_tr, side_t, side_r),
                     };
 
                     const quad_data: QuadData = .{
                         .id = refs.this.getBlock(pos),
-                        .ao = ao_corners,
+                        .ao = ao,
+                        .flip = shouldFlip(ao),
                     };
 
                     const res = state.maps[face_int].getOrPut(alloc, quad_data) catch @panic("");
@@ -399,9 +401,29 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) v
     }
 }
 
+fn aoCorner(corner: bool, side1: bool, side2: bool) u2 {
+    if (side1 and side2) return 3;
+
+    const a: u8 = @intFromBool(corner);
+    const b: u8 = @intFromBool(side1);
+    const c: u8 = @intFromBool(side2);
+
+    return @intCast(a + b + c);
+}
+
+fn shouldFlip(ao: AoCorners) bool {
+    const bl: u8 = ao.bl;
+    const br: u8 = ao.br;
+    const tl: u8 = ao.tl;
+    const tr: u8 = ao.tr;
+
+    return (bl + tr) > (br + tl);
+}
+
 const QuadData = struct {
     id: Chunk.BlockId,
     ao: AoCorners,
+    flip: bool,
 };
 
 fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, data: QuadData, face: FaceDir, z: u5) void {
@@ -437,13 +459,14 @@ fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, da
             };
 
             quads.appendAssumeCapacity(.{
-                .block_id = data.id,
                 .face_dir = face,
                 .x = pos[0],
                 .y = pos[1],
                 .z = pos[2],
                 .w = @intCast(w - 1),
                 .h = @intCast(h - 1),
+                .flip = @intFromBool(data.flip),
+                .block_id = data.id,
                 .ao_corners = data.ao,
             });
 
