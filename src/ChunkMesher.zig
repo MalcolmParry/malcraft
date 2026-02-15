@@ -26,11 +26,15 @@ pub const GreedyQuad = packed struct(u64) {
     block_id: Chunk.BlockId,
     unused: u2 = undefined,
     // 32 bit boundary
+    ao_corners: AoCorners,
+    unused2: u24 = undefined,
+};
+
+const AoCorners = packed struct(u8) {
     ao_bl: u2,
     ao_br: u2,
     ao_tl: u2,
     ao_tr: u2,
-    unused2: u24 = undefined,
 };
 
 alloc: std.mem.Allocator,
@@ -168,7 +172,7 @@ const MeshThreadInfo = struct {
 
 const MeshingState = struct {
     quads: std.ArrayList(GreedyQuad),
-    maps: [6]std.AutoArrayHashMapUnmanaged(Chunk.BlockId, MaskCube),
+    maps: [6]std.AutoArrayHashMapUnmanaged(QuadData, MaskCube),
 
     fn init(state: *MeshingState, alloc: std.mem.Allocator) !void {
         state.quads = try .initCapacity(alloc, max_faces);
@@ -360,45 +364,47 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) v
                     const side_l: u8 = if (ao_bits & 64 > 0) 1 else 0;
                     const side_r: u8 = if (ao_bits & 128 > 0) 1 else 0;
 
-                    _ = alloc;
-                    state.quads.appendAssumeCapacity(.{
-                        .block_id = refs.this.getBlock(pos),
-                        .face_dir = face,
-                        .x = pos[0],
-                        .y = pos[1],
-                        .z = pos[2],
-                        .w = 0,
-                        .h = 0,
+                    const ao_corners: AoCorners = .{
                         .ao_bl = @intCast(corner_bl + side_b + side_l),
                         .ao_br = @intCast(corner_br + side_b + side_r),
                         .ao_tl = @intCast(corner_tl + side_t + side_l),
                         .ao_tr = @intCast(corner_tr + side_t + side_r),
-                    });
+                    };
 
-                    // const res = state.maps[face_int].getOrPut(alloc, refs.this.getBlock(pos)) catch @panic("");
-                    // if (!res.found_existing) res.value_ptr.* = @splat(@splat(0));
-                    // res.value_ptr.*[y][x] |= @as(Mask, 1) << @intCast(z);
+                    const quad_data: QuadData = .{
+                        .id = refs.this.getBlock(pos),
+                        .ao = ao_corners,
+                    };
+
+                    const res = state.maps[face_int].getOrPut(alloc, quad_data) catch @panic("");
+                    if (!res.found_existing) res.value_ptr.* = @splat(@splat(0));
+                    res.value_ptr.*[y][x] |= @as(Mask, 1) << @intCast(z);
                 }
             }
         }
     }
 
-    // for (&state.maps, 0..) |*map, face_int| {
-    //     const face: FaceDir = @enumFromInt(face_int);
-    //
-    //     var iter = map.iterator();
-    //     while (iter.next()) |kv| {
-    //         const block_id = kv.key_ptr.*;
-    //         const cube_ptr = kv.value_ptr;
-    //
-    //         for (0..Chunk.len) |z| {
-    //             greedyMeshBinaryPlane(&state.quads, cube_ptr.*[z], block_id, face, @intCast(z));
-    //         }
-    //     }
-    // }
+    for (&state.maps, 0..) |*map, face_int| {
+        const face: FaceDir = @enumFromInt(face_int);
+
+        var iter = map.iterator();
+        while (iter.next()) |kv| {
+            const data = kv.key_ptr.*;
+            const cube_ptr = kv.value_ptr;
+
+            for (0..Chunk.len) |z| {
+                greedyMeshBinaryPlane(&state.quads, cube_ptr.*[z], data, face, @intCast(z));
+            }
+        }
+    }
 }
 
-fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, block_id: Chunk.BlockId, face: FaceDir, z: u5) void {
+const QuadData = struct {
+    id: Chunk.BlockId,
+    ao: AoCorners,
+};
+
+fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, data: QuadData, face: FaceDir, z: u5) void {
     var new = plane;
 
     for (0..Chunk.len) |x_usize| {
@@ -431,13 +437,14 @@ fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, bl
             };
 
             quads.appendAssumeCapacity(.{
-                .block_id = block_id,
+                .block_id = data.id,
                 .face_dir = face,
                 .x = pos[0],
                 .y = pos[1],
                 .z = pos[2],
                 .w = @intCast(w - 1),
                 .h = @intCast(h - 1),
+                .ao_corners = data.ao,
             });
 
             y_usize += h;
