@@ -47,10 +47,10 @@ const ivec3 face_table[6 * 6] = {
     ivec3(1, 1, 1),
     ivec3(0, 1, 1),
     // west
-    ivec3(0, 0, 0),
-    ivec3(1, 0, 1),
     ivec3(1, 0, 0),
     ivec3(0, 0, 0),
+    ivec3(0, 0, 1),
+    ivec3(1, 0, 0),
     ivec3(0, 0, 1),
     ivec3(1, 0, 1),
     // up
@@ -62,11 +62,11 @@ const ivec3 face_table[6 * 6] = {
     ivec3(1, 0, 1),
     // down
     ivec3(0, 0, 0),
-    ivec3(1, 1, 0),
-    ivec3(0, 1, 0),
-    ivec3(0, 0, 0),
     ivec3(1, 0, 0),
     ivec3(1, 1, 0),
+    ivec3(0, 0, 0),
+    ivec3(1, 1, 0),
+    ivec3(0, 1, 0),
 };
 
 const ivec3 width_offset_table[6 * 6] = {
@@ -92,10 +92,10 @@ const ivec3 width_offset_table[6 * 6] = {
     ivec3(1, 0, 0),
     ivec3(0, 0, 0),
     // west
-    ivec3(0, 0, 0),
-    ivec3(1, 0, 0),
     ivec3(1, 0, 0),
     ivec3(0, 0, 0),
+    ivec3(0, 0, 0),
+    ivec3(1, 0, 0),
     ivec3(0, 0, 0),
     ivec3(1, 0, 0),
     // up
@@ -108,10 +108,10 @@ const ivec3 width_offset_table[6 * 6] = {
     // down
     ivec3(0, 0, 0),
     ivec3(1, 0, 0),
-    ivec3(0, 0, 0),
+    ivec3(1, 0, 0),
     ivec3(0, 0, 0),
     ivec3(1, 0, 0),
-    ivec3(1, 0, 0),
+    ivec3(0, 0, 0),
 };
 
 const ivec3 height_offset_table[6 * 6] = {
@@ -138,8 +138,8 @@ const ivec3 height_offset_table[6 * 6] = {
     ivec3(0, 0, 1),
     // west
     ivec3(0, 0, 0),
-    ivec3(0, 0, 1),
     ivec3(0, 0, 0),
+    ivec3(0, 0, 1),
     ivec3(0, 0, 0),
     ivec3(0, 0, 1),
     ivec3(0, 0, 1),
@@ -152,10 +152,10 @@ const ivec3 height_offset_table[6 * 6] = {
     ivec3(0, 0, 0),
     // down
     ivec3(0, 0, 0),
-    ivec3(0, 1, 0),
+    ivec3(0, 0, 0),
     ivec3(0, 1, 0),
     ivec3(0, 0, 0),
-    ivec3(0, 0, 0),
+    ivec3(0, 1, 0),
     ivec3(0, 1, 0),
 };
 
@@ -167,11 +167,11 @@ const uint ao_index_table[6 * 6] = {
     // east
     0, 2, 6, 0, 6, 4,
     // west
-    0, 6, 2, 0, 4, 6,
+    2, 0, 4, 2, 4, 6,
     // up
     0, 4, 6, 0, 6, 2,
     // down
-    0, 2, 1, 0, 3, 2,
+    0, 2, 6, 0, 6, 4,
 };
 
 const float ao_table[4] = {
@@ -181,33 +181,11 @@ const float ao_table[4] = {
     0.35,
 };
 
-const uint vindex_table[6 * 6 * 2] = {
+const uint vindex_table[6 * 2] = {
     // not flipped
-    // north
-    0, 1, 2, 3, 4, 5,
-    // south
-    0, 1, 2, 3, 4, 5,
-    // east
-    0, 1, 2, 3, 4, 5,
-    // west
-    0, 1, 2, 3, 4, 5,
-    // up
-    0, 1, 2, 3, 4, 5,
-    // down
     0, 1, 2, 3, 4, 5,
     // flipped
-    // north
     0, 1, 5, 1, 2, 5,
-    // south
-    0, 1, 5, 1, 2, 5,
-    // east
-    0, 1, 5, 1, 2, 5,
-    // west
-    0, 4, 2, 4, 1, 2,
-    // up
-    0, 1, 5, 1, 2, 5,
-    // down
-    0, 4, 2, 4, 1, 2,
 };
 
 int unpackI21(uint64_t packed, uint shift) {
@@ -237,7 +215,7 @@ void main() {
     );
     uint flipped = 0;
 
-    uint vindex = vindex_table[gl_VertexIndex + flipped * 36 + face * 6];
+    uint vindex = vindex_table[gl_VertexIndex + flipped * 6];
     uint i = face * 6 + vindex;
 
     ivec3 block_pos = ivec3(rel_pos) + chunk_pos * 32;
