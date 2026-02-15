@@ -12,10 +12,11 @@
 #define DOWN  5
 
 layout(location = 0) toPixel flat uint pPacked;
+layout(location = 1) toPixel float pAo;
 
 #ifdef _VERTEX
 
-layout(location=0) in uint iPacked;
+layout(location=0) in uvec2 iPacked;
 
 layout(push_constant) uniform PushConstants {
     mat4 vp;
@@ -158,6 +159,28 @@ const ivec3 height_offset_table[6 * 6] = {
     ivec3(0, 1, 0),
 };
 
+const uint ao_index_table[6 * 6] = {
+    // north
+    2, 0, 4, 2, 4, 6,
+    // south
+    0, 2, 6, 0, 6, 4,
+    // east
+    0, 2, 6, 0, 6, 4,
+    // west
+    0, 6, 2, 0, 4, 6,
+    // up
+    0, 4, 6, 0, 6, 2,
+    // down
+    0, 2, 1, 0, 3, 2,
+};
+
+const float ao_table[4] = {
+    1.00,
+    0.75,
+    0.55,
+    0.35,
+};
+
 int unpackI21(uint64_t packed, uint shift) {
     uint raw = uint(packed >> shift);
 
@@ -165,15 +188,18 @@ int unpackI21(uint64_t packed, uint shift) {
 }
 
 void main() {
-    uint block = (iPacked >> 00) & 0x03;
-    uint face =  (iPacked >> 02) & 0x07;
+    uint lower = iPacked.x;
+    uint upper = iPacked.y;
+
+    uint block = (lower >> 28) & 0x03;
+    uint face =  (lower >>  0) & 0x07;
     uvec3 rel_pos = uvec3(
-        (iPacked >> 05) & 0x1f,
-        (iPacked >> 10) & 0x1f,
-        (iPacked >> 15) & 0x1f
+        (lower >>  3) & 0x1f,
+        (lower >>  8) & 0x1f,
+        (lower >> 13) & 0x1f
     );
-    uint w = ((iPacked >> 20) & 0x1f);
-    uint h = ((iPacked >> 25) & 0x1f);
+    uint w = ((lower >> 18) & 0x1f);
+    uint h = ((lower >> 23) & 0x1f);
 
     ivec3 chunk_pos = ivec3(
         unpackI21(constants.packedChunkPos,  0),
@@ -189,6 +215,8 @@ void main() {
 
     gl_Position = constants.vp * vec4(face_pos + vec3(block_pos), 1);
     pPacked = face | (block << 3);
+
+    pAo = ao_table[(upper >> ao_index_table[i]) & 3];
 }
 
 #endif
@@ -231,7 +259,7 @@ void main() {
 
     // float diffuse = max(0, dot(normal, sunDir));
     // float light = diffuse * 0.7 + 0.3;
-    float light = light_lookup[face];
+    float light = light_lookup[face] * pAo;
 
     oColor = vec4(color_lookup[block], 1) * light;
 }

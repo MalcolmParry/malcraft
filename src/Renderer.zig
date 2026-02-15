@@ -544,7 +544,7 @@ fn initChunkPipeline(this: *Renderer, alloc: std.mem.Allocator) !void {
             .binding = 0,
             .rate = .per_instance,
             .fields = &.{
-                .{ .type = .uint32 },
+                .{ .type = .uint32x2 },
             },
         }},
         .polygon_mode = if (this.wireframe) .line else .fill,

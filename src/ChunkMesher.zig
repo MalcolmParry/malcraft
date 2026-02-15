@@ -14,18 +14,23 @@ pub const GpuLoaded = struct {
     face_offset: u32,
 };
 
-pub const GreedyQuad = packed struct(u32) {
-    block_id: Chunk.BlockId,
+pub const GreedyQuad = packed struct(u64) {
     face_dir: FaceDir,
     x: u5,
     y: u5,
     z: u5,
-    /// width and height currently ignored by shader
     /// width  - 1 so range is 1-32
     w: u5,
     /// height - 1 so range is 1-32
     h: u5,
+    block_id: Chunk.BlockId,
     unused: u2 = undefined,
+    // 32 bit boundary
+    ao_bl: u2,
+    ao_br: u2,
+    ao_tl: u2,
+    ao_tr: u2,
+    unused2: u24 = undefined,
 };
 
 alloc: std.mem.Allocator,
@@ -317,27 +322,80 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) v
                     };
                     const pos: Chunk.Pos = @intCast(pos_usize);
 
-                    const res = state.maps[face_int].getOrPut(alloc, refs.this.getBlock(pos)) catch @panic("");
-                    if (!res.found_existing) res.value_ptr.* = @splat(@splat(0));
-                    res.value_ptr.*[y][x] |= @as(Mask, 1) << @intCast(z);
+                    const ao_sample_dirs: [8]@Vector(2, i32) = .{
+                        .{ -1, -1 },
+                        .{ 1, -1 },
+                        .{ -1, 1 },
+                        .{ 1, 1 },
+                        .{ 0, 1 },
+                        .{ 0, -1 },
+                        .{ -1, 0 },
+                        .{ 1, 0 },
+                    };
+
+                    var ao_bits: u8 = 0;
+                    for (ao_sample_dirs, 0..) |sdir, i| {
+                        const sample_offset: Chunk.BlockPos = switch (face) {
+                            .north => .{ 1, sdir[0], sdir[1] },
+                            .south => .{ -1, sdir[0], sdir[1] },
+                            .east => .{ sdir[0], 1, sdir[1] },
+                            .west => .{ sdir[0], -1, sdir[1] },
+                            .up => .{ sdir[0], sdir[1], 1 },
+                            .down => .{ sdir[0], sdir[1], -1 },
+                        };
+
+                        const spos = pos + sample_offset;
+                        if (refs.isOpaqueSafe(spos)) {
+                            ao_bits |= @as(u8, 1) << @intCast(i);
+                        }
+                    }
+
+                    const corner_bl: u8 = if (ao_bits & 1 > 0) 1 else 0;
+                    const corner_br: u8 = if (ao_bits & 2 > 0) 1 else 0;
+                    const corner_tl: u8 = if (ao_bits & 4 > 0) 1 else 0;
+                    const corner_tr: u8 = if (ao_bits & 8 > 0) 1 else 0;
+
+                    const side_b: u8 = if (ao_bits & 32 > 0) 1 else 0;
+                    const side_t: u8 = if (ao_bits & 16 > 0) 1 else 0;
+                    const side_l: u8 = if (ao_bits & 64 > 0) 1 else 0;
+                    const side_r: u8 = if (ao_bits & 128 > 0) 1 else 0;
+
+                    _ = alloc;
+                    state.quads.appendAssumeCapacity(.{
+                        .block_id = refs.this.getBlock(pos),
+                        .face_dir = face,
+                        .x = pos[0],
+                        .y = pos[1],
+                        .z = pos[2],
+                        .w = 0,
+                        .h = 0,
+                        .ao_bl = @intCast(corner_bl + side_b + side_l),
+                        .ao_br = @intCast(corner_br + side_b + side_r),
+                        .ao_tl = @intCast(corner_tl + side_t + side_l),
+                        .ao_tr = @intCast(corner_tr + side_t + side_r),
+                    });
+
+                    // const res = state.maps[face_int].getOrPut(alloc, refs.this.getBlock(pos)) catch @panic("");
+                    // if (!res.found_existing) res.value_ptr.* = @splat(@splat(0));
+                    // res.value_ptr.*[y][x] |= @as(Mask, 1) << @intCast(z);
                 }
             }
         }
     }
 
-    for (&state.maps, 0..) |*map, face_int| {
-        const face: FaceDir = @enumFromInt(face_int);
-
-        var iter = map.iterator();
-        while (iter.next()) |kv| {
-            const block_id = kv.key_ptr.*;
-            const cube_ptr = kv.value_ptr;
-
-            for (0..Chunk.len) |z| {
-                greedyMeshBinaryPlane(&state.quads, cube_ptr.*[z], block_id, face, @intCast(z));
-            }
-        }
-    }
+    // for (&state.maps, 0..) |*map, face_int| {
+    //     const face: FaceDir = @enumFromInt(face_int);
+    //
+    //     var iter = map.iterator();
+    //     while (iter.next()) |kv| {
+    //         const block_id = kv.key_ptr.*;
+    //         const cube_ptr = kv.value_ptr;
+    //
+    //         for (0..Chunk.len) |z| {
+    //             greedyMeshBinaryPlane(&state.quads, cube_ptr.*[z], block_id, face, @intCast(z));
+    //         }
+    //     }
+    // }
 }
 
 fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, block_id: Chunk.BlockId, face: FaceDir, z: u5) void {
