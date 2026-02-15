@@ -181,6 +181,35 @@ const float ao_table[4] = {
     0.35,
 };
 
+const uint vindex_table[6 * 6 * 2] = {
+    // not flipped
+    // north
+    0, 1, 2, 3, 4, 5,
+    // south
+    0, 1, 2, 3, 4, 5,
+    // east
+    0, 1, 2, 3, 4, 5,
+    // west
+    0, 1, 2, 3, 4, 5,
+    // up
+    0, 1, 2, 3, 4, 5,
+    // down
+    0, 1, 2, 3, 4, 5,
+    // flipped
+    // north
+    0, 1, 5, 1, 2, 5,
+    // south
+    0, 1, 5, 1, 2, 5,
+    // east
+    0, 1, 5, 1, 2, 5,
+    // west
+    0, 4, 2, 4, 1, 2,
+    // up
+    0, 1, 5, 1, 2, 5,
+    // down
+    0, 4, 2, 4, 1, 2,
+};
+
 int unpackI21(uint64_t packed, uint shift) {
     uint raw = uint(packed >> shift);
 
@@ -206,9 +235,12 @@ void main() {
         unpackI21(constants.packedChunkPos, 21),
         unpackI21(constants.packedChunkPos, 42)
     );
+    uint flipped = 0;
+
+    uint vindex = vindex_table[gl_VertexIndex + flipped * 36 + face * 6];
+    uint i = face * 6 + vindex;
 
     ivec3 block_pos = ivec3(rel_pos) + chunk_pos * 32;
-    uint i = face * 6 + gl_VertexIndex;
     ivec3 width_offset = int(w) * width_offset_table[i];
     ivec3 height_offset = int(h) * height_offset_table[i];
     vec3 face_pos = face_table[i] + width_offset + height_offset;
