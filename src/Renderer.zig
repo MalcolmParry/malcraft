@@ -38,6 +38,10 @@ chunk_shader_pixel: gpu.Shader,
 chunk_pipeline: gpu.GraphicsPipeline,
 camera: Camera,
 
+texture_image: gpu.Image,
+texture_view: gpu.Image.View,
+texture_sampler: gpu.Sampler,
+
 pub const Input = struct {
     wireframe: bool = false,
 };
@@ -136,7 +140,12 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     this.chunk_resource_layout = try .init(this.device, .{
         .alloc = alloc,
-        .descriptors = &.{},
+        .descriptors = &.{.{
+            .t = .image,
+            .stages = .{ .pixel = true },
+            .binding = 0,
+            .count = 1,
+        }},
     });
     try this.destruct_queue.append(alloc, .{ .resource_layout = this.chunk_resource_layout });
 
@@ -164,11 +173,132 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         .near = 0.1,
         .far = 10_000,
     };
+
+    {
+        const Pixel = [4]u8;
+
+        const size: @Vector(2, u32) = .{ 8, 8 };
+        const pixel_count = @reduce(.Mul, size);
+
+        this.texture_image = try .init(this.device, .{
+            .alloc = alloc,
+            .format = .rgba8_srgb,
+            .usage = .{
+                .dst = true,
+                .sampled = true,
+            },
+            .loc = .device,
+            .size = size,
+        });
+        errdefer this.texture_image.deinit(this.device, alloc);
+        this.texture_sampler = try .init(this.device, .{
+            .alloc = alloc,
+            .min_filter = .nearest,
+            .mag_filter = .nearest,
+            .address_mode_u = .repeat,
+            .address_mode_v = .repeat,
+            .address_mode_w = .repeat,
+        });
+        errdefer this.texture_sampler.deinit(this.device, alloc);
+
+        this.texture_view = try .init(this.device, this.texture_image, .{ .color = true }, alloc);
+        errdefer this.texture_view.deinit(this.device, alloc);
+
+        const staging = try this.device.initBuffer(.{
+            .alloc = alloc,
+            .loc = .host,
+            .usage = .{ .src = true },
+            .size = pixel_count * @sizeOf(Pixel),
+        });
+        defer staging.deinit(this.device, alloc);
+        const mapped_bytes = try staging.map(this.device);
+        const mapping: *[size[1]][size[0]]Pixel = @ptrCast(mapped_bytes.ptr);
+
+        for (0..size[1]) |y| {
+            for (0..size[0]) |x| {
+                mapping.*[y][x] = if ((x + y) % 2 == 0)
+                    .{ 255, 255, 255, 255 }
+                else
+                    .{ 128, 128, 128, 255 };
+            }
+        }
+
+        const fence = try this.device.initFence(false);
+        defer fence.deinit(this.device);
+        const cmd_encoder = try this.device.initCommandEncoder();
+        defer cmd_encoder.deinit(this.device);
+
+        try cmd_encoder.begin(this.device);
+
+        try cmd_encoder.cmdMemoryBarrier(this.device, &.{
+            .{
+                .image = .{
+                    .image = this.texture_image,
+                    .aspect = .{ .color = true },
+                    .old_layout = .undefined,
+                    .new_layout = .transfer_dst,
+                    .src_stage = .{ .pipeline_start = true },
+                    .dst_stage = .{ .transfer = true },
+                    .src_access = .{},
+                    .dst_access = .{ .transfer_write = true },
+                },
+            },
+        }, alloc);
+
+        cmd_encoder.cmdCopyBufferToImage(.{
+            .device = this.device,
+            .src = staging.region(),
+            .dst = this.texture_image,
+            .layout = .transfer_dst,
+            .aspect = .{ .color = true },
+            .image_offset = @splat(0),
+            .image_size = .{ size[0], size[1], 1 },
+        });
+
+        try cmd_encoder.cmdMemoryBarrier(this.device, &.{
+            .{
+                .image = .{
+                    .image = this.texture_image,
+                    .aspect = .{ .color = true },
+                    .old_layout = .transfer_dst,
+                    .new_layout = .shader_read_only,
+                    .src_stage = .{ .transfer = true },
+                    .dst_stage = .{ .pixel_shader = true },
+                    .src_access = .{ .transfer_write = true },
+                    .dst_access = .{ .shader_read = true },
+                },
+            },
+        }, alloc);
+
+        try cmd_encoder.end(this.device);
+        try this.device.submitCommands(.{
+            .encoder = cmd_encoder,
+            .signal_fence = fence,
+            .signal_semaphores = &.{},
+            .wait_dst_stages = &.{},
+            .wait_semaphores = &.{},
+        });
+        try fence.wait(this.device, std.time.ns_per_s);
+    }
+
+    try this.chunk_resource_set.update(this.device, &.{
+        .{
+            .binding = 0,
+            .data = .{ .image = &.{.{
+                .layout = .shader_read_only,
+                .view = this.texture_view,
+                .sampler = this.texture_sampler,
+            }} },
+        },
+    }, alloc);
 }
 
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.device.waitUntilIdle();
 
+    this.texture_sampler.deinit(this.device, alloc);
+    this.texture_view.deinit(this.device, alloc);
+    this.texture_image.deinit(this.device, alloc);
     this.chunk_mesher.deinit();
     this.chunk_mesh_alloc.deinit();
     this.world_gen.deinit();

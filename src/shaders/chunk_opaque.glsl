@@ -13,10 +13,11 @@
 
 layout(location = 0) toPixel flat uint pPacked;
 layout(location = 1) toPixel float pAo;
+layout(location = 2) toPixel vec2 pUvs;
 
 #ifdef _VERTEX
 
-layout(location=0) in uvec2 iPacked;
+layout(location = 0) in uvec2 iPacked;
 
 layout(push_constant) uniform PushConstants {
     mat4 vp;
@@ -181,6 +182,15 @@ const float ao_table[4] = {
     0.35,
 };
 
+const vec2 uv_table[6] = {
+    vec2(0, 0),
+    vec2(1, 0),
+    vec2(1, 1),
+    vec2(0, 0),
+    vec2(1, 1),
+    vec2(0, 1),
+};
+
 const uint vindex_table[6 * 2] = {
     // not flipped
     0, 1, 2, 3, 4, 5,
@@ -227,12 +237,23 @@ void main() {
     pPacked = face | (block << 3);
 
     pAo = ao_table[(upper >> ao_index_table[i]) & 3];
+
+    vec2 base_uv = uv_table[vindex];
+    vec2 repeat = vec2(h + 1, w + 1);
+    switch (face) {
+    case EAST:
+    case WEST:
+        repeat = repeat.yx;
+        break;
+    }
+    pUvs = base_uv * repeat;
 }
 
 #endif
 
 #ifdef _PIXEL
 
+layout(binding = 0) uniform sampler2D uSampler;
 layout(location = 0) out vec4 oColor;
 
 const vec3 sunDir = normalize(vec3(-1, -2, 5));
@@ -271,7 +292,7 @@ void main() {
     // float light = diffuse * 0.7 + 0.3;
     float light = light_lookup[face] * pAo;
 
-    oColor = vec4(color_lookup[block], 1) * light;
+    oColor = vec4(color_lookup[block], 1) * texture(uSampler, pUvs) * light;
 }
 
 #endif
