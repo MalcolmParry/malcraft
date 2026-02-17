@@ -176,10 +176,15 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     };
 
     {
+        const image_paths: [2][]const u8 = .{
+            "res/textures/grass.png",
+            "res/textures/stone.png",
+        };
         const Pixel = [4]u8;
 
         const size: @Vector(2, u32) = .{ 8, 8 };
         const pixel_count = @reduce(.Mul, size);
+        const image_stride = pixel_count * @sizeOf(Pixel);
 
         this.texture_image = try .init(this.device, .{
             .alloc = alloc,
@@ -189,6 +194,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
                 .sampled = true,
             },
             .loc = .device,
+            .layer_count = image_paths.len,
             .size = size,
         });
         errdefer this.texture_image.deinit(this.device, alloc);
@@ -202,25 +208,32 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         });
         errdefer this.texture_sampler.deinit(this.device, alloc);
 
-        this.texture_view = try .init(this.device, this.texture_image, .{ .color = true }, alloc);
+        this.texture_view = try .init(this.device, .{
+            .alloc = alloc,
+            .image = this.texture_image,
+            .aspect = .{ .color = true },
+            .layer_count = image_paths.len,
+        });
         errdefer this.texture_view.deinit(this.device, alloc);
 
         const staging = try this.device.initBuffer(.{
             .alloc = alloc,
             .loc = .host,
             .usage = .{ .src = true },
-            .size = pixel_count * @sizeOf(Pixel),
+            .size = image_stride * image_paths.len,
         });
         defer staging.deinit(this.device, alloc);
         const mapped_bytes = try staging.map(this.device);
 
-        var read_buffer: [zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
-        var image = try zigimg.Image.fromFilePath(alloc, "res/textures/grass.png", &read_buffer);
-        defer image.deinit(alloc);
-        var cropped = try image.crop(alloc, .{ .width = size[0], .height = size[1] });
-        try cropped.convert(alloc, .rgba32);
-        defer cropped.deinit(alloc);
-        @memcpy(mapped_bytes, cropped.rawBytes());
+        for (image_paths, 0..) |image_path, i| {
+            var read_buffer: [zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
+            var image = try zigimg.Image.fromFilePath(alloc, image_path, &read_buffer);
+            defer image.deinit(alloc);
+            var cropped = try image.crop(alloc, .{ .width = size[0], .height = size[1] });
+            try cropped.convert(alloc, .rgba32);
+            defer cropped.deinit(alloc);
+            @memcpy(mapped_bytes[image_stride * i .. image_stride * (i + 1)], cropped.rawBytes());
+        }
 
         const fence = try this.device.initFence(false);
         defer fence.deinit(this.device);
@@ -252,6 +265,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             .aspect = .{ .color = true },
             .image_offset = @splat(0),
             .image_size = .{ size[0], size[1], 1 },
+            .layer_count = image_paths.len,
         });
 
         try cmd_encoder.cmdMemoryBarrier(this.device, &.{
@@ -736,12 +750,11 @@ const PerFrameInFlight = struct {
         });
         errdefer this.depth_image.deinit(renderer.device, alloc);
 
-        this.depth_image_view = try .init(
-            renderer.device,
-            this.depth_image,
-            .{ .depth = true },
-            alloc,
-        );
+        this.depth_image_view = try .init(renderer.device, .{
+            .alloc = alloc,
+            .image = this.depth_image,
+            .aspect = .{ .depth = true },
+        });
         errdefer this.depth_image_view.deinit(renderer.device, alloc);
     }
 

@@ -14,6 +14,7 @@ pub const GpuLoaded = struct {
     face_offset: u32,
 };
 
+const TexId = u1;
 pub const GreedyQuad = packed struct(u64) {
     face_dir: FaceDir,
     x: u5,
@@ -24,7 +25,8 @@ pub const GreedyQuad = packed struct(u64) {
     /// height - 1 so range is 1-32
     h: u5,
     flip: u1,
-    unused: u3 = undefined,
+    tex_id: TexId,
+    unused: u2 = undefined,
     // 32 bit boundary
     ao_corners: AoCorners,
     unused2: u24 = undefined,
@@ -371,8 +373,13 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) v
                         .tr = aoCorner(corner_tr, side_t, side_r),
                     };
 
+                    const block_id = refs.this.getBlock(pos);
                     const quad_data: QuadData = .{
-                        .id = refs.this.getBlock(pos),
+                        .tex_id = switch (block_id) {
+                            .air => unreachable,
+                            .grass => 0,
+                            .stone => 1,
+                        },
                         .ao = ao,
                         .flip = shouldFlip(ao),
                     };
@@ -420,9 +427,9 @@ fn shouldFlip(ao: AoCorners) bool {
 }
 
 const QuadData = struct {
-    id: Chunk.BlockId,
     ao: AoCorners,
     flip: bool,
+    tex_id: TexId,
 };
 
 fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, data: QuadData, face: FaceDir, z: u5) void {
@@ -466,6 +473,7 @@ fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, da
                 .h = @intCast(h - 1),
                 .flip = @intFromBool(data.flip),
                 .ao_corners = data.ao,
+                .tex_id = data.tex_id,
             });
 
             y_usize += h;

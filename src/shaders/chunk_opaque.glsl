@@ -208,6 +208,7 @@ void main() {
     uint lower = iPacked.x;
     uint upper = iPacked.y;
 
+    uint tex_id = (lower >> 29) & 0x1;
     uint flipped = (lower >> 28) & 0x1;
     uint face =  (lower >>  0) & 0x07;
     uvec3 rel_pos = uvec3(
@@ -233,7 +234,7 @@ void main() {
     vec3 face_pos = face_table[i] + width_offset + height_offset;
 
     gl_Position = constants.vp * vec4(face_pos + vec3(block_pos), 1);
-    pPacked = face;
+    pPacked = face | (tex_id << 3);
 
     pAo = ao_table[(upper >> ao_index_table[i]) & 3];
 
@@ -253,7 +254,7 @@ void main() {
 
 #ifdef _PIXEL
 
-layout(binding = 0) uniform sampler2D uSampler;
+layout(binding = 0) uniform sampler2DArray uSampler;
 layout(location = 0) out vec4 oColor;
 
 const vec3 sunDir = normalize(vec3(-1, -2, 5));
@@ -278,6 +279,7 @@ const float light_lookup[6] = {
 
 void main() {
     uint face = pPacked & 0x7;
+    uint tex_id = pPacked >> 3;
 
     // vec3 normal = normal_lookup[face];
 
@@ -285,7 +287,7 @@ void main() {
     // float light = diffuse * 0.7 + 0.3;
     float light = light_lookup[face] * pAo;
 
-    oColor = texture(uSampler, pUvs) * light;
+    oColor = texture(uSampler, vec3(pUvs, tex_id)) * light;
 }
 
 #endif
