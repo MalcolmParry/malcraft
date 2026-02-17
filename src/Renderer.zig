@@ -1,5 +1,6 @@
 const std = @import("std");
 const options = @import("options");
+const zigimg = @import("zigimg");
 const mw = @import("mwengine");
 const gpu = mw.gpu;
 const math = mw.math;
@@ -212,16 +213,14 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         });
         defer staging.deinit(this.device, alloc);
         const mapped_bytes = try staging.map(this.device);
-        const mapping: *[size[1]][size[0]]Pixel = @ptrCast(mapped_bytes.ptr);
 
-        for (0..size[1]) |y| {
-            for (0..size[0]) |x| {
-                mapping.*[y][x] = if ((x + y) % 2 == 0)
-                    .{ 255, 255, 255, 255 }
-                else
-                    .{ 128, 128, 128, 255 };
-            }
-        }
+        var read_buffer: [zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
+        var image = try zigimg.Image.fromFilePath(alloc, "res/textures/grass.png", &read_buffer);
+        defer image.deinit(alloc);
+        var cropped = try image.crop(alloc, .{ .width = size[0], .height = size[1] });
+        try cropped.convert(alloc, .rgba32);
+        defer cropped.deinit(alloc);
+        @memcpy(mapped_bytes, cropped.rawBytes());
 
         const fence = try this.device.initFence(false);
         defer fence.deinit(this.device);

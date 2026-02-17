@@ -13,12 +13,23 @@ pub fn build(b: *Build) !void {
         .optimize = optimize,
     }).module("mwengine");
 
+    const zigimg = b.dependency("zigimg", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe = b.addExecutable(.{
         .name = "malcraft",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{
+                    .name = "zigimg",
+                    .module = zigimg.module("zigimg"),
+                },
+            },
         }),
     });
     exe.root_module.addImport("mwengine", mwengine);
@@ -27,8 +38,15 @@ pub fn build(b: *Build) !void {
     options.addOption(bool, "gpu_validation", b.option(bool, "gpu_validation", "") orelse (optimize != .ReleaseFast));
     exe.root_module.addOptions("options", options);
 
+    const res_install = b.addInstallDirectory(.{
+        .source_dir = b.path("res"),
+        .install_dir = .prefix,
+        .install_subdir = "res",
+    });
+
     const exe_install = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&exe_install.step);
+    b.getInstallStep().dependOn(&res_install.step);
     try buildShaders(b, b.getInstallStep());
 
     const run_step = b.step("run", "");

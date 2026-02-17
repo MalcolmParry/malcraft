@@ -24,8 +24,7 @@ pub const GreedyQuad = packed struct(u64) {
     /// height - 1 so range is 1-32
     h: u5,
     flip: u1,
-    block_id: Chunk.BlockId,
-    unused: u1 = undefined,
+    unused: u3 = undefined,
     // 32 bit boundary
     ao_corners: AoCorners,
     unused2: u24 = undefined,
@@ -466,7 +465,6 @@ fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, da
                 .w = @intCast(w - 1),
                 .h = @intCast(h - 1),
                 .flip = @intFromBool(data.flip),
-                .block_id = data.id,
                 .ao_corners = data.ao,
             });
 
