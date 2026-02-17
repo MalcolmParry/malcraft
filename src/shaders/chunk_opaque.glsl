@@ -243,6 +243,7 @@ void main() {
     switch (face) {
     case EAST:
     case WEST:
+    case DOWN:
         repeat = repeat.yx;
         break;
     }
