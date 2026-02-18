@@ -182,7 +182,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         };
         const Pixel = [4]u8;
 
-        const size: @Vector(2, u32) = .{ 8, 8 };
+        const size: @Vector(2, u32) = .{ 16, 16 };
         const pixel_count = @reduce(.Mul, size);
         const image_stride = pixel_count * @sizeOf(Pixel);
 
