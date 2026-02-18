@@ -34,8 +34,13 @@ pub fn build(b: *Build) !void {
     });
     exe.root_module.addImport("mwengine", mwengine);
 
+    const default_render_radius: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 64 else 3;
+    const default_vrender_radius: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 3 else 1;
+
     const options = b.addOptions();
     options.addOption(bool, "gpu_validation", b.option(bool, "gpu_validation", "") orelse (optimize != .ReleaseFast));
+    options.addOption(u32, "render_radius", b.option(u32, "render_radius", "") orelse default_render_radius);
+    options.addOption(u32, "vrender_radius", b.option(u32, "vrender_radius", "") orelse default_vrender_radius);
     exe.root_module.addOptions("options", options);
 
     const res_install = b.addInstallDirectory(.{

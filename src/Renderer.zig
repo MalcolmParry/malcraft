@@ -339,8 +339,8 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
 }
 
 fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
-    const render_radius = 3;
-    const vertical_render_radius = 1;
+    const render_radius: i32 = @intCast(options.render_radius);
+    const vertical_render_radius: i32 = @intCast(options.vrender_radius);
     const chunk_count = (render_radius * 2 + 1) * (render_radius * 2 + 1) * (vertical_render_radius * 2 + 1);
 
     try this.world_gen.queue.ensureUnusedCapacity(alloc, chunk_count);
@@ -494,7 +494,10 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         .image_size = this.display.imageSize(),
     });
 
-    const push_constants = math.toArray(this.camera.vp(aspect_ratio));
+    const push_constants: PerFramePushConstants = .{
+        .vp = math.toArray(this.camera.vp(aspect_ratio)),
+    };
+
     this.drawChunks(render_pass, push_constants, aspect_ratio);
 
     render_pass.cmdEnd(this.device);
@@ -530,14 +533,14 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     this.frame_index = (this.frame_index + 1) % this.per_frame_in_flight.len;
 }
 
-fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constants: [16]f32, aspect_ratio: f32) void {
+fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constants: PerFramePushConstants, aspect_ratio: f32) void {
     render_pass.cmdBindPipeline(this.device, this.chunk_pipeline, this.display.imageSize());
     render_pass.cmdBindResourceSets(this.device, this.chunk_pipeline, &.{this.chunk_resource_set}, 0);
     render_pass.cmdBindVertexBuffer(this.device, 0, this.chunk_mesh_alloc.buffer.region());
     render_pass.cmdPushConstants(this.device, this.chunk_pipeline, .{
         .stages = .{ .vertex = true },
         .offset = 0,
-        .size = 64,
+        .size = @sizeOf(PerFramePushConstants),
     }, @ptrCast(&push_constants));
 
     // frustum culling stuff
@@ -622,9 +625,7 @@ const Plane = struct {
 
 fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.ChunkPos, loaded_mesh: ChunkMesher.GpuLoaded) void {
     const push_constants: ChunkPushConstants = .{
-        .x = @intCast(pos[0]),
-        .y = @intCast(pos[1]),
-        .z = @intCast(pos[2]),
+        .pos = math.toArray(pos),
     };
 
     render_pass.cmdPushConstants(
@@ -632,8 +633,8 @@ fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.Chu
         this.chunk_pipeline,
         .{
             .stages = .{ .vertex = true },
-            .offset = 64,
-            .size = 8,
+            .offset = @sizeOf(PerFramePushConstants),
+            .size = @sizeOf(ChunkPushConstants),
         },
         @ptrCast(std.mem.asBytes(&push_constants)),
     );
@@ -675,7 +676,7 @@ fn initChunkPipeline(this: *Renderer, alloc: std.mem.Allocator) !void {
             .{
                 .stages = .{ .vertex = true },
                 .offset = 0,
-                .size = 64 + 8,
+                .size = @sizeOf(PerFramePushConstants) + @sizeOf(ChunkPushConstants),
             },
         },
         .resource_layouts = &.{this.chunk_resource_layout},
@@ -776,11 +777,12 @@ fn makeShader(this: *Renderer, alloc: std.mem.Allocator, file_name: []const u8, 
     return shader;
 }
 
-const ChunkPushConstants = packed struct(u64) {
-    x: i21,
-    y: i21,
-    z: i21,
-    padding: u1 = undefined,
+const ChunkPushConstants = struct {
+    pos: [3]i32,
+};
+
+const PerFramePushConstants = struct {
+    vp: [16]f32,
 };
 
 const Camera = struct {

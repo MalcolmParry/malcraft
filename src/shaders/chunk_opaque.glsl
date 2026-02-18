@@ -22,7 +22,7 @@ layout(location = 0) in uvec2 iPacked;
 layout(push_constant) uniform PushConstants {
     mat4 vp;
     // 21 bits per component
-    uint64_t packedChunkPos;
+    ivec3 chunk_pos;
 } constants;
 
 const ivec3 face_table[6 * 6] = {
@@ -177,9 +177,9 @@ const uint ao_index_table[6 * 6] = {
 
 const float ao_table[4] = {
     1.00,
-    0.75,
-    0.55,
-    0.35,
+    0.40,
+    0.20,
+    0.10,
 };
 
 const vec2 uv_table[6] = {
@@ -198,11 +198,9 @@ const uint vindex_table[6 * 2] = {
     0, 1, 5, 1, 2, 5,
 };
 
-int unpackI21(uint64_t packed, uint shift) {
-    uint raw = uint(packed >> shift);
-
-    return int(raw << uint(32 - 21)) >> (32 - 21);
-}
+const float swap_repeat[6] = {
+    0, 0, 1, 1, 0, 1,
+};
 
 void main() {
     uint lower = iPacked.x;
@@ -219,16 +217,10 @@ void main() {
     uint w = ((lower >> 18) & 0x1f);
     uint h = ((lower >> 23) & 0x1f);
 
-    ivec3 chunk_pos = ivec3(
-        unpackI21(constants.packedChunkPos,  0),
-        unpackI21(constants.packedChunkPos, 21),
-        unpackI21(constants.packedChunkPos, 42)
-    );
-
     uint vindex = vindex_table[gl_VertexIndex + flipped * 6];
     uint i = face * 6 + vindex;
 
-    ivec3 block_pos = ivec3(rel_pos) + chunk_pos * 32;
+    ivec3 block_pos = ivec3(rel_pos) + constants.chunk_pos * 32;
     ivec3 width_offset = int(w) * width_offset_table[i];
     ivec3 height_offset = int(h) * height_offset_table[i];
     vec3 face_pos = face_table[i] + width_offset + height_offset;
@@ -239,14 +231,8 @@ void main() {
     pAo = ao_table[(upper >> ao_index_table[i]) & 3];
 
     vec2 base_uv = uv_table[vindex];
-    vec2 repeat = vec2(h + 1, w + 1);
-    switch (face) {
-    case EAST:
-    case WEST:
-    case DOWN:
-        repeat = repeat.yx;
-        break;
-    }
+    vec2 repeat = uvec2(h + 1, w + 1);
+    repeat = mix(repeat, repeat.xy, swap_repeat[face]);
     pUvs = base_uv * repeat;
 }
 
@@ -287,7 +273,8 @@ void main() {
     // float light = diffuse * 0.7 + 0.3;
     float light = light_lookup[face] * pAo;
 
-    oColor = texture(uSampler, vec3(pUvs, tex_id)) * light;
+    vec4 albedo = texture(uSampler, vec3(pUvs, tex_id));
+    oColor = albedo * light;
 }
 
 #endif
