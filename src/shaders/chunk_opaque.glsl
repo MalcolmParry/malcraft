@@ -232,7 +232,7 @@ void main() {
 
     vec2 base_uv = uv_table[vindex];
     vec2 repeat = uvec2(h + 1, w + 1);
-    repeat = mix(repeat, repeat.xy, swap_repeat[face]);
+    repeat = mix(repeat, repeat.yx, swap_repeat[face]);
     pUvs = base_uv * repeat;
 }
 
