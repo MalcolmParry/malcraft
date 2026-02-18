@@ -21,7 +21,6 @@ layout(location = 0) in uvec2 iPacked;
 
 layout(push_constant) uniform PushConstants {
     mat4 vp;
-    // 21 bits per component
     ivec3 chunk_pos;
 } constants;
 
@@ -72,19 +71,19 @@ const ivec3 face_table[6 * 6] = {
 
 const ivec3 width_offset_table[6 * 6] = {
     // north 
+    ivec3(0, 1, 0),
     ivec3(0, 0, 0),
     ivec3(0, 0, 0),
-    ivec3(0, 0, 1),
+    ivec3(0, 1, 0),
     ivec3(0, 0, 0),
-    ivec3(0, 0, 1),
-    ivec3(0, 0, 1),
+    ivec3(0, 1, 0),
     // south
     ivec3(0, 0, 0),
+    ivec3(0, 1, 0),
+    ivec3(0, 1, 0),
     ivec3(0, 0, 0),
-    ivec3(0, 0, 1),
+    ivec3(0, 1, 0),
     ivec3(0, 0, 0),
-    ivec3(0, 0, 1),
-    ivec3(0, 0, 1),
     // east
     ivec3(0, 0, 0),
     ivec3(1, 0, 0),
@@ -101,11 +100,11 @@ const ivec3 width_offset_table[6 * 6] = {
     ivec3(1, 0, 0),
     // up
     ivec3(0, 0, 0),
+    ivec3(0, 1, 0),
+    ivec3(0, 1, 0),
     ivec3(0, 0, 0),
-    ivec3(1, 0, 0),
+    ivec3(0, 1, 0),
     ivec3(0, 0, 0),
-    ivec3(1, 0, 0),
-    ivec3(1, 0, 0),
     // down
     ivec3(0, 0, 0),
     ivec3(1, 0, 0),
@@ -117,19 +116,19 @@ const ivec3 width_offset_table[6 * 6] = {
 
 const ivec3 height_offset_table[6 * 6] = {
     // north 
-    ivec3(0, 1, 0),
     ivec3(0, 0, 0),
     ivec3(0, 0, 0),
-    ivec3(0, 1, 0),
+    ivec3(0, 0, 1),
     ivec3(0, 0, 0),
-    ivec3(0, 1, 0),
+    ivec3(0, 0, 1),
+    ivec3(0, 0, 1),
     // south
     ivec3(0, 0, 0),
-    ivec3(0, 1, 0),
-    ivec3(0, 1, 0),
     ivec3(0, 0, 0),
-    ivec3(0, 1, 0),
+    ivec3(0, 0, 1),
     ivec3(0, 0, 0),
+    ivec3(0, 0, 1),
+    ivec3(0, 0, 1),
     // east
     ivec3(0, 0, 0),
     ivec3(0, 0, 0),
@@ -146,11 +145,11 @@ const ivec3 height_offset_table[6 * 6] = {
     ivec3(0, 0, 1),
     // up
     ivec3(0, 0, 0),
-    ivec3(0, 1, 0),
-    ivec3(0, 1, 0),
     ivec3(0, 0, 0),
-    ivec3(0, 1, 0),
+    ivec3(1, 0, 0),
     ivec3(0, 0, 0),
+    ivec3(1, 0, 0),
+    ivec3(1, 0, 0),
     // down
     ivec3(0, 0, 0),
     ivec3(0, 0, 0),
@@ -198,10 +197,6 @@ const uint vindex_table[6 * 2] = {
     0, 1, 5, 1, 2, 5,
 };
 
-const float swap_repeat[6] = {
-    0, 0, 1, 1, 0, 1,
-};
-
 void main() {
     uint lower = iPacked.x;
     uint upper = iPacked.y;
@@ -231,8 +226,7 @@ void main() {
     pAo = ao_table[(upper >> ao_index_table[i]) & 3];
 
     vec2 base_uv = uv_table[vindex];
-    vec2 repeat = uvec2(h + 1, w + 1);
-    repeat = mix(repeat, repeat.yx, swap_repeat[face]);
+    vec2 repeat = uvec2(w + 1, h + 1);
     pUvs = base_uv * repeat;
 }
 

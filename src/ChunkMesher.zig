@@ -376,7 +376,7 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) v
                     const block_id = refs.this.getBlock(pos);
                     const quad_data: QuadData = .{
                         .tex_id = switch (block_id) {
-                            .air => unreachable,
+                            .air => 0,
                             .grass => 0,
                             .stone => 1,
                         },
@@ -464,13 +464,23 @@ fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, da
                 .up, .down => .{ x, y, z },
             };
 
+            const swapped_w = switch (face) {
+                .north, .south, .up => h,
+                else => w,
+            };
+
+            const swapped_h = switch (face) {
+                .north, .south, .up => w,
+                else => h,
+            };
+
             quads.appendAssumeCapacity(.{
                 .face_dir = face,
                 .x = pos[0],
                 .y = pos[1],
                 .z = pos[2],
-                .w = @intCast(w - 1),
-                .h = @intCast(h - 1),
+                .w = @intCast(swapped_w - 1),
+                .h = @intCast(swapped_h - 1),
                 .flip = @intFromBool(data.flip),
                 .ao_corners = data.ao,
                 .tex_id = data.tex_id,
