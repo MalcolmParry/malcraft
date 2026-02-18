@@ -86,7 +86,9 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         for (transitions, this.per_frame_in_flight) |*transition, *per_frame| {
             transition.* = .{ .image = .{
                 .image = per_frame.depth_image,
-                .aspect = .{ .depth = true },
+                .subresource_range = .{
+                    .aspect = .{ .depth = true },
+                },
                 .old_layout = .undefined,
                 .new_layout = .depth_stencil,
                 .src_stage = .{ .pipeline_start = true },
@@ -182,7 +184,8 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         };
         const Pixel = [4]u8;
 
-        const size: @Vector(2, u32) = .{ 16, 16 };
+        const mip_levels = 5;
+        const size: gpu.Image.Size2D = .{ 16, 16 };
         const pixel_count = @reduce(.Mul, size);
         const image_stride = pixel_count * @sizeOf(Pixel);
 
@@ -190,11 +193,13 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             .alloc = alloc,
             .format = .rgba8_srgb,
             .usage = .{
+                .src = true,
                 .dst = true,
                 .sampled = true,
             },
             .loc = .device,
             .layer_count = image_paths.len,
+            .mip_count = mip_levels,
             .size = size,
         });
         errdefer this.texture_image.deinit(this.device, alloc);
@@ -210,9 +215,11 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
         this.texture_view = try .init(this.device, .{
             .alloc = alloc,
+            .kind = .array_2d,
             .image = this.texture_image,
-            .aspect = .{ .color = true },
-            .layer_count = image_paths.len,
+            .subresource_range = .{
+                .aspect = .{ .color = true },
+            },
         });
         errdefer this.texture_view.deinit(this.device, alloc);
 
@@ -246,7 +253,9 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             .{
                 .image = .{
                     .image = this.texture_image,
-                    .aspect = .{ .color = true },
+                    .subresource_range = .{
+                        .aspect = .{ .color = true },
+                    },
                     .old_layout = .undefined,
                     .new_layout = .transfer_dst,
                     .src_stage = .{ .pipeline_start = true },
@@ -259,29 +268,96 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
         cmd_encoder.cmdCopyBufferToImage(.{
             .device = this.device,
+            .region = .{
+                .size = .{ size[0], size[1], 1 },
+            },
             .src = staging.region(),
             .dst = this.texture_image,
             .layout = .transfer_dst,
-            .aspect = .{ .color = true },
-            .image_offset = @splat(0),
-            .image_size = .{ size[0], size[1], 1 },
-            .layer_count = image_paths.len,
+            .subresource = .{
+                .aspect = .{ .color = true },
+                .layer_count = image_paths.len,
+            },
         });
 
-        try cmd_encoder.cmdMemoryBarrier(this.device, &.{
-            .{
+        var mip_size: gpu.Image.Size2D = size;
+        for (1..mip_levels) |level| {
+            const old_mip_size = mip_size;
+            if (mip_size[0] > 1) mip_size[0] /= 2;
+            if (mip_size[1] > 1) mip_size[1] /= 2;
+
+            try cmd_encoder.cmdMemoryBarrier(this.device, &.{.{
                 .image = .{
                     .image = this.texture_image,
-                    .aspect = .{ .color = true },
+                    .subresource_range = .{
+                        .aspect = .{ .color = true },
+                        .mip_offset = @intCast(level - 1),
+                        .mip_count = 1,
+                    },
                     .old_layout = .transfer_dst,
+                    .new_layout = .transfer_src,
+                    .src_stage = .{ .transfer = true },
+                    .dst_stage = .{ .transfer = true },
+                    .src_access = .{ .transfer_write = true },
+                    .dst_access = .{ .transfer_read = true },
+                },
+            }}, alloc);
+
+            try cmd_encoder.cmdCopyImageWithScaling(.{
+                .device = this.device,
+                .filter = .linear,
+                .src = this.texture_image,
+                .src_layout = .transfer_src,
+                .src_subresource = .{
+                    .aspect = .{ .color = true },
+                    .mip_level = @intCast(level - 1),
+                    .layer_count = image_paths.len,
+                },
+                .src_rect = .{ .size = old_mip_size },
+                .dst = this.texture_image,
+                .dst_layout = .transfer_dst,
+                .dst_subresource = .{
+                    .aspect = .{ .color = true },
+                    .mip_level = @intCast(level),
+                    .layer_count = image_paths.len,
+                },
+                .dst_rect = .{ .size = mip_size },
+            });
+
+            try cmd_encoder.cmdMemoryBarrier(this.device, &.{.{
+                .image = .{
+                    .image = this.texture_image,
+                    .subresource_range = .{
+                        .aspect = .{ .color = true },
+                        .mip_offset = @intCast(level - 1),
+                        .mip_count = 1,
+                    },
+                    .old_layout = .transfer_src,
                     .new_layout = .shader_read_only,
                     .src_stage = .{ .transfer = true },
                     .dst_stage = .{ .pixel_shader = true },
-                    .src_access = .{ .transfer_write = true },
+                    .src_access = .{ .transfer_read = true },
                     .dst_access = .{ .shader_read = true },
                 },
+            }}, alloc);
+        }
+
+        try cmd_encoder.cmdMemoryBarrier(this.device, &.{.{
+            .image = .{
+                .image = this.texture_image,
+                .subresource_range = .{
+                    .aspect = .{ .color = true },
+                    .mip_offset = mip_levels - 1,
+                    .mip_count = 1,
+                },
+                .old_layout = .transfer_dst,
+                .new_layout = .shader_read_only,
+                .src_stage = .{ .transfer = true },
+                .dst_stage = .{ .pixel_shader = true },
+                .src_access = .{ .transfer_write = true },
+                .dst_access = .{ .shader_read = true },
             },
-        }, alloc);
+        }}, alloc);
 
         try cmd_encoder.end(this.device);
         try this.device.submitCommands(.{
@@ -474,7 +550,9 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     try per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
         .{ .image = .{
             .image = this.display.image(image_index),
-            .aspect = .{ .color = true },
+            .subresource_range = .{
+                .aspect = .{ .color = true },
+            },
             .old_layout = if (this.images_initialized[image_index]) .present_src else .undefined,
             .new_layout = .color_attachment,
             .src_stage = .{ .pipeline_start = true },
@@ -505,7 +583,9 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     try per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
         .{ .image = .{
             .image = this.display.image(image_index),
-            .aspect = .{ .color = true },
+            .subresource_range = .{
+                .aspect = .{ .color = true },
+            },
             .old_layout = .color_attachment,
             .new_layout = .present_src,
             .src_stage = .{ .color_attachment_output = true },
@@ -753,8 +833,11 @@ const PerFrameInFlight = struct {
 
         this.depth_image_view = try .init(renderer.device, .{
             .alloc = alloc,
+            .kind = .@"2d",
             .image = this.depth_image,
-            .aspect = .{ .depth = true },
+            .subresource_range = .{
+                .aspect = .{ .depth = true },
+            },
         });
         errdefer this.depth_image_view.deinit(renderer.device, alloc);
     }
