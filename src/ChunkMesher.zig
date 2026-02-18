@@ -342,12 +342,12 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) v
                     var ao_bits: u8 = 0;
                     for (ao_sample_dirs, 0..) |sdir, i| {
                         const sample_offset: Chunk.BlockPos = switch (face) {
-                            .north => .{ 1, sdir[0], sdir[1] },
+                            .north => .{ 1, -sdir[0], sdir[1] },
                             .south => .{ -1, sdir[0], sdir[1] },
                             .east => .{ sdir[0], 1, sdir[1] },
-                            .west => .{ sdir[0], -1, sdir[1] },
-                            .up => .{ sdir[0], sdir[1], 1 },
-                            .down => .{ sdir[0], sdir[1], -1 },
+                            .west => .{ -sdir[0], -1, sdir[1] },
+                            .up => .{ sdir[1], sdir[0], 1 },
+                            .down => .{ sdir[1], -sdir[0], -1 },
                         };
 
                         const spos = pos + sample_offset;
@@ -458,19 +458,25 @@ fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, da
                 w += 1;
             }
 
-            const pos: Chunk.Pos = switch (face) {
+            var pos: Chunk.Pos = switch (face) {
                 .north, .south => .{ z, y, x },
                 .west, .east => .{ x, z, y },
                 .up, .down => .{ x, y, z },
             };
 
+            switch (face) {
+                .north, .down => pos[1] += @intCast(h - 1),
+                .west => pos[0] += @intCast(w - 1),
+                else => {},
+            }
+
             const swapped_w = switch (face) {
-                .north, .south, .up => h,
+                .north, .south, .up, .down => h,
                 else => w,
             };
 
             const swapped_h = switch (face) {
-                .north, .south, .up => w,
+                .north, .south, .up, .down => w,
                 else => h,
             };
 

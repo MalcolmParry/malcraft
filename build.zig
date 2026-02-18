@@ -82,7 +82,8 @@ fn buildShader(b: *Build, build_step: *Build.Step, entry: std.fs.Dir.Walker.Entr
     const src = b.path(b.fmt("{s}/{s}", .{ shader_path, entry.path }));
     var name_iter = std.mem.splitScalar(u8, entry.basename, '.');
     const name = name_iter.next() orelse return error.Failed;
-    const out_name = b.fmt("{s}.{s}.spv", .{ name, t });
+    const out_name = b.fmt("{s}.{s}.noopt.spv", .{ name, t });
+    const opt_out_name = b.fmt("{s}.{s}.spv", .{ name, t });
 
     const command = b.addSystemCommand(&.{ "glslangValidator", "-S", t });
     command.addArgs(defines);
@@ -90,9 +91,15 @@ fn buildShader(b: *Build, build_step: *Build.Step, entry: std.fs.Dir.Walker.Entr
     command.addFileInput(src);
     command.addFileArg(src);
     command.addArg("-o");
-
     const out = command.addOutputFileArg(out_name);
-    const install = b.addInstallFile(out, b.fmt("{s}/{s}", .{ shader_output, out_name }));
+
+    const opt = b.addSystemCommand(&.{ "spirv-opt", "-O" });
+    opt.addFileInput(out);
+    opt.addFileArg(out);
+    opt.addArg("-o");
+    const opt_out = opt.addOutputFileArg(opt_out_name);
+
+    const install = b.addInstallFile(opt_out, b.fmt("{s}/{s}", .{ shader_output, opt_out_name }));
     install.step.dependOn(&command.step);
     build_step.dependOn(&install.step);
 }
