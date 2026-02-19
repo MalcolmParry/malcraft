@@ -239,7 +239,7 @@ fn worker(info: *MeshThreadInfo) void {
 }
 
 fn greedyMeshWithFastExits(alloc: std.mem.Allocator, state: *MeshingState, chunks: *const Chunk.Map, pos: Chunk.ChunkPos) void {
-    const chunk = chunks.get(pos).?;
+    const chunk = chunks.get(pos) orelse return;
     if (chunk.allAir()) return;
 
     const refs: ChunkRefs = .{

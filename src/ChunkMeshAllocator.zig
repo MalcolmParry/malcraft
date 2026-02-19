@@ -4,6 +4,7 @@ const gpu = mw.gpu;
 const math = mw.math;
 const ChunkMesher = @import("ChunkMesher.zig");
 const Chunk = @import("Chunk.zig");
+const RendererInfo = @import("Renderer.zig").Info;
 
 const ChunkMeshAllocator = @This();
 pub const buffer_size = 1024 * 1024 * 512;
@@ -13,6 +14,8 @@ comptime {
     std.debug.assert(buffer_size / @sizeOf(ChunkMesher.GreedyQuad) < std.math.maxInt(u32));
 }
 
+renderer_info: *const RendererInfo,
+free_queues: []std.ArrayList(ChunkMesher.GpuLoaded),
 staging: gpu.Buffer,
 staging_face_offset: gpu.Size,
 mapping: []ChunkMesher.GreedyQuad,
@@ -34,9 +37,15 @@ const FreeRegion = struct {
 const InitInfo = struct {
     device: gpu.Device,
     alloc: std.mem.Allocator,
+    renderer_info: *const RendererInfo,
 };
 
 pub fn init(this: *ChunkMeshAllocator, info: InitInfo) !void {
+    this.renderer_info = info.renderer_info;
+
+    this.free_queues = try info.alloc.alloc(std.ArrayList(ChunkMesher.GpuLoaded), info.renderer_info.frames_in_flight);
+    @memset(this.free_queues, .empty);
+
     this.staging = try .init(info.device, .{
         .alloc = info.alloc,
         .loc = .host,
@@ -92,6 +101,11 @@ pub fn deinit(this: *ChunkMeshAllocator) void {
         this.alloc.destroy(free_region);
     }
 
+    for (this.free_queues) |*queue| {
+        queue.deinit(this.alloc);
+    }
+    this.alloc.free(this.free_queues);
+
     this.buffer.deinit(this.device, this.alloc);
     this.staging.unmap(this.device);
     this.staging.deinit(this.device, this.alloc);
@@ -134,7 +148,10 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const Chunk
         .src_access = .{ .transfer_write = true },
         .dst_access = .{ .vertex_read = true },
     } });
-    this.loaded_meshes.putAssumeCapacityNoClobber(pos, on_gpu);
+
+    const entry = this.loaded_meshes.getOrPutAssumeCapacity(pos);
+    if (entry.found_existing) try this.queueFree(entry.value_ptr.*);
+    entry.value_ptr.* = on_gpu;
 
     this.staging_face_offset += on_cpu.len;
 }
@@ -169,6 +186,7 @@ pub fn allocate(this: *ChunkMeshAllocator, quad_count: usize) !ChunkMesher.GpuLo
 
         if (free_region.size == byte_count) {
             this.free_list.remove(node);
+            this.alloc.destroy(free_region);
         } else {
             free_region.offset += byte_count;
             free_region.size -= byte_count;
@@ -181,4 +199,42 @@ pub fn allocate(this: *ChunkMeshAllocator, quad_count: usize) !ChunkMesher.GpuLo
     }
 
     return error.ChunkMeshBufferFull;
+}
+
+pub fn free(mesh_alloc: *ChunkMeshAllocator, chunk: ChunkMesher.GpuLoaded) !void {
+    const offset_bytes = chunk.face_offset * @sizeOf(ChunkMesher.GreedyQuad);
+    const size_bytes = chunk.face_count * @sizeOf(ChunkMesher.GreedyQuad);
+
+    var maybe_node = mesh_alloc.free_list.first;
+    const maybe_closest_after: ?*std.DoublyLinkedList.Node = blk: while (maybe_node) |node| : (maybe_node = node.next) {
+        const free_region: *FreeRegion = @fieldParentPtr("node", node);
+
+        if (free_region.offset > offset_bytes) break :blk node;
+    } else null;
+
+    const new = try mesh_alloc.alloc.create(FreeRegion);
+    new.* = .{
+        .offset = offset_bytes,
+        .size = size_bytes,
+    };
+
+    if (maybe_closest_after) |closest| {
+        mesh_alloc.free_list.insertBefore(closest, &new.node);
+    } else {
+        mesh_alloc.free_list.prepend(&new.node);
+    }
+}
+
+pub fn queueFree(mesh_alloc: *ChunkMeshAllocator, chunk: ChunkMesher.GpuLoaded) !void {
+    try mesh_alloc.free_queues[mesh_alloc.renderer_info.frame_slot()].append(mesh_alloc.alloc, chunk);
+}
+
+pub fn freeQueued(mesh_alloc: *ChunkMeshAllocator) !void {
+    const queue = &mesh_alloc.free_queues[mesh_alloc.renderer_info.frame_slot()];
+
+    for (queue.items) |mesh| {
+        try mesh_alloc.free(mesh);
+    }
+
+    queue.clearRetainingCapacity();
 }

@@ -27,20 +27,31 @@ pub fn deinit(gen: *WorldGenerator) void {
     gen.queue.deinit(gen.alloc);
 }
 
+const target_gen_time_ns = 1_000_000;
 pub fn genMany(
     gen: *WorldGenerator,
     chunks: *Chunk.Map,
     mesher: *ChunkMesher,
     alloc: std.mem.Allocator,
 ) !void {
+    var timer: std.time.Timer = try .start();
+
     try mesher.thread_info.queue.ensureUnusedCapacity(gen.alloc, gen.queue.len);
 
-    var iter = gen.queue.iterator();
-    while (iter.next()) |pos| {
+    while (true) {
+        if (timer.read() >= target_gen_time_ns) break;
+
+        const pos = gen.queue.popFront() orelse break;
         const chunk = try gen.generate(pos);
         try chunks.put(alloc, pos, chunk);
         if (chunk.allAir()) continue;
         mesher.thread_info.queue.pushBackAssumeCapacity(pos);
+        mesher.thread_info.queue.pushBackAssumeCapacity(pos + @as(Chunk.ChunkPos, .{ 1, 0, 0 }));
+        mesher.thread_info.queue.pushBackAssumeCapacity(pos + @as(Chunk.ChunkPos, .{ -1, 0, 0 }));
+        mesher.thread_info.queue.pushBackAssumeCapacity(pos + @as(Chunk.ChunkPos, .{ 0, 1, 0 }));
+        mesher.thread_info.queue.pushBackAssumeCapacity(pos + @as(Chunk.ChunkPos, .{ 0, -1, 0 }));
+        mesher.thread_info.queue.pushBackAssumeCapacity(pos + @as(Chunk.ChunkPos, .{ 0, 0, 1 }));
+        mesher.thread_info.queue.pushBackAssumeCapacity(pos + @as(Chunk.ChunkPos, .{ 0, 0, -1 }));
     }
 }
 

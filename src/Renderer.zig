@@ -11,6 +11,7 @@ const WorldGenerator = @import("WorldGenerator.zig");
 
 const Renderer = @This();
 
+info: Info,
 destruct_queue: std.ArrayList(gpu.AnyObject),
 event_queue: mw.EventQueue,
 window: mw.Window,
@@ -18,11 +19,9 @@ instance: gpu.Instance,
 device: gpu.Device,
 display: gpu.Display,
 images_initialized: []bool,
-frame_index: usize,
 per_frame_in_flight: []PerFrameInFlight,
 frame_timer: std.time.Timer,
 total_timer: std.time.Timer,
-frame_count: usize,
 last_cursor: @Vector(2, f32),
 dirty_swapchain: bool,
 wireframe: bool,
@@ -66,7 +65,12 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     errdefer this.display.deinit(alloc);
     std.log.info("display size: {}", .{this.display.imageSize()});
 
-    this.images_initialized = try alloc.alloc(bool, this.display.imageCount());
+    this.info = .{
+        .frames_in_flight = @intCast(this.display.imageCount()),
+        .frame_count_atomic = .init(0),
+    };
+
+    this.images_initialized = try alloc.alloc(bool, this.info.frames_in_flight);
     errdefer alloc.free(this.images_initialized);
     @memset(this.images_initialized, false);
 
@@ -74,13 +78,12 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     errdefer this.destruct_queue.deinit(alloc);
     errdefer gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
 
-    this.frame_index = 0;
     try this.initFramesInFlight(alloc);
     errdefer this.deinitFramesInFlight(alloc);
 
     // transition depth
     {
-        const transitions = try alloc.alloc(gpu.CommandEncoder.MemoryBarrier, this.per_frame_in_flight.len);
+        const transitions = try alloc.alloc(gpu.CommandEncoder.MemoryBarrier, this.info.frames_in_flight);
         defer alloc.free(transitions);
 
         for (transitions, this.per_frame_in_flight) |*transition, *per_frame| {
@@ -129,6 +132,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     try this.chunk_mesh_alloc.init(.{
         .device = this.device,
         .alloc = alloc,
+        .renderer_info = &this.info,
     });
     errdefer this.chunk_mesh_alloc.deinit();
 
@@ -166,7 +170,6 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     errdefer this.chunk_pipeline.deinit(this.device, alloc);
 
     this.total_timer = try .start();
-    this.frame_count = 0;
     this.last_cursor = .{ 0, 0 };
     this.dirty_swapchain = false;
     this.camera = .{
@@ -410,7 +413,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.event_queue.deinit();
 
     const total_time_s: f64 = @as(f64, @floatFromInt(this.total_timer.read())) / std.time.ns_per_s;
-    const fps: f64 = @as(f64, @floatFromInt(this.frame_count)) / total_time_s;
+    const fps: f64 = @as(f64, @floatFromInt(this.info.frame_count())) / total_time_s;
     std.log.info("mean fps {}", .{fps});
 }
 
@@ -441,20 +444,24 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
             return math.lengthSqr(f_left) < math.lengthSqr(f_right);
         }
     }.lessThanFn);
-
-    var timer: std.time.Timer = try .start();
-    try this.world_gen.genMany(&this.chunks, &this.chunk_mesher, alloc);
-    std.log.info("world gen time: {} ns", .{timer.read()});
-    std.log.info("chunk count {}", .{chunk_count});
 }
 
 pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
-    if (this.frame_count == 0)
+    if (this.info.frame_count() == 0)
         this.frame_timer = try .start();
+
+    const frame_slot = (this.info.frame_count() + 1) % this.info.frames_in_flight;
+    const per_frame = &this.per_frame_in_flight[frame_slot];
+    try per_frame.presented_fence.wait(this.device, std.time.ns_per_s);
+    _ = this.info.frame_count_atomic.fetchAdd(1, .monotonic);
+
+    gpu.AnyObject.deinitAllReversed(per_frame.trash.items, this.device, alloc);
+    per_frame.trash.clearRetainingCapacity();
+    try this.chunk_mesh_alloc.freeQueued();
 
     if (this.dirty_swapchain) {
         std.log.info("rebuilding swapchain", .{});
-        const fences = try alloc.alloc(gpu.Fence, this.per_frame_in_flight.len);
+        const fences = try alloc.alloc(gpu.Fence, this.info.frames_in_flight);
         defer alloc.free(fences);
         for (fences, 0..) |*fence, i| fence.* = this.per_frame_in_flight[i].presented_fence;
         try gpu.Fence.waitMany(fences, this.device, .all, std.time.ns_per_s);
@@ -471,11 +478,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         return;
     }
 
-    const per_frame = &this.per_frame_in_flight[this.frame_index];
-    try per_frame.presented_fence.wait(this.device, std.time.ns_per_s);
-    gpu.AnyObject.deinitAllReversed(per_frame.trash.items, this.device, alloc);
-    per_frame.trash.clearRetainingCapacity();
-
+    try this.world_gen.genMany(&this.chunks, &this.chunk_mesher, alloc);
     try this.chunk_mesher.meshMany();
 
     if (input.wireframe) {
@@ -609,8 +612,6 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
 
     try per_frame.presented_fence.reset(this.device);
     _ = try this.display.presentImage(image_index, &.{per_frame.render_finished_semaphore}, per_frame.presented_fence);
-    this.frame_count += 1;
-    this.frame_index = (this.frame_index + 1) % this.per_frame_in_flight.len;
 }
 
 fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constants: PerFramePushConstants, aspect_ratio: f32) void {
@@ -888,5 +889,18 @@ const Camera = struct {
 
     fn vp(this: Camera, aspect_ratio: f32) math.Mat4 {
         return math.matMul(this.proj(aspect_ratio), this.view());
+    }
+};
+
+pub const Info = struct {
+    frame_count_atomic: std.atomic.Value(u64),
+    frames_in_flight: u32,
+
+    pub inline fn frame_count(info: *const Info) u64 {
+        return info.frame_count_atomic.load(.acquire);
+    }
+
+    pub inline fn frame_slot(info: *const Info) u32 {
+        return @intCast(info.frame_count() % info.frames_in_flight);
     }
 };
