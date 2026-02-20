@@ -13,7 +13,6 @@ pub const max_faces = (32 * 32 * 32 / 2) * 6;
 pub const GpuLoaded = struct {
     face_count: u32,
     face_offset: u32,
-    version: u32,
 };
 
 const TexId = u1;
@@ -46,7 +45,7 @@ arena: std.heap.ArenaAllocator,
 mesh_alloc: *ChunkMeshAllocator,
 thread_info: MeshThreadInfo,
 threads: []std.Thread,
-queue: std.AutoArrayHashMapUnmanaged(Chunk.ChunkPos, Chunk.Version),
+queue: std.AutoArrayHashMapUnmanaged(Chunk.ChunkPos, void),
 
 meshing_time_ns: u64,
 total_chunks_meshed: u64,
@@ -103,13 +102,7 @@ pub fn deinit(this: *ChunkMesher) void {
 }
 
 pub fn addRequest(mesher: *ChunkMesher, pos: Chunk.ChunkPos) !void {
-    const new_version = if (mesher.mesh_alloc.loaded_meshes.get(pos)) |old|
-        old.version + 1
-    else
-        0;
-
-    const entry = try mesher.queue.getOrPut(mesher.alloc, pos);
-    entry.value_ptr.* = new_version;
+    try mesher.queue.put(mesher.alloc, pos, {});
 }
 
 /// takes in a block pos
@@ -176,7 +169,6 @@ pub fn meshMany(this: *ChunkMesher) !void {
 
         this.thread_info.jobs[i] = .{
             .pos = kv.key_ptr.*,
-            .version = kv.value_ptr.*,
         };
     }
 
@@ -199,7 +191,6 @@ pub fn meshMany(this: *ChunkMesher) !void {
         try this.mesh_alloc.writeChunkAssumeCapacity(
             job.faces,
             job.pos,
-            job.version,
         );
 
         this.face_count += job.faces.len;
@@ -210,7 +201,6 @@ pub fn meshMany(this: *ChunkMesher) !void {
 
 const Job = struct {
     pos: Chunk.ChunkPos,
-    version: Chunk.Version,
     // result
     faces: []GreedyQuad = &.{},
 };

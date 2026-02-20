@@ -123,8 +123,8 @@ pub fn ensureCapacity(mesh_alloc: *ChunkMeshAllocator, count: usize) !void {
     try mesh_alloc.loaded_meshes.ensureUnusedCapacity(mesh_alloc.alloc, count);
 }
 
-pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const ChunkMesher.GreedyQuad, pos: Chunk.ChunkPos, version: u32) !void {
-    const on_gpu = try this.allocate(on_cpu.len, version);
+pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const ChunkMesher.GreedyQuad, pos: Chunk.ChunkPos) !void {
+    const on_gpu = try this.allocate(on_cpu.len);
 
     const staging_offset_bytes = this.staging_face_offset * @sizeOf(ChunkMesher.GreedyQuad);
     const size_bytes = on_gpu.face_count * @sizeOf(ChunkMesher.GreedyQuad);
@@ -177,7 +177,7 @@ pub fn upload(this: *ChunkMeshAllocator, device: gpu.Device, cmd_encoder: gpu.Co
     }
 }
 
-pub fn allocate(this: *ChunkMeshAllocator, quad_count: usize, version: u32) !ChunkMesher.GpuLoaded {
+pub fn allocate(this: *ChunkMeshAllocator, quad_count: usize) !ChunkMesher.GpuLoaded {
     const byte_count = quad_count * @sizeOf(ChunkMesher.GreedyQuad);
 
     var maybe_node = this.free_list.first;
@@ -199,7 +199,6 @@ pub fn allocate(this: *ChunkMeshAllocator, quad_count: usize, version: u32) !Chu
         return .{
             .face_offset = @intCast(quad_offset),
             .face_count = @intCast(quad_count),
-            .version = version,
         };
     }
 
