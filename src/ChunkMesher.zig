@@ -5,6 +5,7 @@ const math = mw.math;
 const gpu = mw.gpu;
 const Chunk = @import("Chunk.zig");
 const ChunkMeshAllocator = @import("ChunkMeshAllocator.zig");
+const World = @import("World.zig");
 
 const ChunkMesher = @This();
 pub const max_faces = (32 * 32 * 32 / 2) * 6;
@@ -54,7 +55,7 @@ face_count: u64,
 pub const InitInfo = struct {
     alloc: std.mem.Allocator,
     mesh_alloc: *ChunkMeshAllocator,
-    chunks: *const Chunk.Map,
+    world: *const World,
 };
 
 pub fn init(this: *ChunkMesher, info: InitInfo) !void {
@@ -72,7 +73,7 @@ pub fn init(this: *ChunkMesher, info: InitInfo) !void {
 
     this.thread_info = .{
         .thread_count = thread_count,
-        .chunks = info.chunks,
+        .world = info.world,
         .jobs = &.{},
     };
 
@@ -109,6 +110,37 @@ pub fn addRequest(mesher: *ChunkMesher, pos: Chunk.ChunkPos) !void {
 
     const entry = try mesher.queue.getOrPut(mesher.alloc, pos);
     entry.value_ptr.* = new_version;
+}
+
+/// takes in a block pos
+/// adds requests for the chunk and adjacent ones if on the boundary
+pub fn addRequestWithCollateral(mesher: *ChunkMesher, pos: Chunk.BlockPos) !void {
+    const chunk_pos = World.chunkPosFromBlockPos(pos);
+    const rel = World.chunkRelFromBlockPos(pos);
+    try mesher.addRequest(chunk_pos);
+
+    const zero_mask = rel == @as(Chunk.ChunkPos, @splat(0));
+    const max_mask = rel == @as(Chunk.ChunkPos, @splat(Chunk.len - 1));
+
+    if (@reduce(.Or, zero_mask)) {
+        for (0..3) |axis| {
+            if (zero_mask[axis]) {
+                var new = chunk_pos;
+                new[axis] -= 1;
+                try mesher.addRequest(new);
+            }
+        }
+    }
+
+    if (@reduce(.Or, max_mask)) {
+        for (0..3) |axis| {
+            if (max_mask[axis]) {
+                var new = chunk_pos;
+                new[axis] += 1;
+                try mesher.addRequest(new);
+            }
+        }
+    }
 }
 
 const target_mesh_time_ns = 4_000_000;
@@ -193,7 +225,7 @@ const MeshThreadInfo = struct {
     index: std.atomic.Value(u32) align(cl) = .init(0),
     completed: std.atomic.Value(u32) align(cl) = .init(0),
     thread_count: u32 align(cl),
-    chunks: *const Chunk.Map,
+    world: *const World,
     jobs: []Job,
 
     fn waitUntilDone(this: *MeshThreadInfo) void {
@@ -274,10 +306,7 @@ fn worker(info: *MeshThreadInfo) void {
             state.quads.clearRetainingCapacity();
             for (&state.maps) |*map| map.clearRetainingCapacity();
 
-            if (@reduce(.And, job.pos == @as(Chunk.ChunkPos, .{ 5, 0, 0 }))) {
-                std.log.info("thing {}", .{job.version});
-            }
-            greedyMeshWithFastExits(alloc, &state, info.chunks, job.pos);
+            greedyMeshWithFastExits(alloc, &state, info.world, job.pos);
 
             job.faces = arena.dupe(GreedyQuad, state.quads.items) catch @panic("");
             completed += 1;
@@ -287,18 +316,18 @@ fn worker(info: *MeshThreadInfo) void {
     }
 }
 
-fn greedyMeshWithFastExits(alloc: std.mem.Allocator, state: *MeshingState, chunks: *const Chunk.Map, pos: Chunk.ChunkPos) void {
-    const chunk = chunks.get(pos) orelse return;
+fn greedyMeshWithFastExits(alloc: std.mem.Allocator, state: *MeshingState, world: *const World, pos: Chunk.ChunkPos) void {
+    const chunk = world.chunks.get(pos) orelse return;
     if (chunk.allAir()) return;
 
     const refs: ChunkRefs = .{
         .this = chunk,
-        .north = chunks.get(pos + @as(Chunk.BlockPos, .{ 1, 0, 0 })),
-        .south = chunks.get(pos + @as(Chunk.BlockPos, .{ -1, 0, 0 })),
-        .east = chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 1, 0 })),
-        .west = chunks.get(pos + @as(Chunk.BlockPos, .{ 0, -1, 0 })),
-        .up = chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, 1 })),
-        .down = chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, -1 })),
+        .north = world.chunks.get(pos + @as(Chunk.BlockPos, .{ 1, 0, 0 })),
+        .south = world.chunks.get(pos + @as(Chunk.BlockPos, .{ -1, 0, 0 })),
+        .east = world.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 1, 0 })),
+        .west = world.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, -1, 0 })),
+        .up = world.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, 1 })),
+        .down = world.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, -1 })),
     };
 
     if (chunk.allOpaque()) {

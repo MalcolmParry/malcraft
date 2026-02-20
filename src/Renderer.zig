@@ -8,6 +8,7 @@ const Chunk = @import("Chunk.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
 const ChunkMeshAllocator = @import("ChunkMeshAllocator.zig");
 const WorldGenerator = @import("WorldGenerator.zig");
+const World = @import("World.zig");
 
 const Renderer = @This();
 
@@ -26,8 +27,7 @@ last_cursor: @Vector(2, f32),
 dirty_swapchain: bool,
 wireframe: bool,
 
-chunks: Chunk.Map,
-
+world: World,
 world_gen: WorldGenerator,
 chunk_mesh_alloc: ChunkMeshAllocator,
 chunk_mesher: ChunkMesher,
@@ -44,6 +44,7 @@ texture_sampler: gpu.Sampler,
 
 pub const Input = struct {
     wireframe: bool = false,
+    break_block: bool = false,
 };
 
 pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
@@ -123,8 +124,8 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         try fence.wait(this.device, std.time.ns_per_s);
     }
 
-    this.chunks = .empty;
-    errdefer this.chunks.deinit(alloc);
+    this.world = .{};
+    errdefer this.world.deinit(alloc);
 
     try this.world_gen.init(alloc);
     errdefer this.world_gen.deinit();
@@ -139,7 +140,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     try this.chunk_mesher.init(.{
         .mesh_alloc = &this.chunk_mesh_alloc,
         .alloc = alloc,
-        .chunks = &this.chunks,
+        .world = &this.world,
     });
     errdefer this.chunk_mesher.deinit();
 
@@ -394,12 +395,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.chunk_mesher.deinit();
     this.chunk_mesh_alloc.deinit();
     this.world_gen.deinit();
-
-    var chunk_iter = this.chunks.iterator();
-    while (chunk_iter.next()) |kv| {
-        kv.value_ptr.deinit(alloc);
-    }
-    this.chunks.deinit(alloc);
+    this.world.deinit(alloc);
 
     this.deinitFramesInFlight(alloc);
     this.chunk_pipeline.deinit(this.device, alloc);
@@ -478,7 +474,18 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         return;
     }
 
-    try this.world_gen.genMany(&this.chunks, &this.chunk_mesher, alloc);
+    if (input.break_block) {
+        const origin = this.camera.pos;
+        const q = math.quatFromEuler(this.camera.euler);
+        const dir = math.normalize(math.quatMulVec(q, math.dir_forward));
+
+        if (this.world.rayCast(origin, dir)) |pos| {
+            this.world.setBlock(pos, .air) catch unreachable;
+            try this.chunk_mesher.addRequestWithCollateral(pos);
+        }
+    }
+
+    try this.world_gen.genMany(&this.world, &this.chunk_mesher, alloc);
     try this.chunk_mesher.meshMany();
 
     if (input.wireframe) {

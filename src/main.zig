@@ -22,6 +22,7 @@ pub fn main() !void {
                     switch (key) {
                         .escape => should_close = true,
                         .f => renderer_input.wireframe = true,
+                        .space => renderer_input.break_block = true,
                         else => {},
                     }
                 },

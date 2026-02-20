@@ -4,6 +4,7 @@ const math = mw.math;
 const Chunk = @import("Chunk.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
 const Deque = @import("deque.zig").Deque;
+const World = @import("World.zig");
 
 const WorldGenerator = @This();
 const i32x2 = @Vector(2, i32);
@@ -30,7 +31,7 @@ pub fn deinit(gen: *WorldGenerator) void {
 const target_gen_time_ns = 4_000_000;
 pub fn genMany(
     gen: *WorldGenerator,
-    chunks: *Chunk.Map,
+    world: *World,
     mesher: *ChunkMesher,
     alloc: std.mem.Allocator,
 ) !void {
@@ -41,7 +42,7 @@ pub fn genMany(
 
         const pos = gen.queue.popFront() orelse break;
         const chunk = try gen.generate(pos);
-        try chunks.put(alloc, pos, chunk);
+        try world.chunks.put(alloc, pos, chunk);
         if (chunk.allAir()) continue;
 
         try mesher.addRequest(pos);
