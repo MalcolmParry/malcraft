@@ -67,7 +67,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     this.info = .{
         .frames_in_flight = @intCast(this.display.imageCount()),
-        .frame_count_atomic = .init(0),
+        .frame_count = 0,
     };
 
     this.images_initialized = try alloc.alloc(bool, this.info.frames_in_flight);
@@ -413,7 +413,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.event_queue.deinit();
 
     const total_time_s: f64 = @as(f64, @floatFromInt(this.total_timer.read())) / std.time.ns_per_s;
-    const fps: f64 = @as(f64, @floatFromInt(this.info.frame_count())) / total_time_s;
+    const fps: f64 = @as(f64, @floatFromInt(this.info.frame_count)) / total_time_s;
     std.log.info("mean fps {}", .{fps});
 }
 
@@ -423,7 +423,7 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
     const chunk_count = (render_radius * 2 + 1) * (render_radius * 2 + 1) * (vertical_render_radius * 2 + 1);
 
     try this.world_gen.queue.ensureUnusedCapacity(alloc, chunk_count);
-    try this.chunk_mesher.thread_info.queue.ensureUnusedCapacity(alloc, chunk_count);
+
     var z: i32 = vertical_render_radius;
     while (z >= -vertical_render_radius) : (z -= 1) {
         var y: i32 = -render_radius;
@@ -447,13 +447,13 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
 }
 
 pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
-    if (this.info.frame_count() == 0)
+    if (this.info.frame_count == 0)
         this.frame_timer = try .start();
 
-    const frame_slot = (this.info.frame_count() + 1) % this.info.frames_in_flight;
+    const frame_slot = (this.info.frame_count + 1) % this.info.frames_in_flight;
     const per_frame = &this.per_frame_in_flight[frame_slot];
     try per_frame.presented_fence.wait(this.device, std.time.ns_per_s);
-    _ = this.info.frame_count_atomic.fetchAdd(1, .monotonic);
+    this.info.frame_count += 1;
 
     gpu.AnyObject.deinitAllReversed(per_frame.trash.items, this.device, alloc);
     per_frame.trash.clearRetainingCapacity();
@@ -893,14 +893,10 @@ const Camera = struct {
 };
 
 pub const Info = struct {
-    frame_count_atomic: std.atomic.Value(u64),
+    frame_count: u64,
     frames_in_flight: u32,
 
-    pub inline fn frame_count(info: *const Info) u64 {
-        return info.frame_count_atomic.load(.acquire);
-    }
-
     pub inline fn frame_slot(info: *const Info) u32 {
-        return @intCast(info.frame_count() % info.frames_in_flight);
+        return @intCast(info.frame_count % info.frames_in_flight);
     }
 };

@@ -12,6 +12,7 @@ pub const max_faces = (32 * 32 * 32 / 2) * 6;
 pub const GpuLoaded = struct {
     face_count: u32,
     face_offset: u32,
+    version: u32,
 };
 
 const TexId = u1;
@@ -44,6 +45,7 @@ arena: std.heap.ArenaAllocator,
 mesh_alloc: *ChunkMeshAllocator,
 thread_info: MeshThreadInfo,
 threads: []std.Thread,
+queue: std.AutoArrayHashMapUnmanaged(Chunk.ChunkPos, Chunk.Version),
 
 meshing_time_ns: u64,
 total_chunks_meshed: u64,
@@ -62,6 +64,7 @@ pub fn init(this: *ChunkMesher, info: InitInfo) !void {
     this.meshing_time_ns = 0;
     this.total_chunks_meshed = 0;
     this.face_count = 0;
+    this.queue = .empty;
 
     const thread_count: u8 = @min(255, @max(1, std.Thread.getCpuCount() catch 1));
     this.threads = try info.alloc.alloc(std.Thread, thread_count);
@@ -70,8 +73,7 @@ pub fn init(this: *ChunkMesher, info: InitInfo) !void {
     this.thread_info = .{
         .thread_count = thread_count,
         .chunks = info.chunks,
-        .queue = .empty,
-        .faces = undefined,
+        .jobs = &.{},
     };
 
     for (this.threads) |*thread| {
@@ -94,9 +96,19 @@ pub fn deinit(this: *ChunkMesher) void {
         thread.join();
     }
 
-    this.thread_info.queue.deinit(this.alloc);
+    this.queue.deinit(this.alloc);
     this.alloc.free(this.threads);
     this.arena.deinit();
+}
+
+pub fn addRequest(mesher: *ChunkMesher, pos: Chunk.ChunkPos) !void {
+    const new_version = if (mesher.mesh_alloc.loaded_meshes.get(pos)) |old|
+        old.version + 1
+    else
+        0;
+
+    const entry = try mesher.queue.getOrPut(mesher.alloc, pos);
+    entry.value_ptr.* = new_version;
 }
 
 const target_mesh_time_ns = 4_000_000;
@@ -108,34 +120,68 @@ pub fn meshMany(this: *ChunkMesher) !void {
     _ = this.arena.reset(.retain_capacity);
     const arena = this.arena.allocator();
 
-    const job_count = @min(this.thread_info.queue.len, max_chunks_meshed);
+    const SortContext = struct {
+        map: *const @TypeOf(this.queue),
+
+        pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
+            const a_pos = ctx.map.keys()[a];
+            const b_pos = ctx.map.keys()[b];
+
+            return math.lengthSqr(a_pos) < math.lengthSqr(b_pos);
+        }
+    };
+
+    this.queue.sort(SortContext{ .map = &this.queue });
+
+    const job_count = @min(this.queue.count(), max_chunks_meshed);
     if (job_count == 0) return;
 
+    this.thread_info.jobs = try arena.alloc(Job, job_count);
+    var iter = this.queue.iterator();
+    var i: usize = 0;
+    while (iter.next()) |kv| : (i += 1) {
+        if (i >= job_count) break;
+
+        this.thread_info.jobs[i] = .{
+            .pos = kv.key_ptr.*,
+            .version = kv.value_ptr.*,
+        };
+    }
+
     this.thread_info.index.store(0, .monotonic);
-    this.thread_info.faces = try arena.alloc([]GreedyQuad, job_count);
     this.thread_info.run();
     this.thread_info.waitUntilDone();
     const completed = this.thread_info.completed.load(.monotonic);
-    const all_faces = this.thread_info.faces[0..completed];
+    const completed_jobs = this.thread_info.jobs[0..completed];
 
+    std.debug.assert(completed <= this.thread_info.jobs.len);
     try this.mesh_alloc.ensureCapacity(completed);
-    var index: usize = 0;
-    for (all_faces, 0..) |faces, full_i| {
-        if (faces.len == 0) continue;
+    for (completed_jobs) |job| {
+        _ = this.queue.swapRemove(job.pos);
 
-        const pos = this.thread_info.queue.at(full_i);
-        try this.mesh_alloc.writeChunkAssumeCapacity(faces, pos);
-        index += 1;
-        this.face_count += faces.len;
+        if (job.faces.len == 0) {
+            _ = this.mesh_alloc.loaded_meshes.swapRemove(job.pos);
+            continue;
+        }
+
+        try this.mesh_alloc.writeChunkAssumeCapacity(
+            job.faces,
+            job.pos,
+            job.version,
+        );
+
+        this.face_count += job.faces.len;
     }
 
-    std.debug.assert(index <= completed);
-    std.debug.assert(completed <= this.thread_info.queue.len);
-    this.thread_info.queue.head += completed;
-    this.thread_info.queue.head %= this.thread_info.queue.buffer.len;
-    this.thread_info.queue.len -= completed;
     this.total_chunks_meshed += completed;
 }
+
+const Job = struct {
+    pos: Chunk.ChunkPos,
+    version: Chunk.Version,
+    // result
+    faces: []GreedyQuad = &.{},
+};
 
 const MeshThreadInfo = struct {
     const cl = std.atomic.cache_line;
@@ -148,8 +194,7 @@ const MeshThreadInfo = struct {
     completed: std.atomic.Value(u32) align(cl) = .init(0),
     thread_count: u32 align(cl),
     chunks: *const Chunk.Map,
-    queue: Deque(Chunk.ChunkPos),
-    faces: [][]GreedyQuad,
+    jobs: []Job,
 
     fn waitUntilDone(this: *MeshThreadInfo) void {
         while (true) {
@@ -223,14 +268,18 @@ fn worker(info: *MeshThreadInfo) void {
         while (true) {
             if (timer.read() > target_mesh_time_ns) break;
             const i = info.index.fetchAdd(1, .monotonic);
-            if (i >= info.faces.len) break;
+            if (i >= info.jobs.len) break;
+            const job = &info.jobs[i];
 
             state.quads.clearRetainingCapacity();
             for (&state.maps) |*map| map.clearRetainingCapacity();
-            const pos = info.queue.at(i);
 
-            greedyMeshWithFastExits(alloc, &state, info.chunks, pos);
-            info.faces[i] = arena.dupe(GreedyQuad, state.quads.items) catch @panic("");
+            if (@reduce(.And, job.pos == @as(Chunk.ChunkPos, .{ 5, 0, 0 }))) {
+                std.log.info("thing {}", .{job.version});
+            }
+            greedyMeshWithFastExits(alloc, &state, info.chunks, job.pos);
+
+            job.faces = arena.dupe(GreedyQuad, state.quads.items) catch @panic("");
             completed += 1;
         }
 

@@ -91,14 +91,18 @@ pub fn init(this: *ChunkMeshAllocator, info: InitInfo) !void {
 }
 
 pub fn deinit(this: *ChunkMeshAllocator) void {
+    std.log.info("{} bytes used in chunk mesh buffer", .{buffer_size - this.queryBytesFree()});
+
     this.memory_barriers.deinit(this.alloc);
     this.buffer_copy_dst.deinit(this.alloc);
     this.buffer_copy_src.deinit(this.alloc);
 
     var maybe_node = this.free_list.first;
-    while (maybe_node) |node| : (maybe_node = node.next) {
+    while (maybe_node) |node| {
+        const next = node.next;
         const free_region: *FreeRegion = @fieldParentPtr("node", node);
         this.alloc.destroy(free_region);
+        maybe_node = next;
     }
 
     for (this.free_queues) |*queue| {
@@ -119,8 +123,8 @@ pub fn ensureCapacity(mesh_alloc: *ChunkMeshAllocator, count: usize) !void {
     try mesh_alloc.loaded_meshes.ensureUnusedCapacity(mesh_alloc.alloc, count);
 }
 
-pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const ChunkMesher.GreedyQuad, pos: Chunk.ChunkPos) !void {
-    const on_gpu = try this.allocate(on_cpu.len);
+pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const ChunkMesher.GreedyQuad, pos: Chunk.ChunkPos, version: u32) !void {
+    const on_gpu = try this.allocate(on_cpu.len, version);
 
     const staging_offset_bytes = this.staging_face_offset * @sizeOf(ChunkMesher.GreedyQuad);
     const size_bytes = on_gpu.face_count * @sizeOf(ChunkMesher.GreedyQuad);
@@ -173,7 +177,7 @@ pub fn upload(this: *ChunkMeshAllocator, device: gpu.Device, cmd_encoder: gpu.Co
     }
 }
 
-pub fn allocate(this: *ChunkMeshAllocator, quad_count: usize) !ChunkMesher.GpuLoaded {
+pub fn allocate(this: *ChunkMeshAllocator, quad_count: usize, version: u32) !ChunkMesher.GpuLoaded {
     const byte_count = quad_count * @sizeOf(ChunkMesher.GreedyQuad);
 
     var maybe_node = this.free_list.first;
@@ -195,6 +199,7 @@ pub fn allocate(this: *ChunkMeshAllocator, quad_count: usize) !ChunkMesher.GpuLo
         return .{
             .face_offset = @intCast(quad_offset),
             .face_count = @intCast(quad_count),
+            .version = version,
         };
     }
 
@@ -211,6 +216,17 @@ pub fn free(mesh_alloc: *ChunkMeshAllocator, chunk: ChunkMesher.GpuLoaded) !void
 
         if (free_region.offset > offset_bytes) break :blk node;
     } else null;
+
+    if (maybe_closest_after) |after| {
+        if (after.prev) |before| {
+            const before_region: *FreeRegion = @fieldParentPtr("node", before);
+
+            if (before_region.offset + before_region.size == offset_bytes) {
+                before_region.size += size_bytes;
+                return;
+            }
+        }
+    }
 
     const new = try mesh_alloc.alloc.create(FreeRegion);
     new.* = .{
@@ -237,4 +253,15 @@ pub fn freeQueued(mesh_alloc: *ChunkMeshAllocator) !void {
     }
 
     queue.clearRetainingCapacity();
+}
+
+pub fn queryBytesFree(mesh_alloc: *ChunkMeshAllocator) usize {
+    var bytes_free: usize = 0;
+    var maybe_node = mesh_alloc.free_list.first;
+    while (maybe_node) |node| : (maybe_node = node.next) {
+        const free_region: *FreeRegion = @fieldParentPtr("node", node);
+        bytes_free += @intCast(free_region.size);
+    }
+
+    return bytes_free;
 }
