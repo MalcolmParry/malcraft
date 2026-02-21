@@ -474,7 +474,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         return;
     }
 
-    if (input.break_block) {
+    if (input.break_block or this.window.isMouseDown(.five)) {
         const origin = this.camera.pos;
         const q = math.quatFromEuler(this.camera.euler);
         const dir = math.normalize(math.quatMulVec(q, math.dir_forward));

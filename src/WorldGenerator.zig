@@ -28,7 +28,7 @@ pub fn deinit(gen: *WorldGenerator) void {
     gen.queue.deinit(gen.alloc);
 }
 
-const target_gen_time_ns = 4_000_000;
+const target_gen_time_ns = 8_000_000;
 pub fn genMany(
     gen: *WorldGenerator,
     world: *World,

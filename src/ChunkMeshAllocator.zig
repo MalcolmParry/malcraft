@@ -91,7 +91,9 @@ pub fn init(this: *ChunkMeshAllocator, info: InitInfo) !void {
 }
 
 pub fn deinit(this: *ChunkMeshAllocator) void {
+    std.log.info("{} bytes free in chunk mesh buffer", .{this.queryBytesFree()});
     std.log.info("{} bytes used in chunk mesh buffer", .{buffer_size - this.queryBytesFree()});
+    std.log.info("chunk mesh count on deinit {}", .{this.loaded_meshes.count()});
 
     this.memory_barriers.deinit(this.alloc);
     this.buffer_copy_dst.deinit(this.alloc);
