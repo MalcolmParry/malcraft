@@ -555,7 +555,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     };
 
     try per_frame.cmd_encoder.begin(this.device);
-    try this.chunk_mesh_alloc.upload(this.device, per_frame.cmd_encoder);
+    try this.chunk_mesh_alloc.upload(per_frame.cmd_encoder);
 
     try per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
         .{ .image = .{

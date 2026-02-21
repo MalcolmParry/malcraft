@@ -26,7 +26,7 @@ device: gpu.Device,
 loaded_meshes: std.AutoArrayHashMapUnmanaged(Chunk.ChunkPos, ChunkMesher.GpuLoaded),
 buffer_copy_src: std.ArrayList(gpu.Buffer.Region),
 buffer_copy_dst: std.ArrayList(gpu.Buffer.Region),
-memory_barriers: std.ArrayList(gpu.CommandEncoder.MemoryBarrier),
+write_barriers: std.ArrayList(gpu.CommandEncoder.MemoryBarrier),
 
 const FreeRegion = struct {
     offset: gpu.Size,
@@ -85,7 +85,7 @@ pub fn init(this: *ChunkMeshAllocator, info: InitInfo) !void {
     this.device = info.device;
     this.buffer_copy_src = .empty;
     this.buffer_copy_dst = .empty;
-    this.memory_barriers = .empty;
+    this.write_barriers = .empty;
     this.loaded_meshes = .empty;
     this.staging_face_offset = 0;
 }
@@ -95,7 +95,7 @@ pub fn deinit(this: *ChunkMeshAllocator) void {
     std.log.info("{} bytes used in chunk mesh buffer", .{buffer_size - this.queryBytesFree()});
     std.log.info("chunk mesh count on deinit {}", .{this.loaded_meshes.count()});
 
-    this.memory_barriers.deinit(this.alloc);
+    this.write_barriers.deinit(this.alloc);
     this.buffer_copy_dst.deinit(this.alloc);
     this.buffer_copy_src.deinit(this.alloc);
 
@@ -121,7 +121,7 @@ pub fn deinit(this: *ChunkMeshAllocator) void {
 pub fn ensureCapacity(mesh_alloc: *ChunkMeshAllocator, count: usize) !void {
     try mesh_alloc.buffer_copy_src.ensureUnusedCapacity(mesh_alloc.alloc, count);
     try mesh_alloc.buffer_copy_dst.ensureUnusedCapacity(mesh_alloc.alloc, count);
-    try mesh_alloc.memory_barriers.ensureUnusedCapacity(mesh_alloc.alloc, count);
+    try mesh_alloc.write_barriers.ensureUnusedCapacity(mesh_alloc.alloc, count);
     try mesh_alloc.loaded_meshes.ensureUnusedCapacity(mesh_alloc.alloc, count);
 }
 
@@ -131,7 +131,7 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const Chunk
     const staging_offset_bytes = this.staging_face_offset * @sizeOf(ChunkMesher.GreedyQuad);
     const size_bytes = on_gpu.face_count * @sizeOf(ChunkMesher.GreedyQuad);
 
-    if (staging_offset_bytes + size_bytes >= staging_size) @panic("staging buffer overflow");
+    if (staging_offset_bytes + size_bytes > staging_size) @panic("staging buffer overflow");
     @memcpy(this.mapping[this.staging_face_offset .. this.staging_face_offset + on_cpu.len], on_cpu);
 
     this.buffer_copy_src.appendAssumeCapacity(.{
@@ -147,7 +147,7 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const Chunk
     };
     this.buffer_copy_dst.appendAssumeCapacity(dst);
 
-    this.memory_barriers.appendAssumeCapacity(.{ .buffer = .{
+    this.write_barriers.appendAssumeCapacity(.{ .buffer = .{
         .region = dst,
         .src_stage = .{ .transfer = true },
         .dst_stage = .{ .vertex_input = true },
@@ -162,19 +162,19 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const Chunk
     this.staging_face_offset += on_cpu.len;
 }
 
-pub fn upload(this: *ChunkMeshAllocator, device: gpu.Device, cmd_encoder: gpu.CommandEncoder) !void {
+pub fn upload(this: *ChunkMeshAllocator, cmd_encoder: gpu.CommandEncoder) !void {
     std.debug.assert(this.buffer_copy_src.items.len == this.buffer_copy_dst.items.len);
-    std.debug.assert(this.buffer_copy_src.items.len == this.memory_barriers.items.len);
+    std.debug.assert(this.buffer_copy_src.items.len == this.write_barriers.items.len);
 
     if (this.buffer_copy_src.items.len != 0) {
         for (this.buffer_copy_src.items, this.buffer_copy_dst.items) |src, dst| {
-            cmd_encoder.cmdCopyBuffer(device, src, dst);
+            cmd_encoder.cmdCopyBuffer(this.device, src, dst);
         }
 
-        try cmd_encoder.cmdMemoryBarrier(this.device, this.memory_barriers.items, this.alloc);
+        try cmd_encoder.cmdMemoryBarrier(this.device, this.write_barriers.items, this.alloc);
         this.buffer_copy_src.clearRetainingCapacity();
         this.buffer_copy_dst.clearRetainingCapacity();
-        this.memory_barriers.clearRetainingCapacity();
+        this.write_barriers.clearRetainingCapacity();
         this.staging_face_offset = 0;
     }
 }
@@ -208,37 +208,60 @@ pub fn allocate(this: *ChunkMeshAllocator, quad_count: usize) !ChunkMesher.GpuLo
 }
 
 pub fn free(mesh_alloc: *ChunkMeshAllocator, chunk: ChunkMesher.GpuLoaded) !void {
-    const offset_bytes = chunk.face_offset * @sizeOf(ChunkMesher.GreedyQuad);
-    const size_bytes = chunk.face_count * @sizeOf(ChunkMesher.GreedyQuad);
+    const offset_bytes: gpu.Size = chunk.face_offset * @sizeOf(ChunkMesher.GreedyQuad);
+    const size_bytes: gpu.Size = chunk.face_count * @sizeOf(ChunkMesher.GreedyQuad);
 
-    var maybe_node = mesh_alloc.free_list.first;
-    const maybe_closest_after: ?*std.DoublyLinkedList.Node = blk: while (maybe_node) |node| : (maybe_node = node.next) {
+    var iter = mesh_alloc.free_list.first;
+    const maybe_closest_after: ?*std.DoublyLinkedList.Node = blk: while (iter) |node| : (iter = node.next) {
         const free_region: *FreeRegion = @fieldParentPtr("node", node);
 
         if (free_region.offset > offset_bytes) break :blk node;
     } else null;
 
-    if (maybe_closest_after) |after| {
-        if (after.prev) |before| {
-            const before_region: *FreeRegion = @fieldParentPtr("node", before);
+    var maybe_region: ?*FreeRegion = null;
+    var new_offset = offset_bytes;
+    var new_size = size_bytes;
 
-            if (before_region.offset + before_region.size == offset_bytes) {
-                before_region.size += size_bytes;
-                return;
-            }
+    const prev_node = if (maybe_closest_after) |x| x.prev else mesh_alloc.free_list.last;
+    if (prev_node) |before| {
+        const before_region: *FreeRegion = @fieldParentPtr("node", before);
+
+        if (before_region.offset + before_region.size == offset_bytes) {
+            maybe_region = before_region;
+            new_offset = before_region.offset;
+            new_size = size_bytes + before_region.size;
         }
+    }
+
+    if (maybe_closest_after) |after| {
+        const after_region: *FreeRegion = @fieldParentPtr("node", after);
+        if (after_region.offset == new_offset + new_size) {
+            if (maybe_region) |x| {
+                mesh_alloc.free_list.remove(&x.node);
+                mesh_alloc.alloc.destroy(x);
+            }
+
+            maybe_region = after_region;
+            new_size += after_region.size;
+        }
+    }
+
+    if (maybe_region) |region| {
+        region.offset = new_offset;
+        region.size = new_size;
+        return;
     }
 
     const new = try mesh_alloc.alloc.create(FreeRegion);
     new.* = .{
-        .offset = offset_bytes,
-        .size = size_bytes,
+        .offset = new_offset,
+        .size = new_size,
     };
 
     if (maybe_closest_after) |closest| {
         mesh_alloc.free_list.insertBefore(closest, &new.node);
     } else {
-        mesh_alloc.free_list.prepend(&new.node);
+        mesh_alloc.free_list.append(&new.node);
     }
 }
 
