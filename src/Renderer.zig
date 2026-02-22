@@ -454,6 +454,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     gpu.AnyObject.deinitAllReversed(per_frame.trash.items, this.device, alloc);
     per_frame.trash.clearRetainingCapacity();
     try this.chunk_mesh_alloc.freeQueued();
+    per_frame.stage_man.reset();
 
     if (this.dirty_swapchain) {
         std.log.info("rebuilding swapchain", .{});
@@ -486,7 +487,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     }
 
     try this.world_gen.genMany(&this.world, &this.chunk_mesher, alloc);
-    try this.chunk_mesher.meshMany();
+    try this.chunk_mesher.meshMany(&per_frame.stage_man);
 
     if (input.wireframe) {
         try per_frame.trash.append(alloc, .{ .graphics_pipeline = this.chunk_pipeline });
@@ -790,6 +791,7 @@ fn initChunkPipeline(this: *Renderer, alloc: std.mem.Allocator) !void {
 }
 
 const PerFrameInFlight = struct {
+    stage_man: gpu.StagingManager,
     presented_fence: gpu.Fence,
     render_finished_semaphore: gpu.Semaphore,
     image_available_semaphore: gpu.Semaphore,
@@ -799,6 +801,14 @@ const PerFrameInFlight = struct {
     trash: std.ArrayList(gpu.AnyObject),
 
     pub fn init(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) !void {
+        this.stage_man = try .init(.{
+            .alloc = alloc,
+            .device = renderer.device,
+            .buffer_size = 1024 * 1024 * 8,
+            .max_alignment = .@"16",
+        });
+        errdefer this.stage_man.deinit(renderer.device, alloc);
+
         this.presented_fence = try .init(renderer.device, true);
         errdefer this.presented_fence.deinit(renderer.device);
 
@@ -825,6 +835,7 @@ const PerFrameInFlight = struct {
         this.image_available_semaphore.deinit(renderer.device);
         this.render_finished_semaphore.deinit(renderer.device);
         this.presented_fence.deinit(renderer.device);
+        this.stage_man.deinit(renderer.device, alloc);
     }
 
     pub fn initViewportDependants(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) !void {

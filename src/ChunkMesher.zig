@@ -87,7 +87,7 @@ pub fn init(this: *ChunkMesher, info: InitInfo) !void {
 
 pub fn deinit(this: *ChunkMesher) void {
     std.log.info("total chunk mesh time {} ns", .{this.meshing_time_ns});
-    std.log.info("mesh time per chunk {} ns", .{this.meshing_time_ns / this.total_chunks_meshed});
+    std.log.info("mesh time per chunk {} ns", .{std.math.divTrunc(u64, this.meshing_time_ns, this.total_chunks_meshed) catch 0});
     std.log.info("total chunks meshed {}", .{this.total_chunks_meshed});
     std.log.info("total chunk quads {}", .{this.face_count});
     this.thread_info.shutdown();
@@ -138,7 +138,7 @@ pub fn addRequestWithCollateral(mesher: *ChunkMesher, pos: Chunk.BlockPos) !void
 
 const target_mesh_time_ns = 4_000_000;
 const max_chunks_meshed = 1000;
-pub fn meshMany(this: *ChunkMesher) !void {
+pub fn meshMany(this: *ChunkMesher, stage_man: *gpu.StagingManager) !void {
     var timer: std.time.Timer = try .start();
     defer this.meshing_time_ns += timer.read();
 
@@ -189,6 +189,7 @@ pub fn meshMany(this: *ChunkMesher) !void {
         }
 
         try this.mesh_alloc.writeChunkAssumeCapacity(
+            stage_man,
             job.faces,
             job.pos,
         );

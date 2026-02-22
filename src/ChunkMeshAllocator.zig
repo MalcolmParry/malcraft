@@ -8,14 +8,13 @@ const RendererInfo = @import("Renderer.zig").Info;
 
 const ChunkMeshAllocator = @This();
 pub const buffer_size = 1024 * 1024 * 512;
-pub const staging_size = 1024 * 1024 * 8;
 
 comptime {
     std.debug.assert(buffer_size / @sizeOf(ChunkMesher.GreedyQuad) < std.math.maxInt(u32));
 }
 
 renderer_info: *const RendererInfo,
-per_frame_in_flight: []PerFrameInFlight,
+free_queues: []std.ArrayList(ChunkMesher.GpuLoaded),
 buffer: gpu.Buffer,
 free_list: std.DoublyLinkedList,
 alloc: std.mem.Allocator,
@@ -24,13 +23,6 @@ loaded_meshes: std.AutoArrayHashMapUnmanaged(Chunk.ChunkPos, ChunkMesher.GpuLoad
 buffer_copy_src: std.ArrayList(gpu.Buffer.Region),
 buffer_copy_dst: std.ArrayList(gpu.Buffer.Region),
 write_barriers: std.ArrayList(gpu.CommandEncoder.MemoryBarrier),
-
-const PerFrameInFlight = struct {
-    staging: gpu.Buffer,
-    mapping: []ChunkMesher.GreedyQuad,
-    offset_bytes: gpu.Size,
-    free_queue: std.ArrayList(ChunkMesher.GpuLoaded),
-};
 
 const FreeRegion = struct {
     offset: gpu.Size,
@@ -47,25 +39,9 @@ const InitInfo = struct {
 pub fn init(this: *ChunkMeshAllocator, info: InitInfo) !void {
     this.renderer_info = info.renderer_info;
 
-    this.per_frame_in_flight = try info.alloc.alloc(PerFrameInFlight, info.renderer_info.frames_in_flight);
-    errdefer info.alloc.free(this.per_frame_in_flight);
-    for (this.per_frame_in_flight) |*per_frame| {
-        per_frame.staging = try .init(info.device, .{
-            .alloc = info.alloc,
-            .loc = .host,
-            .size = staging_size,
-            .usage = .{
-                .src = true,
-            },
-        });
-
-        const byte_mapping = try per_frame.staging.map(info.device);
-        const face_mapping: [*]ChunkMesher.GreedyQuad = @ptrCast(@alignCast(byte_mapping));
-        per_frame.mapping = face_mapping[0 .. staging_size / @sizeOf(ChunkMesher.GreedyQuad)];
-
-        per_frame.offset_bytes = 0;
-        per_frame.free_queue = .empty;
-    }
+    this.free_queues = try info.alloc.alloc(std.ArrayList(ChunkMesher.GpuLoaded), info.renderer_info.frames_in_flight);
+    errdefer info.alloc.free(this.free_queues);
+    @memset(this.free_queues, .empty);
 
     this.buffer = try .init(info.device, .{
         .alloc = info.alloc,
@@ -113,12 +89,10 @@ pub fn deinit(this: *ChunkMeshAllocator) void {
         maybe_node = next;
     }
 
-    for (this.per_frame_in_flight) |*per_frame| {
-        per_frame.free_queue.deinit(this.alloc);
-        per_frame.staging.unmap(this.device);
-        per_frame.staging.deinit(this.device, this.alloc);
+    for (this.free_queues) |*queue| {
+        queue.deinit(this.alloc);
     }
-    this.alloc.free(this.per_frame_in_flight);
+    this.alloc.free(this.free_queues);
 
     this.buffer.deinit(this.device, this.alloc);
     this.loaded_meshes.deinit(this.alloc);
@@ -131,22 +105,14 @@ pub fn ensureCapacity(mesh_alloc: *ChunkMeshAllocator, count: usize) !void {
     try mesh_alloc.loaded_meshes.ensureUnusedCapacity(mesh_alloc.alloc, count);
 }
 
-pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const ChunkMesher.GreedyQuad, pos: Chunk.ChunkPos) !void {
+pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, stage_man: *gpu.StagingManager, on_cpu: []const ChunkMesher.GreedyQuad, pos: Chunk.ChunkPos) !void {
     const on_gpu = try this.allocate(on_cpu.len);
 
-    const per_frame = &this.per_frame_in_flight[this.renderer_info.frame_slot()];
-    const offset_bytes = per_frame.offset_bytes;
-    const offset_faces = offset_bytes / @sizeOf(ChunkMesher.GreedyQuad);
     const size_bytes = on_gpu.face_count * @sizeOf(ChunkMesher.GreedyQuad);
 
-    if (offset_bytes + size_bytes > staging_size) @panic("staging buffer overflow");
-    @memcpy(per_frame.mapping[offset_faces .. offset_faces + on_cpu.len], on_cpu);
-
-    this.buffer_copy_src.appendAssumeCapacity(.{
-        .buffer = per_frame.staging,
-        .offset = offset_bytes,
-        .size_or_whole = .{ .size = size_bytes },
-    });
+    const staging = try stage_man.allocateT(ChunkMesher.GreedyQuad, on_gpu.face_count);
+    this.buffer_copy_src.appendAssumeCapacity(staging.region);
+    @memcpy(staging.slice, on_cpu);
 
     const dst: gpu.Buffer.Region = .{
         .buffer = this.buffer,
@@ -166,8 +132,6 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const Chunk
     const entry = this.loaded_meshes.getOrPutAssumeCapacity(pos);
     if (entry.found_existing) try this.queueFree(entry.value_ptr.*);
     entry.value_ptr.* = on_gpu;
-
-    per_frame.offset_bytes += on_cpu.len * @sizeOf(ChunkMesher.GreedyQuad);
 }
 
 pub fn upload(this: *ChunkMeshAllocator, cmd_encoder: gpu.CommandEncoder) !void {
@@ -183,9 +147,6 @@ pub fn upload(this: *ChunkMeshAllocator, cmd_encoder: gpu.CommandEncoder) !void 
         this.buffer_copy_src.clearRetainingCapacity();
         this.buffer_copy_dst.clearRetainingCapacity();
         this.write_barriers.clearRetainingCapacity();
-
-        const per_frame = &this.per_frame_in_flight[this.renderer_info.frame_slot()];
-        per_frame.offset_bytes = 0;
     }
 }
 
@@ -276,12 +237,12 @@ pub fn free(mesh_alloc: *ChunkMeshAllocator, chunk: ChunkMesher.GpuLoaded) !void
 }
 
 pub fn queueFree(mesh_alloc: *ChunkMeshAllocator, chunk: ChunkMesher.GpuLoaded) !void {
-    const queue = &mesh_alloc.per_frame_in_flight[mesh_alloc.renderer_info.frame_slot()].free_queue;
+    const queue = &mesh_alloc.free_queues[mesh_alloc.renderer_info.frame_slot()];
     try queue.append(mesh_alloc.alloc, chunk);
 }
 
 pub fn freeQueued(mesh_alloc: *ChunkMeshAllocator) !void {
-    const queue = &mesh_alloc.per_frame_in_flight[mesh_alloc.renderer_info.frame_slot()].free_queue;
+    const queue = &mesh_alloc.free_queues[mesh_alloc.renderer_info.frame_slot()];
 
     for (queue.items) |mesh| {
         try mesh_alloc.free(mesh);
