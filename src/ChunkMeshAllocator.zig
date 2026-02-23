@@ -14,15 +14,13 @@ comptime {
 }
 
 renderer_info: *const RendererInfo,
+upload_man: *gpu.UploadManager,
 free_queues: []std.ArrayList(ChunkMesher.GpuLoaded),
 buffer: gpu.Buffer,
 free_list: std.DoublyLinkedList,
 alloc: std.mem.Allocator,
 device: gpu.Device,
 loaded_meshes: std.AutoArrayHashMapUnmanaged(Chunk.ChunkPos, ChunkMesher.GpuLoaded),
-buffer_copy_src: std.ArrayList(gpu.Buffer.Region),
-buffer_copy_dst: std.ArrayList(gpu.Buffer.Region),
-write_barriers: std.ArrayList(gpu.CommandEncoder.MemoryBarrier),
 
 const FreeRegion = struct {
     offset: gpu.Size,
@@ -34,6 +32,7 @@ const InitInfo = struct {
     device: gpu.Device,
     alloc: std.mem.Allocator,
     renderer_info: *const RendererInfo,
+    upload_man: *gpu.UploadManager,
 };
 
 pub fn init(this: *ChunkMeshAllocator, info: InitInfo) !void {
@@ -66,20 +65,14 @@ pub fn init(this: *ChunkMeshAllocator, info: InitInfo) !void {
 
     this.alloc = info.alloc;
     this.device = info.device;
-    this.buffer_copy_src = .empty;
-    this.buffer_copy_dst = .empty;
-    this.write_barriers = .empty;
     this.loaded_meshes = .empty;
+    this.upload_man = info.upload_man;
 }
 
 pub fn deinit(this: *ChunkMeshAllocator) void {
     std.log.info("{} bytes free in chunk mesh buffer", .{this.queryBytesFree()});
     std.log.info("{} bytes used in chunk mesh buffer", .{buffer_size - this.queryBytesFree()});
     std.log.info("chunk mesh count on deinit {}", .{this.loaded_meshes.count()});
-
-    this.write_barriers.deinit(this.alloc);
-    this.buffer_copy_dst.deinit(this.alloc);
-    this.buffer_copy_src.deinit(this.alloc);
 
     var maybe_node = this.free_list.first;
     while (maybe_node) |node| {
@@ -99,55 +92,36 @@ pub fn deinit(this: *ChunkMeshAllocator) void {
 }
 
 pub fn ensureCapacity(mesh_alloc: *ChunkMeshAllocator, count: usize) !void {
-    try mesh_alloc.buffer_copy_src.ensureUnusedCapacity(mesh_alloc.alloc, count);
-    try mesh_alloc.buffer_copy_dst.ensureUnusedCapacity(mesh_alloc.alloc, count);
-    try mesh_alloc.write_barriers.ensureUnusedCapacity(mesh_alloc.alloc, count);
     try mesh_alloc.loaded_meshes.ensureUnusedCapacity(mesh_alloc.alloc, count);
 }
 
-pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, stage_man: *gpu.StagingManager, on_cpu: []const ChunkMesher.GreedyQuad, pos: Chunk.ChunkPos) !void {
+pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const ChunkMesher.GreedyQuad, pos: Chunk.ChunkPos) !void {
     const on_gpu = try this.allocate(on_cpu.len);
 
     const size_bytes = on_gpu.face_count * @sizeOf(ChunkMesher.GreedyQuad);
-
-    const staging = try stage_man.allocateT(ChunkMesher.GreedyQuad, on_gpu.face_count);
-    this.buffer_copy_src.appendAssumeCapacity(staging.region);
-    @memcpy(staging.slice, on_cpu);
-
     const dst: gpu.Buffer.Region = .{
         .buffer = this.buffer,
         .offset = on_gpu.face_offset * @sizeOf(ChunkMesher.GreedyQuad),
         .size_or_whole = .{ .size = size_bytes },
     };
-    this.buffer_copy_dst.appendAssumeCapacity(dst);
 
-    this.write_barriers.appendAssumeCapacity(.{ .buffer = .{
+    try this.upload_man.submit(ChunkMesher.GreedyQuad, .{
+        .data = on_cpu,
         .region = dst,
-        .src_stage = .{ .transfer = true },
-        .dst_stage = .{ .vertex_input = true },
-        .src_access = .{ .transfer_write = true },
-        .dst_access = .{ .vertex_read = true },
-    } });
+        .post_copy_barrier = .{
+            .buffer = .{
+                .region = dst,
+                .src_stage = .{ .transfer = true },
+                .dst_stage = .{ .vertex_input = true },
+                .src_access = .{ .transfer_write = true },
+                .dst_access = .{ .vertex_read = true },
+            },
+        },
+    });
 
     const entry = this.loaded_meshes.getOrPutAssumeCapacity(pos);
     if (entry.found_existing) try this.queueFree(entry.value_ptr.*);
     entry.value_ptr.* = on_gpu;
-}
-
-pub fn upload(this: *ChunkMeshAllocator, cmd_encoder: gpu.CommandEncoder) !void {
-    std.debug.assert(this.buffer_copy_src.items.len == this.buffer_copy_dst.items.len);
-    std.debug.assert(this.buffer_copy_src.items.len == this.write_barriers.items.len);
-
-    if (this.buffer_copy_src.items.len != 0) {
-        for (this.buffer_copy_src.items, this.buffer_copy_dst.items) |src, dst| {
-            cmd_encoder.cmdCopyBuffer(this.device, src, dst);
-        }
-
-        try cmd_encoder.cmdMemoryBarrier(this.device, this.write_barriers.items, this.alloc);
-        this.buffer_copy_src.clearRetainingCapacity();
-        this.buffer_copy_dst.clearRetainingCapacity();
-        this.write_barriers.clearRetainingCapacity();
-    }
 }
 
 pub fn allocate(this: *ChunkMeshAllocator, quad_count: usize) !ChunkMesher.GpuLoaded {

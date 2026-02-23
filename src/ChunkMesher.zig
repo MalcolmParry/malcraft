@@ -138,7 +138,7 @@ pub fn addRequestWithCollateral(mesher: *ChunkMesher, pos: Chunk.BlockPos) !void
 
 const target_mesh_time_ns = 4_000_000;
 const max_chunks_meshed = 1000;
-pub fn meshMany(this: *ChunkMesher, stage_man: *gpu.StagingManager) !void {
+pub fn meshMany(this: *ChunkMesher) !void {
     var timer: std.time.Timer = try .start();
     defer this.meshing_time_ns += timer.read();
 
@@ -189,7 +189,6 @@ pub fn meshMany(this: *ChunkMesher, stage_man: *gpu.StagingManager) !void {
         }
 
         try this.mesh_alloc.writeChunkAssumeCapacity(
-            stage_man,
             job.faces,
             job.pos,
         );

@@ -121,7 +121,7 @@ fn getOrCreateHeightMap(gen: *WorldGenerator, pos: i32x2) !*ChunkHeightMap {
 
                 const m = @sin(x / 50 + (y / 70) * @sin(x / 100));
 
-                const height_diff: f32 = 8 * (@sin((nx + 3 * ny) + 3 * @sin((3 * nx - ny) + @sin(nx + ny / 2))) + @sin(9 * nx) / 3) + 20 * (m * m * m * m * m);
+                const height_diff: f32 = 8 * (@sin((nx + 3 * ny) + 3 * @sin((3 * nx - ny) + @sin(nx + ny / 2))) + @sin(9 * nx) / 3) + 20 * math.powComptime(m, 5);
 
                 const grass_height: i32 = @as(i32, @intFromFloat(height_diff)) + 16;
 

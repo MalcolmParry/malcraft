@@ -13,6 +13,8 @@ const World = @import("World.zig");
 const Renderer = @This();
 
 info: Info,
+stage_man: gpu.StagingManager,
+upload_man: gpu.UploadManager,
 destruct_queue: std.ArrayList(gpu.AnyObject),
 event_queue: mw.EventQueue,
 window: mw.Window,
@@ -45,6 +47,7 @@ texture_sampler: gpu.Sampler,
 pub const Input = struct {
     wireframe: bool = false,
     break_block: bool = false,
+    cam_reset: bool = false,
 };
 
 pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
@@ -71,6 +74,20 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         .frame_count = 0,
     };
 
+    this.stage_man = try .init(.{
+        .alloc = alloc,
+        .device = this.device,
+        .buffer_size = 1024 * 1024 * 8,
+        .frames_in_flight = this.info.frames_in_flight,
+    });
+    errdefer this.stage_man.deinit(this.device, alloc);
+
+    this.upload_man = .{
+        .alloc = alloc,
+        .stage_man = &this.stage_man,
+    };
+    errdefer this.upload_man.deinit();
+
     this.images_initialized = try alloc.alloc(bool, this.info.frames_in_flight);
     errdefer alloc.free(this.images_initialized);
     @memset(this.images_initialized, false);
@@ -84,7 +101,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     // transition depth
     {
-        const transitions = try alloc.alloc(gpu.CommandEncoder.MemoryBarrier, this.info.frames_in_flight);
+        const transitions = try alloc.alloc(gpu.MemoryBarrier, this.info.frames_in_flight);
         defer alloc.free(transitions);
 
         for (transitions, this.per_frame_in_flight) |*transition, *per_frame| {
@@ -133,6 +150,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     try this.chunk_mesh_alloc.init(.{
         .device = this.device,
         .alloc = alloc,
+        .upload_man = &this.upload_man,
         .renderer_info = &this.info,
     });
     errdefer this.chunk_mesh_alloc.deinit();
@@ -173,13 +191,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.total_timer = try .start();
     this.last_cursor = .{ 0, 0 };
     this.dirty_swapchain = false;
-    this.camera = .{
-        .pos = .{ 0, 0, 35 },
-        .euler = .{ 0, 0, 0 },
-        .v_fov = math.rad(90.0),
-        .near = 0.1,
-        .far = 10_000,
-    };
+    this.camera = .{};
 
     {
         const image_paths: [2][]const u8 = .{
@@ -191,7 +203,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         const mip_levels = 5;
         const size: gpu.Image.Size2D = .{ 16, 16 };
         const pixel_count = @reduce(.Mul, size);
-        const image_stride = pixel_count * @sizeOf(Pixel);
+        const layer_size = pixel_count * @sizeOf(Pixel);
 
         this.texture_image = try .init(this.device, .{
             .alloc = alloc,
@@ -227,14 +239,8 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         });
         errdefer this.texture_view.deinit(this.device, alloc);
 
-        const staging = try this.device.initBuffer(.{
-            .alloc = alloc,
-            .loc = .host,
-            .usage = .{ .src = true },
-            .size = image_stride * image_paths.len,
-        });
-        defer staging.deinit(this.device, alloc);
-        const mapped_bytes = try staging.map(this.device);
+        const staging = this.stage_man.allocate(layer_size * image_paths.len);
+        defer this.stage_man.reset();
 
         for (image_paths, 0..) |image_path, i| {
             var read_buffer: [zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
@@ -243,7 +249,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             var cropped = try image.crop(alloc, .{ .width = size[0], .height = size[1] });
             try cropped.convert(alloc, .rgba32);
             defer cropped.deinit(alloc);
-            @memcpy(mapped_bytes[image_stride * i .. image_stride * (i + 1)], cropped.rawBytes());
+            @memcpy(staging.slice[layer_size * i .. layer_size * (i + 1)], cropped.rawBytes());
         }
 
         const fence = try this.device.initFence(false);
@@ -402,6 +408,8 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
     this.destruct_queue.deinit(alloc);
     alloc.free(this.images_initialized);
+    this.upload_man.deinit();
+    this.stage_man.deinit(this.device, alloc);
     this.display.deinit(alloc);
     this.device.deinit(alloc);
     this.instance.deinit(alloc);
@@ -454,7 +462,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     gpu.AnyObject.deinitAllReversed(per_frame.trash.items, this.device, alloc);
     per_frame.trash.clearRetainingCapacity();
     try this.chunk_mesh_alloc.freeQueued();
-    per_frame.stage_man.reset();
+    this.stage_man.nextFrame();
 
     if (this.dirty_swapchain) {
         std.log.info("rebuilding swapchain", .{});
@@ -486,8 +494,10 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         }
     }
 
+    if (input.cam_reset) this.camera = .{};
+
     try this.world_gen.genMany(&this.world, &this.chunk_mesher, alloc);
-    try this.chunk_mesher.meshMany(&per_frame.stage_man);
+    try this.chunk_mesher.meshMany();
 
     if (input.wireframe) {
         try per_frame.trash.append(alloc, .{ .graphics_pipeline = this.chunk_pipeline });
@@ -556,7 +566,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     };
 
     try per_frame.cmd_encoder.begin(this.device);
-    try this.chunk_mesh_alloc.upload(per_frame.cmd_encoder);
+    try this.upload_man.upload(this.device, per_frame.cmd_encoder);
 
     try per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
         .{ .image = .{
@@ -791,7 +801,6 @@ fn initChunkPipeline(this: *Renderer, alloc: std.mem.Allocator) !void {
 }
 
 const PerFrameInFlight = struct {
-    stage_man: gpu.StagingManager,
     presented_fence: gpu.Fence,
     render_finished_semaphore: gpu.Semaphore,
     image_available_semaphore: gpu.Semaphore,
@@ -801,14 +810,6 @@ const PerFrameInFlight = struct {
     trash: std.ArrayList(gpu.AnyObject),
 
     pub fn init(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) !void {
-        this.stage_man = try .init(.{
-            .alloc = alloc,
-            .device = renderer.device,
-            .buffer_size = 1024 * 1024 * 8,
-            .max_alignment = .@"16",
-        });
-        errdefer this.stage_man.deinit(renderer.device, alloc);
-
         this.presented_fence = try .init(renderer.device, true);
         errdefer this.presented_fence.deinit(renderer.device);
 
@@ -835,7 +836,6 @@ const PerFrameInFlight = struct {
         this.image_available_semaphore.deinit(renderer.device);
         this.render_finished_semaphore.deinit(renderer.device);
         this.presented_fence.deinit(renderer.device);
-        this.stage_man.deinit(renderer.device, alloc);
     }
 
     pub fn initViewportDependants(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) !void {
@@ -888,11 +888,11 @@ const PerFramePushConstants = struct {
 };
 
 const Camera = struct {
-    pos: math.Vec3,
-    euler: math.Vec3,
-    v_fov: f32,
-    near: f32,
-    far: f32,
+    pos: math.Vec3 = .{ 0, 0, 35 },
+    euler: math.Vec3 = .{ 0, 0, 0 },
+    v_fov: f32 = math.rad(90.0),
+    near: f32 = 0.1,
+    far: f32 = 10_000,
 
     fn view(this: Camera) math.Mat4 {
         return math.matMulMany(.{
