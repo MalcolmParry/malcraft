@@ -239,7 +239,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         });
         errdefer this.texture_view.deinit(this.device, alloc);
 
-        const staging = this.stage_man.allocate(layer_size * image_paths.len);
+        const staging = try this.stage_man.allocate(u8, layer_size * image_paths.len);
         defer this.stage_man.reset();
 
         for (image_paths, 0..) |image_path, i| {
@@ -281,7 +281,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             .region = .{
                 .size = .{ size[0], size[1], 1 },
             },
-            .src = staging.region(),
+            .src = staging.region,
             .dst = this.texture_image,
             .layout = .transfer_dst,
             .subresource = .{
