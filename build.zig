@@ -1,9 +1,6 @@
 const std = @import("std");
 const Build = std.Build;
 
-const shader_path = "src/shaders/";
-const shader_output = "res/shaders/";
-
 pub fn build(b: *Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -65,41 +62,32 @@ pub fn build(b: *Build) !void {
 }
 
 fn buildShaders(b: *Build, build_step: *Build.Step) !void {
-    const dir = try b.build_root.handle.openDir(shader_path, .{ .iterate = true });
-    var iter = try dir.walk(b.allocator);
-    defer iter.deinit();
+    const shaders = @import("src/assets.zon").shaders;
 
-    while (try iter.next()) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.basename, ".glsl")) continue;
+    inline for (std.meta.fields(@TypeOf(shaders))) |field| {
+        const data = @field(shaders, field.name);
+        const src = b.path(data.src);
 
-        try buildShader(b, build_step, entry, "vert", &.{"-D_VERTEX"});
-        try buildShader(b, build_step, entry, "frag", &.{"-D_PIXEL"});
+        const compile = b.addSystemCommand(&.{"glslangValidator"});
+        inline for (std.meta.fields(@TypeOf(data.compile_opts))) |field2| {
+            compile.addArg(@field(data.compile_opts, field2.name));
+        }
+
+        compile.addArg("-V");
+        compile.addFileInput(src);
+        compile.addFileArg(src);
+        compile.addArg("-o");
+        const comp_out = compile.addOutputFileArg(b.fmt("{s}.no-opt", .{data.bin}));
+
+        const opt = b.addSystemCommand(&.{ "spirv-opt", "-O" });
+        opt.addFileInput(comp_out);
+        opt.addFileArg(comp_out);
+        opt.addArg("-o");
+        const opt_out = opt.addOutputFileArg(data.bin);
+        opt.step.dependOn(&compile.step);
+
+        const install = b.addInstallFile(opt_out, data.bin);
+        install.step.dependOn(&opt.step);
+        build_step.dependOn(&install.step);
     }
-}
-
-fn buildShader(b: *Build, build_step: *Build.Step, entry: std.fs.Dir.Walker.Entry, t: []const u8, defines: []const []const u8) !void {
-    const src = b.path(b.fmt("{s}/{s}", .{ shader_path, entry.path }));
-    var name_iter = std.mem.splitScalar(u8, entry.basename, '.');
-    const name = name_iter.next() orelse return error.Failed;
-    const out_name = b.fmt("{s}.{s}.noopt.spv", .{ name, t });
-    const opt_out_name = b.fmt("{s}.{s}.spv", .{ name, t });
-
-    const command = b.addSystemCommand(&.{ "glslangValidator", "-S", t });
-    command.addArgs(defines);
-    command.addArg("-V");
-    command.addFileInput(src);
-    command.addFileArg(src);
-    command.addArg("-o");
-    const out = command.addOutputFileArg(out_name);
-
-    const opt = b.addSystemCommand(&.{ "spirv-opt", "-O" });
-    opt.addFileInput(out);
-    opt.addFileArg(out);
-    opt.addArg("-o");
-    const opt_out = opt.addOutputFileArg(opt_out_name);
-
-    const install = b.addInstallFile(opt_out, b.fmt("{s}/{s}", .{ shader_output, opt_out_name }));
-    install.step.dependOn(&command.step);
-    build_step.dependOn(&install.step);
 }

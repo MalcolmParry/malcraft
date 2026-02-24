@@ -1,0 +1,16 @@
+.{
+    .shaders = .{
+        .chunk_opaque_vert = .{
+            .src = "src/shaders/chunk_opaque.glsl",
+            .compile_opts = .{ "-S", "vert", "-D_VERTEX" },
+            .bin = "res/shaders/chunk_opaque.vert.spv",
+            .kind = .vertex,
+        },
+        .chunk_opaque_pixel = .{
+            .src = "src/shaders/chunk_opaque.glsl",
+            .compile_opts = .{ "-S", "frag", "-D_PIXEL" },
+            .bin = "res/shaders/chunk_opaque.frag.spv",
+            .kind = .pixel,
+        },
+    },
+}

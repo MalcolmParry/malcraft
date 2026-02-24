@@ -9,12 +9,14 @@ const ChunkMesher = @import("ChunkMesher.zig");
 const ChunkMeshAllocator = @import("ChunkMeshAllocator.zig");
 const WorldGenerator = @import("WorldGenerator.zig");
 const World = @import("World.zig");
+const AssetManager = @import("AssetManager.zig");
 
 const Renderer = @This();
 
 info: Info,
 stage_man: gpu.StagingManager,
 upload_man: gpu.UploadManager,
+asset_man: AssetManager,
 destruct_queue: std.ArrayList(gpu.AnyObject),
 event_queue: mw.EventQueue,
 window: mw.Window,
@@ -35,8 +37,6 @@ chunk_mesh_alloc: ChunkMeshAllocator,
 chunk_mesher: ChunkMesher,
 chunk_resource_layout: gpu.ResourceSet.Layout,
 chunk_resource_set: gpu.ResourceSet,
-chunk_shader_vertex: gpu.Shader,
-chunk_shader_pixel: gpu.Shader,
 chunk_pipeline: gpu.GraphicsPipeline,
 camera: Camera,
 
@@ -88,6 +88,9 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     };
     errdefer this.upload_man.deinit();
 
+    this.asset_man = try .init(this.device, alloc);
+    errdefer this.asset_man.deinit(this.device, alloc);
+
     this.images_initialized = try alloc.alloc(bool, this.info.frames_in_flight);
     errdefer alloc.free(this.images_initialized);
     @memset(this.images_initialized, false);
@@ -98,48 +101,6 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     try this.initFramesInFlight(alloc);
     errdefer this.deinitFramesInFlight(alloc);
-
-    // transition depth
-    {
-        const transitions = try alloc.alloc(gpu.MemoryBarrier, this.info.frames_in_flight);
-        defer alloc.free(transitions);
-
-        for (transitions, this.per_frame_in_flight) |*transition, *per_frame| {
-            transition.* = .{ .image = .{
-                .image = per_frame.depth_image,
-                .subresource_range = .{
-                    .aspect = .{ .depth = true },
-                },
-                .old_layout = .undefined,
-                .new_layout = .depth_stencil,
-                .src_stage = .{ .pipeline_start = true },
-                .dst_stage = .{ .early_depth_tests = true },
-                .src_access = .{},
-                .dst_access = .{
-                    .depth_stencil_read = true,
-                    .depth_stencil_write = true,
-                },
-            } };
-        }
-
-        var cmd_encoder = try this.device.initCommandEncoder();
-        defer cmd_encoder.deinit(this.device);
-
-        var fence = try this.device.initFence(false);
-        defer fence.deinit(this.device);
-
-        try cmd_encoder.begin(this.device);
-        try cmd_encoder.cmdMemoryBarrier(this.device, transitions, alloc);
-        try cmd_encoder.end(this.device);
-        try this.device.submitCommands(.{
-            .encoder = cmd_encoder,
-            .wait_semaphores = &.{},
-            .wait_dst_stages = &.{},
-            .signal_semaphores = &.{},
-            .signal_fence = fence,
-        });
-        try fence.wait(this.device, std.time.ns_per_s);
-    }
 
     this.world = .{};
     errdefer this.world.deinit(alloc);
@@ -177,12 +138,6 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     this.chunk_resource_set = try .init(this.device, this.chunk_resource_layout, alloc);
     try this.destruct_queue.append(alloc, .{ .resource_set = this.chunk_resource_set });
-
-    this.chunk_shader_vertex = try makeShader(this, alloc, "res/shaders/chunk_opaque.vert.spv", .vertex);
-    try this.destruct_queue.append(alloc, .{ .shader = this.chunk_shader_vertex });
-
-    this.chunk_shader_pixel = try makeShader(this, alloc, "res/shaders/chunk_opaque.frag.spv", .pixel);
-    try this.destruct_queue.append(alloc, .{ .shader = this.chunk_shader_pixel });
 
     this.wireframe = false;
     try this.initChunkPipeline(alloc);
@@ -408,6 +363,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
     this.destruct_queue.deinit(alloc);
     alloc.free(this.images_initialized);
+    this.asset_man.deinit(this.device, alloc);
     this.upload_man.deinit();
     this.stage_man.deinit(this.device, alloc);
     this.display.deinit(alloc);
@@ -780,8 +736,8 @@ fn initChunkPipeline(this: *Renderer, alloc: std.mem.Allocator) !void {
         },
         .resource_layouts = &.{this.chunk_resource_layout},
         .shaders = &.{
-            this.chunk_shader_vertex,
-            this.chunk_shader_pixel,
+            this.asset_man.getShader(.chunk_opaque_vert),
+            this.asset_man.getShader(.chunk_opaque_pixel),
         },
         .vertex_input_bindings = &.{.{
             .binding = 0,
@@ -859,6 +815,24 @@ const PerFrameInFlight = struct {
             },
         });
         errdefer this.depth_image_view.deinit(renderer.device, alloc);
+
+        try renderer.upload_man.post_copy_barriers.append(alloc, .{
+            .image = .{
+                .image = this.depth_image,
+                .subresource_range = .{
+                    .aspect = .{ .depth = true },
+                },
+                .old_layout = .undefined,
+                .new_layout = .depth_stencil,
+                .src_stage = .{ .pipeline_start = true },
+                .dst_stage = .{ .early_depth_tests = true },
+                .src_access = .{},
+                .dst_access = .{
+                    .depth_stencil_read = true,
+                    .depth_stencil_write = true,
+                },
+            },
+        });
     }
 
     pub fn deinitViewportDependants(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) void {
@@ -866,18 +840,6 @@ const PerFrameInFlight = struct {
         this.depth_image.deinit(renderer.device, alloc);
     }
 };
-
-fn makeShader(this: *Renderer, alloc: std.mem.Allocator, file_name: []const u8, t: gpu.Shader.Stage) !gpu.Shader {
-    const shader_file = try std.fs.cwd().openFile(file_name, .{});
-    defer shader_file.close();
-    const shader_code = try shader_file.readToEndAlloc(alloc, 1024 * 1024);
-    defer alloc.free(shader_code);
-
-    var shader = try gpu.Shader.fromSpirv(this.device, t, @ptrCast(@alignCast(shader_code)), alloc);
-    errdefer shader.deinit(this.device, alloc);
-
-    return shader;
-}
 
 const ChunkPushConstants = struct {
     pos: [3]i32,

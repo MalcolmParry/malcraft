@@ -1,6 +1,5 @@
 const std = @import("std");
 const mw = @import("mwengine");
-const Deque = @import("deque.zig").Deque;
 const math = mw.math;
 const gpu = mw.gpu;
 const Chunk = @import("Chunk.zig");
