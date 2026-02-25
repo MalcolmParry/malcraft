@@ -445,7 +445,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         const dir = math.normalize(math.quatMulVec(q, math.dir_forward));
 
         if (this.world.rayCast(origin, dir)) |pos| {
-            this.world.setBlock(pos, .air) catch unreachable;
+            try this.world.setBlock(alloc, pos, .air);
             try this.chunk_mesher.addRequestWithCollateral(pos);
         }
     }

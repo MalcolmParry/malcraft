@@ -33,11 +33,11 @@ pub fn getBlock(world: *const World, pos: Chunk.BlockPos) ?Chunk.BlockId {
         null;
 }
 
-pub fn setBlock(world: *World, pos: Chunk.BlockPos, id: Chunk.BlockId) !void {
+pub fn setBlock(world: *World, alloc: std.mem.Allocator, pos: Chunk.BlockPos, id: Chunk.BlockId) !void {
     const chunk_pos = chunkPosFromBlockPos(pos);
     const chunk = world.chunks.getPtr(chunk_pos) orelse return error.ChunkNotPresent;
     const rel_pos = chunkRelFromBlockPos(pos);
-    chunk.setBlock(@intCast(rel_pos), id);
+    try chunk.setBlock(alloc, @intCast(rel_pos), id);
 }
 
 pub fn rayCast(world: *const World, origin: math.Vec3, dir: math.Vec3) ?Chunk.BlockPos {

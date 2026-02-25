@@ -1,5 +1,6 @@
 const std = @import("std");
 const mw = @import("mwengine");
+const options = @import("options");
 const math = mw.math;
 const gpu = mw.gpu;
 const Chunk = @import("Chunk.zig");
@@ -7,7 +8,7 @@ const ChunkMeshAllocator = @import("ChunkMeshAllocator.zig");
 const World = @import("World.zig");
 
 const ChunkMesher = @This();
-pub const max_faces = (32 * 32 * 32 / 2) * 6;
+pub const max_faces = (Chunk.block_count / 2) * 6;
 
 pub const GpuLoaded = struct {
     face_count: u32,
@@ -321,10 +322,12 @@ fn greedyMeshWithFastExits(alloc: std.mem.Allocator, state: *MeshingState, world
 
     if (chunk.allOpaque()) {
         const adjacent_all_opaque = blk: for (refs.adjacent()) |maybe_chunk| {
-            if (maybe_chunk) |adjacent| {
-                if (!adjacent.allOpaque())
-                    break :blk false;
-            } else break :blk false;
+            const is_opaque = if (maybe_chunk) |x|
+                x.allOpaque()
+            else
+                !options.render_borders_with_nonexistant_chunks;
+
+            if (!is_opaque) break :blk false;
         } else true;
 
         if (adjacent_all_opaque)
@@ -354,7 +357,7 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) v
                 const pos_p: Chunk.BlockPos = .{ @intCast(x), @intCast(y), @intCast(z) };
                 const pos = pos_p - @as(Chunk.BlockPos, @splat(1));
 
-                if (refs.isOpaqueSafe(pos)) {
+                if (refs.isOpaqueSafe(pos, !options.render_borders_with_nonexistant_chunks)) {
                     // z,y - x axis
                     cols[0][y][z] |= @as(MaskP, 1) << @intCast(x);
                     // x,z - y axis
@@ -418,7 +421,7 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) v
                         };
 
                         const spos = pos + sample_offset;
-                        if (refs.isOpaqueSafe(spos)) {
+                        if (refs.isOpaqueSafe(spos, false)) {
                             ao_bits |= @as(u8, 1) << @intCast(i);
                         }
                     }
@@ -595,12 +598,12 @@ const ChunkRefs = struct {
         };
     }
 
-    fn isOpaqueSafe(refs: ChunkRefs, pos: Chunk.BlockPos) bool {
-        var axis_out_of_bounds: usize = 0;
-        for (0..3) |axis| {
-            if (pos[axis] < 0 or pos[axis] >= Chunk.len)
-                axis_out_of_bounds += 1;
-        }
+    fn isOpaqueSafe(refs: ChunkRefs, pos: Chunk.BlockPos, default: bool) bool {
+        const lesser_masks = pos < @as(Chunk.BlockPos, @splat(0));
+        const greater_masks = pos > @as(Chunk.BlockPos, @splat(Chunk.len - 1));
+        const lesser_num_vec: @Vector(3, u8) = @intFromBool(lesser_masks);
+        const greater_num_vec: @Vector(3, u8) = @intFromBool(greater_masks);
+        const axis_out_of_bounds = @reduce(.Add, lesser_num_vec + greater_num_vec);
 
         return switch (axis_out_of_bounds) {
             0 => refs.this.getBlock(@intCast(pos)).isOpaque(),
@@ -608,21 +611,21 @@ const ChunkRefs = struct {
                 const pos_dir: FaceDir = FaceDir.posDirFromAxis(axis);
                 const neg_dir = pos_dir.opposite();
 
-                if (pos[axis] < 0) {
+                if (lesser_masks[axis]) {
                     return if (refs.refFromFaceDir(neg_dir)) |next|
                         next.getBlock(@intCast(pos + pos_dir.dir() * Chunk.size)).isOpaque()
                     else
-                        false;
+                        default;
                 }
 
-                if (pos[axis] >= Chunk.len) {
+                if (greater_masks[axis]) {
                     return if (refs.refFromFaceDir(pos_dir)) |next|
                         next.getBlock(@intCast(pos + neg_dir.dir() * Chunk.size)).isOpaque()
                     else
-                        false;
+                        default;
                 }
             } else unreachable,
-            else => false,
+            else => default,
         };
     }
 };

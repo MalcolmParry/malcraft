@@ -12,12 +12,11 @@ pub const len = 32;
 pub const size: ChunkPos = @splat(len);
 pub const block_count = len * len * len;
 
-pub const OneToOne = [len][len][len]BlockId;
+pub const OneToOne = [block_count]BlockId;
 
 data: union(enum) {
     single: BlockId,
-    /// indexed with blocks[z][y][x]
-    /// dont use, use getters and setters instead
+    /// use oneToOneIndex
     one_to_one: *OneToOne,
 },
 
@@ -45,22 +44,29 @@ pub const BlockId = enum(u2) {
 pub fn deinit(chunk: *Chunk, alloc: std.mem.Allocator) void {
     switch (chunk.data) {
         .single => {},
-        .one_to_one => |data| alloc.free(data),
+        .one_to_one => |data| alloc.destroy(data),
     }
 }
 
 pub inline fn getBlock(chunk: *const Chunk, pos: Pos) BlockId {
     return switch (chunk.data) {
         .single => |single| single,
-        .one_to_one => |data| data[pos[2]][pos[1]][pos[0]],
+        .one_to_one => |data| data[oneToOneIndex(pos)],
     };
 }
 
-pub inline fn setBlock(chunk: *Chunk, pos: Pos, val: BlockId) void {
+pub inline fn setBlock(chunk: *Chunk, alloc: std.mem.Allocator, pos: Pos, val: BlockId) !void {
     switch (chunk.data) {
-        // TODO:
-        .single => @panic("not implemented yet"),
-        .one_to_one => |data| data[pos[2]][pos[1]][pos[0]] = val,
+        .single => |old| {
+            const new = try alloc.create(OneToOne);
+            @memset(new, old);
+            new[oneToOneIndex(pos)] = val;
+
+            chunk.* = .{ .data = .{
+                .one_to_one = new,
+            } };
+        },
+        .one_to_one => |data| data[oneToOneIndex(pos)] = val,
     }
 }
 
@@ -77,6 +83,11 @@ pub fn allOpaque(chunk: *const Chunk) bool {
         // TODO: handle this case
         else => false,
     };
+}
+
+pub fn oneToOneIndex(pos: Pos) u16 {
+    const x: u16, const y: u16, const z: u16 = pos;
+    return z * len * len + y * len + x;
 }
 
 pub const Iterator = struct {

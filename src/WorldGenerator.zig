@@ -70,16 +70,13 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.ChunkPos) !Chunk {
         const block_pos = pos + @as(Chunk.BlockPos, @intCast(chunk_rel));
         const grass_height = map[chunk_rel[1]][chunk_rel[0]];
 
-        // if (block_pos[2] == grass_height - 1 and chunk_rel[0] % 6 == 0) {
-        //     chunk.setBlock(chunk_rel, .air);
-        //     continue;
-        // }
-
-        chunk.setBlock(chunk_rel, switch (std.math.order(block_pos[2], grass_height)) {
+        const block: Chunk.BlockId = switch (std.math.order(block_pos[2], grass_height)) {
             .gt => .air,
             .eq => .grass,
             .lt => .stone,
-        });
+        };
+
+        chunk.setBlock(std.testing.failing_allocator, chunk_rel, block) catch unreachable;
     }
 
     return chunk;
