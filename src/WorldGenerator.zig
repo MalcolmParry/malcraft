@@ -8,10 +8,17 @@ const World = @import("World.zig");
 
 const WorldGenerator = @This();
 const i32x2 = @Vector(2, i32);
-const ChunkHeightMap = [Chunk.len][Chunk.len]i32;
-height_map: std.AutoHashMapUnmanaged(i32x2, *ChunkHeightMap),
+height_map: std.AutoHashMapUnmanaged(i32x2, *HeightMap),
 queue: Deque(Chunk.ChunkPos),
 alloc: std.mem.Allocator,
+
+const HeightMap = struct {
+    const Map = [Chunk.len][Chunk.len]i32;
+
+    lowest: i32,
+    highest: i32,
+    map: Map,
+};
 
 pub fn init(gen: *WorldGenerator, alloc: std.mem.Allocator) !void {
     gen.* = .{
@@ -43,7 +50,6 @@ pub fn genMany(
         const pos = gen.queue.popFront() orelse break;
         const chunk = try gen.generate(pos);
         try world.chunks.put(alloc, pos, chunk);
-        if (chunk.allAir()) continue;
 
         try mesher.addRequest(pos);
         try mesher.addRequest(pos + @as(Chunk.ChunkPos, .{ 1, 0, 0 }));
@@ -61,14 +67,12 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.ChunkPos) !Chunk {
         return .{ .data = .{ .single = only_block } };
 
     const pos = chunk_pos * Chunk.size;
-    var chunk: Chunk = .{ .data = .{
-        .one_to_one = try gen.alloc.create(Chunk.OneToOne),
-    } };
+    const one_to_one = try gen.alloc.create(Chunk.OneToOne);
 
     var iter: Chunk.Iterator = .{};
     while (iter.next()) |chunk_rel| {
         const block_pos = pos + @as(Chunk.BlockPos, @intCast(chunk_rel));
-        const grass_height = map[chunk_rel[1]][chunk_rel[0]];
+        const grass_height = map.map[chunk_rel[1]][chunk_rel[0]];
 
         const block: Chunk.BlockId = switch (std.math.order(block_pos[2], grass_height)) {
             .gt => .air,
@@ -76,37 +80,29 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.ChunkPos) !Chunk {
             .lt => .stone,
         };
 
-        chunk.setBlock(std.testing.failing_allocator, chunk_rel, block) catch unreachable;
+        one_to_one.setBlock(chunk_rel, block);
     }
 
-    return chunk;
+    return .{ .data = .{ .one_to_one = one_to_one } };
 }
 
-fn isAllOneBlock(map: *ChunkHeightMap, cs_z: i32) ?Chunk.BlockId {
+fn isAllOneBlock(map: *HeightMap, cs_z: i32) ?Chunk.BlockId {
     const bs_z = cs_z * Chunk.len;
-    const below = map.*[0][0] > bs_z;
 
-    for (0..Chunk.len) |y| {
-        for (0..Chunk.len) |x| {
-            if (below) {
-                if (map.*[y][x] <= bs_z + Chunk.len)
-                    return null;
-            } else {
-                if (map.*[y][x] >= bs_z)
-                    return null;
-            }
-        }
-    }
-
-    return if (below) .stone else .air;
+    if (bs_z > map.highest) return .air;
+    if (bs_z + Chunk.len - 1 < map.lowest) return .stone;
+    return null;
 }
 
-fn getOrCreateHeightMap(gen: *WorldGenerator, pos: i32x2) !*ChunkHeightMap {
+fn getOrCreateHeightMap(gen: *WorldGenerator, pos: i32x2) !*HeightMap {
     const map = try gen.height_map.getOrPut(gen.alloc, pos);
 
     if (!map.found_existing) {
-        map.value_ptr.* = try gen.alloc.create(ChunkHeightMap);
+        map.value_ptr.* = try gen.alloc.create(HeightMap);
+        const values = &map.value_ptr.*.*.map;
 
+        var lowest: i32 = std.math.maxInt(i32);
+        var highest: i32 = std.math.minInt(i32);
         for (0..Chunk.len) |yr| {
             for (0..Chunk.len) |xr| {
                 const bs_chunk_pos = pos * @as(i32x2, @splat(Chunk.len));
@@ -120,11 +116,16 @@ fn getOrCreateHeightMap(gen: *WorldGenerator, pos: i32x2) !*ChunkHeightMap {
 
                 const height_diff: f32 = 8 * (@sin((nx + 3 * ny) + 3 * @sin((3 * nx - ny) + @sin(nx + ny / 2))) + @sin(9 * nx) / 3) + 20 * math.powComptime(m, 5);
 
-                const grass_height: i32 = @as(i32, @intFromFloat(height_diff)) + 16;
+                const grass_height: i32 = @as(i32, @intFromFloat(height_diff));
 
-                map.value_ptr.*.*[yr][xr] = grass_height;
+                lowest = @min(lowest, grass_height);
+                highest = @max(highest, grass_height);
+                values.*[yr][xr] = grass_height;
             }
         }
+
+        map.value_ptr.*.*.lowest = lowest;
+        map.value_ptr.*.*.highest = highest;
     }
 
     return map.value_ptr.*;

@@ -12,7 +12,14 @@ pub const len = 32;
 pub const size: ChunkPos = @splat(len);
 pub const block_count = len * len * len;
 
-pub const OneToOne = [block_count]BlockId;
+pub const OneToOne = struct {
+    blocks: [len][len][len]BlockId,
+
+    pub inline fn setBlock(one_to_one: *OneToOne, pos: Pos, val: BlockId) void {
+        const x, const y, const z = pos;
+        one_to_one.blocks[z][y][x] = val;
+    }
+};
 
 data: union(enum) {
     single: BlockId,
@@ -51,43 +58,44 @@ pub fn deinit(chunk: *Chunk, alloc: std.mem.Allocator) void {
 pub inline fn getBlock(chunk: *const Chunk, pos: Pos) BlockId {
     return switch (chunk.data) {
         .single => |single| single,
-        .one_to_one => |data| data[oneToOneIndex(pos)],
+        .one_to_one => |one_to_one| one_to_one.blocks[pos[2]][pos[1]][pos[0]],
     };
 }
 
-pub inline fn setBlock(chunk: *Chunk, alloc: std.mem.Allocator, pos: Pos, val: BlockId) !void {
+pub fn setBlock(chunk: *Chunk, alloc: std.mem.Allocator, pos: Pos, val: BlockId) !void {
     switch (chunk.data) {
         .single => |old| {
+            if (old == val) return;
+
             const new = try alloc.create(OneToOne);
-            @memset(new, old);
-            new[oneToOneIndex(pos)] = val;
+            const flat: *[block_count]BlockId = @ptrCast(&new.blocks);
+            @memset(flat, old);
+
+            const x, const y, const z = pos;
+            new.blocks[z][y][x] = val;
 
             chunk.* = .{ .data = .{
                 .one_to_one = new,
             } };
         },
-        .one_to_one => |data| data[oneToOneIndex(pos)] = val,
+        .one_to_one => |one_to_one| one_to_one.setBlock(pos, val),
     }
 }
 
-pub fn allAir(chunk: *const Chunk) bool {
+/// can give false negatives
+pub inline fn allAirFast(chunk: *const Chunk) bool {
     return switch (chunk.data) {
         .single => |block| block == .air,
         .one_to_one => false,
     };
 }
 
-pub fn allOpaque(chunk: *const Chunk) bool {
+/// can give false negatives
+pub inline fn allOpaqueFast(chunk: *const Chunk) bool {
     return switch (chunk.data) {
         .single => |block| block.isOpaque(),
-        // TODO: handle this case
         else => false,
     };
-}
-
-pub fn oneToOneIndex(pos: Pos) u16 {
-    const x: u16, const y: u16, const z: u16 = pos;
-    return z * len * len + y * len + x;
 }
 
 pub const Iterator = struct {

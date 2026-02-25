@@ -850,7 +850,7 @@ const PerFramePushConstants = struct {
 };
 
 const Camera = struct {
-    pos: math.Vec3 = .{ 0, 0, 35 },
+    pos: math.Vec3 = .{ 0, 0, 20 },
     euler: math.Vec3 = .{ 0, 0, 0 },
     v_fov: f32 = math.rad(90.0),
     near: f32 = 0.1,

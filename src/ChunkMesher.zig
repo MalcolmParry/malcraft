@@ -308,7 +308,7 @@ fn worker(info: *MeshThreadInfo) void {
 
 fn greedyMeshWithFastExits(alloc: std.mem.Allocator, state: *MeshingState, world: *const World, pos: Chunk.ChunkPos) void {
     const chunk = world.chunks.get(pos) orelse return;
-    if (chunk.allAir()) return;
+    if (chunk.allAirFast()) return;
 
     const refs: ChunkRefs = .{
         .this = chunk,
@@ -320,10 +320,10 @@ fn greedyMeshWithFastExits(alloc: std.mem.Allocator, state: *MeshingState, world
         .down = world.chunks.get(pos + @as(Chunk.BlockPos, .{ 0, 0, -1 })),
     };
 
-    if (chunk.allOpaque()) {
+    if (chunk.allOpaqueFast()) {
         const adjacent_all_opaque = blk: for (refs.adjacent()) |maybe_chunk| {
             const is_opaque = if (maybe_chunk) |x|
-                x.allOpaque()
+                x.allOpaqueFast()
             else
                 !options.render_borders_with_nonexistant_chunks;
 
