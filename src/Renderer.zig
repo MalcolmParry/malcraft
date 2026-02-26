@@ -390,15 +390,15 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
         while (y <= render_radius) : (y += 1) {
             var x: i32 = -render_radius;
             while (x <= render_radius) : (x += 1) {
-                const pos: Chunk.ChunkPos = .{ x, y, z };
+                const pos: Chunk.Pos = .{ x, y, z };
                 this.world_gen.queue.pushBackAssumeCapacity(pos);
             }
         }
     }
 
     const queue = this.world_gen.queue.buffer[0..this.world_gen.queue.len];
-    std.mem.sort(Chunk.ChunkPos, queue, {}, struct {
-        fn lessThanFn(_: void, left: Chunk.ChunkPos, right: Chunk.ChunkPos) bool {
+    std.mem.sort(Chunk.Pos, queue, {}, struct {
+        fn lessThanFn(_: void, left: Chunk.Pos, right: Chunk.Pos) bool {
             const f_left: math.Vec3 = @floatFromInt(left);
             const f_right: math.Vec3 = @floatFromInt(right);
             return math.lengthSqr(f_left) < math.lengthSqr(f_right);
@@ -421,13 +421,13 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     this.stage_man.nextFrame();
 
     if (this.dirty_swapchain) {
-        std.log.info("rebuilding swapchain", .{});
         const fences = try alloc.alloc(gpu.Fence, this.info.frames_in_flight);
         defer alloc.free(fences);
         for (fences, 0..) |*fence, i| fence.* = this.per_frame_in_flight[i].presented_fence;
         try gpu.Fence.waitMany(fences, this.device, .all, std.time.ns_per_s);
 
         const new_viewport = this.window.getFramebufferSize();
+        std.log.info("rebuilding swapchain {}", .{new_viewport});
         try this.display.rebuild(new_viewport, alloc);
         for (this.per_frame_in_flight) |*x| {
             x.deinitViewportDependants(this, alloc);
@@ -678,7 +678,7 @@ const Plane = struct {
     d: f32,
 };
 
-fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.ChunkPos, loaded_mesh: ChunkMesher.GpuLoaded) void {
+fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.Pos, loaded_mesh: ChunkMesher.GpuLoaded) void {
     const push_constants: ChunkPushConstants = .{
         .pos = math.toArray(pos),
     };

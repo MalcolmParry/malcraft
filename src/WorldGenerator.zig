@@ -1,6 +1,7 @@
 const std = @import("std");
 const mw = @import("mwengine");
 const math = mw.math;
+const block = @import("block.zig");
 const Chunk = @import("Chunk.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
 const Deque = @import("deque.zig").Deque;
@@ -9,7 +10,7 @@ const World = @import("World.zig");
 const WorldGenerator = @This();
 const i32x2 = @Vector(2, i32);
 height_map: std.AutoHashMapUnmanaged(i32x2, *HeightMap),
-queue: Deque(Chunk.ChunkPos),
+queue: Deque(Chunk.Pos),
 alloc: std.mem.Allocator,
 
 const HeightMap = struct {
@@ -52,16 +53,16 @@ pub fn genMany(
         try world.chunks.put(alloc, pos, chunk);
 
         try mesher.addRequest(pos);
-        try mesher.addRequest(pos + @as(Chunk.ChunkPos, .{ 1, 0, 0 }));
-        try mesher.addRequest(pos + @as(Chunk.ChunkPos, .{ -1, 0, 0 }));
-        try mesher.addRequest(pos + @as(Chunk.ChunkPos, .{ 0, 1, 0 }));
-        try mesher.addRequest(pos + @as(Chunk.ChunkPos, .{ 0, -1, 0 }));
-        try mesher.addRequest(pos + @as(Chunk.ChunkPos, .{ 0, 0, 1 }));
-        try mesher.addRequest(pos + @as(Chunk.ChunkPos, .{ 0, 0, -1 }));
+        try mesher.addRequest(pos + @as(Chunk.Pos, .{ 1, 0, 0 }));
+        try mesher.addRequest(pos + @as(Chunk.Pos, .{ -1, 0, 0 }));
+        try mesher.addRequest(pos + @as(Chunk.Pos, .{ 0, 1, 0 }));
+        try mesher.addRequest(pos + @as(Chunk.Pos, .{ 0, -1, 0 }));
+        try mesher.addRequest(pos + @as(Chunk.Pos, .{ 0, 0, 1 }));
+        try mesher.addRequest(pos + @as(Chunk.Pos, .{ 0, 0, -1 }));
     }
 }
 
-pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.ChunkPos) !Chunk {
+pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
     const map = try gen.getOrCreateHeightMap(.{ chunk_pos[0], chunk_pos[1] });
     if (isAllOneBlock(map, chunk_pos[2])) |only_block|
         return .{ .data = .{ .single = only_block } };
@@ -71,22 +72,22 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.ChunkPos) !Chunk {
 
     var iter: Chunk.Iterator = .{};
     while (iter.next()) |chunk_rel| {
-        const block_pos = pos + @as(Chunk.BlockPos, @intCast(chunk_rel));
+        const block_pos = pos + @as(block.Pos, @intCast(chunk_rel));
         const grass_height = map.map[chunk_rel[1]][chunk_rel[0]];
 
-        const block: Chunk.BlockId = switch (std.math.order(block_pos[2], grass_height)) {
+        const kind: block.Kind = switch (std.math.order(block_pos[2], grass_height)) {
             .gt => .air,
             .eq => .grass,
             .lt => .stone,
         };
 
-        one_to_one.setBlock(chunk_rel, block);
+        one_to_one.setBlock(chunk_rel, kind);
     }
 
     return .{ .data = .{ .one_to_one = one_to_one } };
 }
 
-fn isAllOneBlock(map: *HeightMap, cs_z: i32) ?Chunk.BlockId {
+fn isAllOneBlock(map: *HeightMap, cs_z: i32) ?block.Kind {
     const bs_z = cs_z * Chunk.len;
 
     if (bs_z > map.highest) return .air;

@@ -20,7 +20,7 @@ buffer: gpu.Buffer,
 free_list: std.DoublyLinkedList,
 alloc: std.mem.Allocator,
 device: gpu.Device,
-loaded_meshes: std.AutoArrayHashMapUnmanaged(Chunk.ChunkPos, ChunkMesher.GpuLoaded),
+loaded_meshes: std.AutoArrayHashMapUnmanaged(Chunk.Pos, ChunkMesher.GpuLoaded),
 
 const FreeRegion = struct {
     offset: gpu.Size,
@@ -95,7 +95,7 @@ pub fn ensureCapacity(mesh_alloc: *ChunkMeshAllocator, count: usize) !void {
     try mesh_alloc.loaded_meshes.ensureUnusedCapacity(mesh_alloc.alloc, count);
 }
 
-pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const ChunkMesher.GreedyQuad, pos: Chunk.ChunkPos) !void {
+pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const ChunkMesher.GreedyQuad, pos: Chunk.Pos) !void {
     const on_gpu = try this.allocate(on_cpu.len);
 
     const size_bytes = on_gpu.face_count * @sizeOf(ChunkMesher.GreedyQuad);

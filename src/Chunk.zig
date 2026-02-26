@@ -1,52 +1,30 @@
 const std = @import("std");
 const mw = @import("mwengine");
 const math = mw.math;
+const block = @import("block.zig");
 
 const Chunk = @This();
-pub const Map = std.AutoHashMapUnmanaged(ChunkPos, Chunk);
-pub const BlockPos = @Vector(3, i32);
-pub const ChunkPos = BlockPos;
-pub const T = u5;
-pub const Pos = @Vector(3, u5);
+pub const Map = std.AutoHashMapUnmanaged(Pos, Chunk);
+pub const Pos = @Vector(3, i32);
+pub const RelPos = @Vector(3, u5);
 pub const len = 32;
-pub const size: ChunkPos = @splat(len);
+pub const size: Pos = @splat(len);
 pub const block_count = len * len * len;
 
 pub const OneToOne = struct {
-    blocks: [len][len][len]BlockId,
+    blocks: [len][len][len]block.Kind,
 
-    pub inline fn setBlock(one_to_one: *OneToOne, pos: Pos, val: BlockId) void {
+    pub inline fn setBlock(one_to_one: *OneToOne, pos: RelPos, new: block.Kind) void {
         const x, const y, const z = pos;
-        one_to_one.blocks[z][y][x] = val;
+        one_to_one.blocks[z][y][x] = new;
     }
 };
 
 data: union(enum) {
-    single: BlockId,
+    single: block.Kind,
     /// use oneToOneIndex
     one_to_one: *OneToOne,
 },
-
-pub const BlockId = enum(u2) {
-    air,
-    grass,
-    stone,
-
-    pub fn isOpaque(this: BlockId) bool {
-        return switch (this) {
-            .air => false,
-            else => true,
-        };
-    }
-
-    pub fn color(this: BlockId) math.Vec3 {
-        return switch (this) {
-            .air => unreachable,
-            .grass => .{ 0, 1, 0 },
-            .stone => .{ 0.5, 0.5, 0.5 },
-        };
-    }
-};
 
 pub fn deinit(chunk: *Chunk, alloc: std.mem.Allocator) void {
     switch (chunk.data) {
@@ -55,37 +33,37 @@ pub fn deinit(chunk: *Chunk, alloc: std.mem.Allocator) void {
     }
 }
 
-pub inline fn getBlock(chunk: *const Chunk, pos: Pos) BlockId {
+pub inline fn getBlock(chunk: *const Chunk, pos: RelPos) block.Kind {
     return switch (chunk.data) {
         .single => |single| single,
         .one_to_one => |one_to_one| one_to_one.blocks[pos[2]][pos[1]][pos[0]],
     };
 }
 
-pub fn setBlock(chunk: *Chunk, alloc: std.mem.Allocator, pos: Pos, val: BlockId) !void {
+pub fn setBlock(chunk: *Chunk, alloc: std.mem.Allocator, pos: RelPos, new: block.Kind) !void {
     switch (chunk.data) {
         .single => |old| {
-            if (old == val) return;
+            if (old == new) return;
 
-            const new = try alloc.create(OneToOne);
-            const flat: *[block_count]BlockId = @ptrCast(&new.blocks);
+            const one_to_one = try alloc.create(OneToOne);
+            const flat: *[block_count]block.Kind = @ptrCast(&one_to_one.blocks);
             @memset(flat, old);
 
             const x, const y, const z = pos;
-            new.blocks[z][y][x] = val;
+            one_to_one.blocks[z][y][x] = new;
 
             chunk.* = .{ .data = .{
-                .one_to_one = new,
+                .one_to_one = one_to_one,
             } };
         },
-        .one_to_one => |one_to_one| one_to_one.setBlock(pos, val),
+        .one_to_one => |one_to_one| one_to_one.setBlock(pos, new),
     }
 }
 
 /// can give false negatives
 pub inline fn allAirFast(chunk: *const Chunk) bool {
     return switch (chunk.data) {
-        .single => |block| block == .air,
+        .single => |single| single == .air,
         .one_to_one => false,
     };
 }
@@ -93,7 +71,7 @@ pub inline fn allAirFast(chunk: *const Chunk) bool {
 /// can give false negatives
 pub inline fn allOpaqueFast(chunk: *const Chunk) bool {
     return switch (chunk.data) {
-        .single => |block| block.isOpaque(),
+        .single => |single| single.isOpaque(),
         else => false,
     };
 }
@@ -101,7 +79,7 @@ pub inline fn allOpaqueFast(chunk: *const Chunk) bool {
 pub const Iterator = struct {
     pos: @Vector(3, u8) = @splat(0),
 
-    pub inline fn next(iter: *Iterator) ?Pos {
+    pub inline fn next(iter: *Iterator) ?RelPos {
         const result = iter.pos;
         if (result[2] == len) return null;
 
