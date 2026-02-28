@@ -35,10 +35,10 @@ pub fn build(b: *Build) !void {
     const default_vrender_radius: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 3 else 1;
 
     const options = b.addOptions();
-    options.addOption(bool, "gpu_validation", b.option(bool, "gpu_validation", "") orelse (optimize != .ReleaseFast));
-    options.addOption(u32, "render_radius", b.option(u32, "render_radius", "") orelse default_render_radius);
-    options.addOption(u32, "vrender_radius", b.option(u32, "vrender_radius", "") orelse default_vrender_radius);
-    options.addOption(bool, "render_borders_with_nonexistant_chunks", b.option(bool, "render_borders_with_nonexistant_chunks", "") orelse true);
+    options.addOption(bool, "gpu_validation", b.option(bool, "gpu-validation", "") orelse (optimize != .ReleaseFast));
+    options.addOption(u32, "render_radius", b.option(u32, "render-radius", "") orelse default_render_radius);
+    options.addOption(u32, "vrender_radius", b.option(u32, "render-height", "") orelse default_vrender_radius);
+    options.addOption(bool, "render_borders_with_nonexistant_chunks", b.option(bool, "borders", "Should render borders with nonexistant chunks") orelse true);
     exe.root_module.addOptions("options", options);
 
     const res_install = b.addInstallDirectory(.{

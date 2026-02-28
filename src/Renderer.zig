@@ -509,16 +509,17 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         }
     }
 
-    const image_index = blk: switch (try this.display.acquireImageIndex(per_frame.image_available_semaphore, null, std.time.ns_per_s)) {
-        .success => |x| x,
-        .suboptimal => |x| {
-            this.dirty_swapchain = true;
-            break :blk x;
-        },
-        .out_of_date => {
-            this.dirty_swapchain = true;
-            return;
-        },
+    const image_index = blk: {
+        const result = this.display.acquireImageIndex(per_frame.image_available_semaphore, null, std.time.ns_per_s) catch |err| switch (err) {
+            error.OutOfDate => {
+                this.dirty_swapchain = true;
+                return;
+            },
+            else => return err,
+        };
+
+        if (!result.optimal) this.dirty_swapchain = true;
+        break :blk result.image_index;
     };
 
     try per_frame.cmd_encoder.begin(this.device);
@@ -585,7 +586,10 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     });
 
     try per_frame.presented_fence.reset(this.device);
-    _ = try this.display.presentImage(image_index, &.{per_frame.render_finished_semaphore}, per_frame.presented_fence);
+    this.display.presentImage(image_index, &.{per_frame.render_finished_semaphore}, per_frame.presented_fence) catch |err| switch (err) {
+        error.Suboptimal, error.OutOfDate => this.dirty_swapchain = true,
+        else => return err,
+    };
 }
 
 fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constants: PerFramePushConstants, aspect_ratio: f32) void {
