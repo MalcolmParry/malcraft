@@ -12,5 +12,9 @@
             .url = "git+https://github.com/zigimg/zigimg.git#78ccfc1625e767ed8b617044894ffd9a9a77fdc9",
             .hash = "zigimg-0.1.0-8_eo2ix7FwDYaaUeexKLSrFdhhQ2AMrj9G4vMs4znbKg",
         },
+        .znoise = .{
+            .url = "git+https://github.com/zig-gamedev/znoise.git#01c8b354cc3ef7f2293de75e58d3298a77d7ed06",
+            .hash = "znoise-0.3.0-dev-gK1op9ikAQDrS4G22GluyaQaabjGzhdnhV2QyCoLE8z7",
+        },
     },
 }

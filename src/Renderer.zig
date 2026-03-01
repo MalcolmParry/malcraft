@@ -384,8 +384,8 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
 
     try this.world_gen.queue.ensureUnusedCapacity(alloc, chunk_count);
 
-    var z: i32 = vertical_render_radius;
-    while (z >= -vertical_render_radius) : (z -= 1) {
+    var z: i32 = 0;
+    while (z <= vertical_render_radius) : (z += 1) {
         var y: i32 = -render_radius;
         while (y <= render_radius) : (y += 1) {
             var x: i32 = -render_radius;
@@ -854,7 +854,7 @@ const PerFramePushConstants = struct {
 };
 
 const Camera = struct {
-    pos: math.Vec3 = .{ 0, 0, 20 },
+    pos: math.Vec3 = .{ 0, 0, 210 },
     euler: math.Vec3 = .{ 0, 0, 0 },
     v_fov: f32 = math.rad(90.0),
     near: f32 = 0.1,

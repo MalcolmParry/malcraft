@@ -6,6 +6,7 @@ const Chunk = @import("Chunk.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
 const Deque = @import("deque.zig").Deque;
 const World = @import("World.zig");
+const znoise = @import("znoise");
 
 const WorldGenerator = @This();
 const i32x2 = @Vector(2, i32);
@@ -14,10 +15,10 @@ queue: Deque(Chunk.Pos),
 alloc: std.mem.Allocator,
 
 const HeightMap = struct {
-    const Map = [Chunk.len][Chunk.len]i32;
+    const Map = [Chunk.len][Chunk.len]i16;
 
-    lowest: i32,
-    highest: i32,
+    lowest: i16,
+    highest: i16,
     map: Map,
 };
 
@@ -50,7 +51,10 @@ pub fn genMany(
 
         const pos = gen.queue.popFront() orelse break;
         const chunk = try gen.generate(pos);
-        try world.chunks.put(alloc, pos, chunk);
+        const entry = try world.chunks.getOrPut(alloc, pos);
+        entry.value_ptr.* = chunk;
+
+        if (!entry.found_existing and chunk.allAirFast()) continue;
 
         try mesher.addRequest(pos);
         try mesher.addRequest(pos + @as(Chunk.Pos, .{ 1, 0, 0 }));
@@ -102,26 +106,51 @@ fn getOrCreateHeightMap(gen: *WorldGenerator, pos: i32x2) !*HeightMap {
         map.value_ptr.* = try gen.alloc.create(HeightMap);
         const values = &map.value_ptr.*.*.map;
 
-        var lowest: i32 = std.math.maxInt(i32);
-        var highest: i32 = std.math.minInt(i32);
+        const seed = 69422;
+        var lowest: i16 = std.math.maxInt(i16);
+        var highest: i16 = std.math.minInt(i16);
         for (0..Chunk.len) |yr| {
             for (0..Chunk.len) |xr| {
                 const bs_chunk_pos = pos * @as(i32x2, @splat(Chunk.len));
                 const block_pos = bs_chunk_pos + @as(i32x2, .{ @intCast(xr), @intCast(yr) });
                 const f_block_pos: math.Vec2 = @floatFromInt(block_pos);
                 const x, const y = f_block_pos;
-                const nx = x / 50;
-                const ny = y / 50;
 
-                const m = @sin(x / 50 + (y / 70) * @sin(x / 100));
+                const warp = znoise.FnlGenerator{
+                    .seed = seed,
+                    .frequency = 0.002,
+                    .octaves = 3,
+                };
 
-                const height_diff: f32 = 8 * (@sin((nx + 3 * ny) + 3 * @sin((3 * nx - ny) + @sin(nx + ny / 2))) + @sin(9 * nx) / 3) + 20 * math.powComptime(m, 5);
+                const wx = warp.noise2(x, y) * 100;
+                const wy = warp.noise2(x + 1000, y + 1000) * 100;
 
-                const grass_height: i32 = @as(i32, @intFromFloat(height_diff));
+                const nx = x + wx;
+                const ny = y + wy;
 
-                lowest = @min(lowest, grass_height);
-                highest = @max(highest, grass_height);
-                values.*[yr][xr] = grass_height;
+                var height: f32 = 0;
+
+                const iterations = 6;
+                var ridge: f32 = 0;
+                inline for (0..iterations) |i| {
+                    const p: f32 = comptime math.powComptime(2, i);
+
+                    const noise_state: znoise.FnlGenerator = .{
+                        .seed = seed,
+                        .frequency = 0.0005,
+                    };
+
+                    const h = noise_state.noise2(nx * p, ny * p);
+
+                    ridge += 1 - (@abs(h) / p);
+                }
+                height += math.powComptime(ridge / iterations, 4) * 200;
+
+                const height_i: i16 = @intFromFloat(height);
+
+                lowest = @min(lowest, height_i);
+                highest = @max(highest, height_i);
+                values.*[yr][xr] = height_i;
             }
         }
 
@@ -130,4 +159,8 @@ fn getOrCreateHeightMap(gen: *WorldGenerator, pos: i32x2) !*HeightMap {
     }
 
     return map.value_ptr.*;
+}
+
+fn zeroToOne(x: f32) f32 {
+    return (x + 1) / 2;
 }
