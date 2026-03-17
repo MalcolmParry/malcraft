@@ -12,11 +12,13 @@ const World = @import("World.zig");
 const AssetManager = @import("AssetManager.zig");
 
 const Renderer = @This();
+const debug_rendering = true;
 
 info: Info,
 stage_man: gpu.StagingManager,
 upload_man: gpu.UploadManager,
 asset_man: AssetManager,
+debug_renderer: if (debug_rendering) mw.DebugRenderer else void,
 destruct_queue: std.ArrayList(gpu.AnyObject),
 event_queue: mw.EventQueue,
 window: mw.Window,
@@ -91,6 +93,25 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.asset_man = try .init(this.device, alloc);
     errdefer this.asset_man.deinit(this.device, alloc);
 
+    if (debug_rendering) {
+        this.debug_renderer = try .init(.{
+            .alloc = alloc,
+            .device = this.device,
+            .stage_man = &this.stage_man,
+            .frames_in_flight = this.info.frames_in_flight,
+            .vbuffer_size = 128 * 1024,
+            .line_shaders = &.{
+                this.asset_man.getShader(.debug_line_vert),
+                this.asset_man.getShader(.debug_line_pixel),
+            },
+            .render_target_desc = .{
+                .color_format = this.display.imageFormat(),
+                .depth_format = null,
+            },
+        });
+    }
+    errdefer if (debug_rendering) this.debug_renderer.deinit();
+
     this.images_initialized = try alloc.alloc(bool, this.info.frames_in_flight);
     errdefer alloc.free(this.images_initialized);
     @memset(this.images_initialized, false);
@@ -147,6 +168,20 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.last_cursor = .{ 0, 0 };
     this.dirty_swapchain = false;
     this.camera = .{};
+
+    if (debug_rendering) {
+        const font = try std.fs.cwd().openFile("res/font/Roboto_Condensed-Regular.ttf", .{});
+        // const font = try std.fs.cwd().openFile("res/font/NFPixels-Regular.ttf", .{});
+        defer font.close();
+
+        var buffer: [512]u8 = undefined;
+        var reader = font.reader(&buffer);
+        var ttf: mw.TTF = try .parse(alloc, &reader);
+        defer ttf.deinit(alloc);
+
+        const glyph = ttf.glyphs[38];
+        try renderGlyph(this, &ttf, glyph, .{ 500, 500 }, 32);
+    }
 
     {
         const image_paths: [2][]const u8 = .{
@@ -347,6 +382,50 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     }, alloc);
 }
 
+fn renderGlyph(renderer: *@This(), ttf: *mw.TTF, glyph: mw.TTF.Glyph, offset: math.Vec2, max_iterations: usize) !void {
+    if (!glyph.compound) {
+        return renderSimpleGlyph(renderer, ttf, ttf.simple_glyphs[glyph.offset], offset);
+    }
+
+    if (max_iterations == 0) return error.TooManyIterations;
+    const components = glyph.components(ttf);
+
+    for (components) |comp| {
+        try renderGlyph(renderer, ttf, ttf.glyphs[comp.index], offset + comp.floatOffset(), max_iterations - 1);
+    }
+}
+
+const Point = @Vector(2, i16);
+fn renderSimpleGlyph(renderer: *@This(), ttf: *mw.TTF, glyph: mw.TTF.SimpleGlyph, offset: math.Vec2) !void {
+    var citer: mw.TTF.SimpleGlyph.ContourIterator = .{
+        .glyph = glyph,
+        .ttf = ttf,
+    };
+
+    while (citer.next()) |points| {
+        const thickness = 5;
+        const res = 30;
+
+        var iter: mw.TTF.ContourOutlineIterator = .{ .contour = points };
+        while (iter.next()) |segment| {
+            switch (segment) {
+                .line => |line| try renderer.debug_renderer.drawLine(
+                    line.start + offset,
+                    line.end + offset,
+                    thickness,
+                ),
+                .bezier => |bezier| try renderer.debug_renderer.drawBezier(
+                    bezier.start + offset,
+                    bezier.mid + offset,
+                    bezier.end + offset,
+                    thickness,
+                    res,
+                ),
+            }
+        }
+    }
+}
+
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.device.waitUntilIdle();
 
@@ -363,6 +442,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
     this.destruct_queue.deinit(alloc);
     alloc.free(this.images_initialized);
+    if (debug_rendering) this.debug_renderer.deinit();
     this.asset_man.deinit(this.device, alloc);
     this.upload_man.deinit();
     this.stage_man.deinit(this.device, alloc);
@@ -543,9 +623,18 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     const render_pass = per_frame.cmd_encoder.cmdBeginRenderPass(.{
         .device = this.device,
         .target = .{
-            .color_image_view = this.display.imageView(image_index),
-            .color_clear_value = @as(math.Vec4, .{ 66.0, 130.0, 250.0, 255.0 }) / @as(math.Vec4, @splat(255.0)),
-            .depth_image_view = per_frame.depth_image_view,
+            .color_attachment = .{
+                .image_view = this.display.imageView(image_index),
+                .load = .{ .clear = .{
+                    .color = @as(math.Vec4, .{ 66.0, 130.0, 250.0, 255.0 }) / @as(math.Vec4, @splat(255.0)),
+                } },
+                .store = .store,
+            },
+            .depth_attachment = .{
+                .image_view = per_frame.depth_image_view,
+                .load = .{ .clear = .{ .depth = 1 } },
+                .store = .store,
+            },
         },
         .image_size = this.display.imageSize(),
     });
@@ -557,6 +646,43 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     this.drawChunks(render_pass, push_constants, aspect_ratio);
 
     render_pass.cmdEnd(this.device);
+
+    if (debug_rendering) {
+        try per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
+            .{ .image = .{
+                .image = this.display.image(image_index),
+                .subresource_range = .{
+                    .aspect = .{ .color = true },
+                },
+                .old_layout = .color_attachment,
+                .new_layout = .color_attachment,
+                .src_stage = .{ .color_attachment_output = true },
+                .dst_stage = .{ .color_attachment_output = true },
+                .src_access = .{ .color_attachment_write = true },
+                .dst_access = .{ .color_attachment_write = true },
+            } },
+        }, alloc);
+
+        const image_size = this.display.imageSize();
+        try this.debug_renderer.render(
+            per_frame.cmd_encoder,
+            .{
+                .color_attachment = .{
+                    .image_view = this.display.imageView(image_index),
+                    .load = .load,
+                    .store = .store,
+                },
+            },
+            image_size,
+            math.matMulMany(math.Mat4, .{
+                math.scale(.{ 1, -1, 0 }),
+                math.translate(.{ -1, -1, 0 }),
+                math.scale(.{ 2, 2, 0 }),
+                math.scale(.{ 1 / math.i2f(f32, image_size[0]), 1 / math.i2f(f32, image_size[1]), 0 }),
+            }),
+        );
+        // this.debug_renderer.nextFrame();
+    }
 
     try per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
         .{ .image = .{
@@ -656,8 +782,8 @@ fn aabbInPlane(min: math.Vec3, max: math.Vec3, p: Plane) bool {
     const e = (max - min) / math.splat3(f32, 2);
 
     const n = p.n;
-    const s = math.dot(n, c) + p.d;
-    const r = math.dot(@abs(n), e);
+    const s = math.dot(math.Vec3, n, c) + p.d;
+    const r = math.dot(math.Vec3, @abs(n), e);
 
     if (s + r < 0) return false;
     return true;
@@ -671,9 +797,9 @@ fn pointToViewSpace(
     up: math.Vec3,
 ) math.Vec3 {
     return .{
-        math.dot(point - cam_pos, forward),
-        math.dot(point - cam_pos, right),
-        math.dot(point - cam_pos, up),
+        math.dot(math.Vec3, point - cam_pos, forward),
+        math.dot(math.Vec3, point - cam_pos, right),
+        math.dot(math.Vec3, point - cam_pos, up),
     };
 }
 
@@ -861,18 +987,22 @@ const Camera = struct {
     far: f32 = 10_000,
 
     fn view(this: Camera) math.Mat4 {
-        return math.matMulMany(.{
+        return math.matMulMany(math.Mat4, .{
             math.rotateEuler(this.euler),
             math.translate(-this.pos),
         });
     }
 
     fn proj(this: Camera, aspect_ratio: f32) math.Mat4 {
-        return math.perspective(aspect_ratio, this.v_fov, this.near, this.far);
+        return math.matMul(
+            math.Mat4,
+            math.perspective(aspect_ratio, this.v_fov, this.near, this.far),
+            math.to_vulkan,
+        );
     }
 
     fn vp(this: Camera, aspect_ratio: f32) math.Mat4 {
-        return math.matMul(this.proj(aspect_ratio), this.view());
+        return math.matMul(math.Mat4, this.proj(aspect_ratio), this.view());
     }
 };
 

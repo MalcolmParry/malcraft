@@ -12,5 +12,17 @@
             .bin = "res/shaders/chunk_opaque.frag.spv",
             .kind = .pixel,
         },
+        .debug_line_vert = .{
+            .src = "deps/mwengine/src/shaders/debug/line.vert.glsl",
+            .compile_opts = .{},
+            .bin = "res/shaders/debug/line.vert.spv",
+            .kind = .vertex,
+        },
+        .debug_line_pixel = .{
+            .src = "deps/mwengine/src/shaders/debug/line.frag.glsl",
+            .compile_opts = .{},
+            .bin = "res/shaders/debug/line.frag.spv",
+            .kind = .pixel,
+        },
     },
 }

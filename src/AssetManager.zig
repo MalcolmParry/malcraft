@@ -67,8 +67,7 @@ const shader_kinds = blk: {
     var result: [shader_count]gpu.Shader.Stage = undefined;
 
     for (std.meta.fields(@TypeOf(assets.shaders)), 0..) |field, i| {
-        const kind_str = @tagName(@field(assets.shaders, field.name).kind);
-        result[i] = std.meta.stringToEnum(gpu.Shader.Stage, kind_str).?;
+        result[i] = @field(assets.shaders, field.name).kind;
     }
 
     break :blk result;
