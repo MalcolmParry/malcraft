@@ -24,5 +24,17 @@
             .bin = "res/shaders/debug/line.frag.spv",
             .kind = .pixel,
         },
+        .debug_image_vert = .{
+            .src = "deps/mwengine/src/shaders/debug/image.vert.glsl",
+            .compile_opts = .{},
+            .bin = "res/shaders/debug/image.vert.spv",
+            .kind = .vertex,
+        },
+        .debug_image_pixel = .{
+            .src = "deps/mwengine/src/shaders/debug/image.frag.glsl",
+            .compile_opts = .{},
+            .bin = "res/shaders/debug/image.frag.spv",
+            .kind = .pixel,
+        },
     },
 }

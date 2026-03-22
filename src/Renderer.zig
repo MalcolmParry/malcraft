@@ -104,6 +104,10 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
                 this.asset_man.getShader(.debug_line_vert),
                 this.asset_man.getShader(.debug_line_pixel),
             },
+            .image_shaders = &.{
+                this.asset_man.getShader(.debug_image_vert),
+                this.asset_man.getShader(.debug_image_pixel),
+            },
             .render_target_desc = .{
                 .color_format = this.display.imageFormat(),
                 .depth_format = null,
@@ -151,6 +155,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         .descriptors = &.{.{
             .t = .image,
             .stages = .{ .pixel = true },
+            .flags = .{},
             .binding = 0,
             .count = 1,
         }},
@@ -247,27 +252,24 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         const cmd_encoder = try this.device.initCommandEncoder();
         defer cmd_encoder.deinit(this.device);
 
-        try cmd_encoder.begin(this.device);
+        try cmd_encoder.begin();
 
-        try cmd_encoder.cmdMemoryBarrier(this.device, &.{
-            .{
-                .image = .{
-                    .image = this.texture_image,
-                    .subresource_range = .{
-                        .aspect = .{ .color = true },
-                    },
-                    .old_layout = .undefined,
-                    .new_layout = .transfer_dst,
-                    .src_stage = .{ .pipeline_start = true },
-                    .dst_stage = .{ .transfer = true },
-                    .src_access = .{},
-                    .dst_access = .{ .transfer_write = true },
+        cmd_encoder.cmdMemoryBarrier(.{
+            .image_barriers = &.{.{
+                .image = this.texture_image,
+                .subresource_range = .{
+                    .aspect = .{ .color = true },
                 },
-            },
-        }, alloc);
+                .old_layout = .undefined,
+                .new_layout = .transfer_dst,
+                .src_stage = .{ .pipeline_start = true },
+                .dst_stage = .{ .transfer = true },
+                .src_access = .{},
+                .dst_access = .{ .transfer_write = true },
+            }},
+        });
 
         cmd_encoder.cmdCopyBufferToImage(.{
-            .device = this.device,
             .region = .{
                 .size = .{ size[0], size[1], 1 },
             },
@@ -286,8 +288,8 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             if (mip_size[0] > 1) mip_size[0] /= 2;
             if (mip_size[1] > 1) mip_size[1] /= 2;
 
-            try cmd_encoder.cmdMemoryBarrier(this.device, &.{.{
-                .image = .{
+            cmd_encoder.cmdMemoryBarrier(.{
+                .image_barriers = &.{.{
                     .image = this.texture_image,
                     .subresource_range = .{
                         .aspect = .{ .color = true },
@@ -300,11 +302,10 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
                     .dst_stage = .{ .transfer = true },
                     .src_access = .{ .transfer_write = true },
                     .dst_access = .{ .transfer_read = true },
-                },
-            }}, alloc);
+                }},
+            });
 
-            try cmd_encoder.cmdCopyImageWithScaling(.{
-                .device = this.device,
+            cmd_encoder.cmdCopyImageWithScaling(.{
                 .filter = .linear,
                 .src = this.texture_image,
                 .src_layout = .transfer_src,
@@ -324,8 +325,8 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
                 .dst_rect = .{ .size = mip_size },
             });
 
-            try cmd_encoder.cmdMemoryBarrier(this.device, &.{.{
-                .image = .{
+            cmd_encoder.cmdMemoryBarrier(.{
+                .image_barriers = &.{.{
                     .image = this.texture_image,
                     .subresource_range = .{
                         .aspect = .{ .color = true },
@@ -338,12 +339,12 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
                     .dst_stage = .{ .pixel_shader = true },
                     .src_access = .{ .transfer_read = true },
                     .dst_access = .{ .shader_read = true },
-                },
-            }}, alloc);
+                }},
+            });
         }
 
-        try cmd_encoder.cmdMemoryBarrier(this.device, &.{.{
-            .image = .{
+        cmd_encoder.cmdMemoryBarrier(.{
+            .image_barriers = &.{.{
                 .image = this.texture_image,
                 .subresource_range = .{
                     .aspect = .{ .color = true },
@@ -356,10 +357,10 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
                 .dst_stage = .{ .pixel_shader = true },
                 .src_access = .{ .transfer_write = true },
                 .dst_access = .{ .shader_read = true },
-            },
-        }}, alloc);
+            }},
+        });
 
-        try cmd_encoder.end(this.device);
+        try cmd_encoder.end();
         try this.device.submitCommands(.{
             .encoder = cmd_encoder,
             .signal_fence = fence,
@@ -602,11 +603,11 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         break :blk result.image_index;
     };
 
-    try per_frame.cmd_encoder.begin(this.device);
-    try this.upload_man.upload(this.device, per_frame.cmd_encoder);
+    try per_frame.cmd_encoder.begin();
+    try this.upload_man.upload(per_frame.cmd_encoder);
 
-    try per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
-        .{ .image = .{
+    per_frame.cmd_encoder.cmdMemoryBarrier(.{
+        .image_barriers = &.{.{
             .image = this.display.image(image_index),
             .subresource_range = .{
                 .aspect = .{ .color = true },
@@ -617,11 +618,10 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
             .dst_stage = .{ .color_attachment_output = true },
             .src_access = .{},
             .dst_access = .{ .color_attachment_write = true },
-        } },
-    }, alloc);
+        }},
+    });
 
     const render_pass = per_frame.cmd_encoder.cmdBeginRenderPass(.{
-        .device = this.device,
         .target = .{
             .color_attachment = .{
                 .image_view = this.display.imageView(image_index),
@@ -645,11 +645,11 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
 
     this.drawChunks(render_pass, push_constants, aspect_ratio);
 
-    render_pass.cmdEnd(this.device);
+    render_pass.cmdEnd();
 
     if (debug_rendering) {
-        try per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
-            .{ .image = .{
+        per_frame.cmd_encoder.cmdMemoryBarrier(.{
+            .image_barriers = &.{.{
                 .image = this.display.image(image_index),
                 .subresource_range = .{
                     .aspect = .{ .color = true },
@@ -660,8 +660,15 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
                 .dst_stage = .{ .color_attachment_output = true },
                 .src_access = .{ .color_attachment_write = true },
                 .dst_access = .{ .color_attachment_write = true },
-            } },
-        }, alloc);
+            }},
+        });
+
+        // try this.debug_renderer.drawLine(.{ 0, 0 }, .{ 800, 700 }, 10);
+        // try this.debug_renderer.drawImage(this.texture_view, .{
+        //     .{ 100, 0, 0 },
+        //     .{ 0, 100, 600 },
+        //     .{ 0, 0, 1 },
+        // });
 
         const image_size = this.display.imageSize();
         try this.debug_renderer.render(
@@ -684,8 +691,8 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         // this.debug_renderer.nextFrame();
     }
 
-    try per_frame.cmd_encoder.cmdMemoryBarrier(this.device, &.{
-        .{ .image = .{
+    per_frame.cmd_encoder.cmdMemoryBarrier(.{
+        .image_barriers = &.{.{
             .image = this.display.image(image_index),
             .subresource_range = .{
                 .aspect = .{ .color = true },
@@ -696,10 +703,10 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
             .dst_stage = .{ .pipeline_end = true },
             .src_access = .{ .color_attachment_write = true },
             .dst_access = .{},
-        } },
-    }, alloc);
+        }},
+    });
 
-    try per_frame.cmd_encoder.end(this.device);
+    try per_frame.cmd_encoder.end();
     try this.device.submitCommands(.{
         .encoder = per_frame.cmd_encoder,
         .wait_semaphores = &.{per_frame.image_available_semaphore},
@@ -719,10 +726,10 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
 }
 
 fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constants: PerFramePushConstants, aspect_ratio: f32) void {
-    render_pass.cmdBindPipeline(this.device, this.chunk_pipeline, this.display.imageSize());
-    render_pass.cmdBindResourceSets(this.device, this.chunk_pipeline, &.{this.chunk_resource_set}, 0);
-    render_pass.cmdBindVertexBuffer(this.device, 0, this.chunk_mesh_alloc.buffer.region());
-    render_pass.cmdPushConstants(this.device, this.chunk_pipeline, .{
+    render_pass.cmdBindPipeline(this.chunk_pipeline);
+    render_pass.cmdBindResourceSets(this.chunk_pipeline, &.{this.chunk_resource_set}, 0);
+    render_pass.cmdBindVertexBuffer(0, this.chunk_mesh_alloc.buffer.region());
+    render_pass.cmdPushConstants(this.chunk_pipeline, .{
         .stages = .{ .vertex = true },
         .offset = 0,
         .size = @sizeOf(PerFramePushConstants),
@@ -814,7 +821,6 @@ fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.Pos
     };
 
     render_pass.cmdPushConstants(
-        this.device,
         this.chunk_pipeline,
         .{
             .stages = .{ .vertex = true },
@@ -825,7 +831,6 @@ fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.Pos
     );
 
     render_pass.cmdDraw(.{
-        .device = this.device,
         .vertex_count = 6,
         .instance_count = @intCast(loaded_mesh.face_count),
         .first_instance = @intCast(loaded_mesh.face_offset),
@@ -946,21 +951,19 @@ const PerFrameInFlight = struct {
         });
         errdefer this.depth_image_view.deinit(renderer.device, alloc);
 
-        try renderer.upload_man.post_copy_barriers.append(alloc, .{
-            .image = .{
-                .image = this.depth_image,
-                .subresource_range = .{
-                    .aspect = .{ .depth = true },
-                },
-                .old_layout = .undefined,
-                .new_layout = .depth_stencil,
-                .src_stage = .{ .pipeline_start = true },
-                .dst_stage = .{ .early_depth_tests = true },
-                .src_access = .{},
-                .dst_access = .{
-                    .depth_stencil_read = true,
-                    .depth_stencil_write = true,
-                },
+        try renderer.upload_man.post_copy_image_barriers.append(alloc, .{
+            .image = this.depth_image,
+            .subresource_range = .{
+                .aspect = .{ .depth = true },
+            },
+            .old_layout = .undefined,
+            .new_layout = .depth_stencil,
+            .src_stage = .{ .pipeline_start = true },
+            .dst_stage = .{ .early_depth_tests = true },
+            .src_access = .{},
+            .dst_access = .{
+                .depth_stencil_read = true,
+                .depth_stencil_write = true,
             },
         });
     }

@@ -109,13 +109,11 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const Chunk
         .data = on_cpu,
         .region = dst,
         .post_copy_barrier = .{
-            .buffer = .{
-                .region = dst,
-                .src_stage = .{ .transfer = true },
-                .dst_stage = .{ .vertex_input = true },
-                .src_access = .{ .transfer_write = true },
-                .dst_access = .{ .vertex_read = true },
-            },
+            .region = dst,
+            .src_stage = .{ .transfer = true },
+            .dst_stage = .{ .vertex_input = true },
+            .src_access = .{ .transfer_write = true },
+            .dst_access = .{ .vertex_read = true },
         },
     });
 
