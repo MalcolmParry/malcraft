@@ -12,7 +12,7 @@ const World = @import("World.zig");
 const AssetManager = @import("AssetManager.zig");
 
 const Renderer = @This();
-const debug_rendering = true;
+const debug_rendering = false;
 
 info: Info,
 stage_man: gpu.StagingManager,
@@ -25,6 +25,9 @@ window: mw.Window,
 instance: gpu.Instance,
 device: gpu.Device,
 display: gpu.Display,
+last_image_index: ?u32,
+timeline: gpu.Timeline,
+timeline_value: gpu.Timeline.Value,
 images_initialized: []bool,
 per_frame_in_flight: []PerFrameInFlight,
 frame_timer: std.time.Timer,
@@ -67,9 +70,14 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.device = try .init(this.instance, phys_device, alloc);
     errdefer this.device.deinit(alloc);
 
+    this.last_image_index = null;
     this.display = try .init(this.device, &this.window, alloc);
     errdefer this.display.deinit(alloc);
     std.log.info("display size: {}", .{this.display.imageSize()});
+
+    this.timeline_value = 0;
+    this.timeline = try this.device.initTimeline(0);
+    errdefer this.timeline.deinit(this.device);
 
     this.info = .{
         .frames_in_flight = @intCast(this.display.imageCount()),
@@ -247,8 +255,6 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             @memcpy(staging.slice[layer_size * i .. layer_size * (i + 1)], cropped.rawBytes());
         }
 
-        const fence = try this.device.initFence(false);
-        defer fence.deinit(this.device);
         const cmd_encoder = try this.device.initCommandEncoder();
         defer cmd_encoder.deinit(this.device);
 
@@ -361,14 +367,16 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         });
 
         try cmd_encoder.end();
+        this.timeline_value += 1;
         try this.device.submitCommands(.{
             .encoder = cmd_encoder,
-            .signal_fence = fence,
-            .signal_semaphores = &.{},
-            .wait_dst_stages = &.{},
-            .wait_semaphores = &.{},
+            .signals = &.{.{
+                .timeline = this.timeline,
+                .value = this.timeline_value,
+            }},
         });
-        try fence.wait(this.device, std.time.ns_per_s);
+
+        try this.timeline.wait(this.timeline_value, std.time.ns_per_s, this.device);
     }
 
     try this.chunk_resource_set.update(this.device, &.{
@@ -428,7 +436,7 @@ fn renderSimpleGlyph(renderer: *@This(), ttf: *mw.TTF, glyph: mw.TTF.SimpleGlyph
 }
 
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
-    this.device.waitUntilIdle();
+    this.device.waitUntilIdle() catch @panic("failed to wait for device in deinit");
 
     this.texture_sampler.deinit(this.device, alloc);
     this.texture_view.deinit(this.device, alloc);
@@ -447,6 +455,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.asset_man.deinit(this.device, alloc);
     this.upload_man.deinit();
     this.stage_man.deinit(this.device, alloc);
+    this.timeline.deinit(this.device);
     this.display.deinit(alloc);
     this.device.deinit(alloc);
     this.instance.deinit(alloc);
@@ -491,9 +500,11 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     if (this.info.frame_count == 0)
         this.frame_timer = try .start();
 
+    if (this.timeline_value >= this.per_frame_in_flight.len)
+        try this.timeline.wait(this.timeline_value - this.per_frame_in_flight.len + 1, std.time.ns_per_s, this.device);
+
     const frame_slot = (this.info.frame_count + 1) % this.info.frames_in_flight;
     const per_frame = &this.per_frame_in_flight[frame_slot];
-    try per_frame.presented_fence.wait(this.device, std.time.ns_per_s);
     this.info.frame_count += 1;
 
     gpu.AnyObject.deinitAllReversed(per_frame.trash.items, this.device, alloc);
@@ -502,10 +513,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     this.stage_man.nextFrame();
 
     if (this.dirty_swapchain) {
-        const fences = try alloc.alloc(gpu.Fence, this.info.frames_in_flight);
-        defer alloc.free(fences);
-        for (fences, 0..) |*fence, i| fence.* = this.per_frame_in_flight[i].presented_fence;
-        try gpu.Fence.waitMany(fences, this.device, .all, std.time.ns_per_s);
+        try this.device.waitUntilIdle();
 
         const new_viewport = this.window.getFramebufferSize();
         std.log.info("rebuilding swapchain {}", .{new_viewport});
@@ -590,8 +598,8 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         }
     }
 
-    const image_index = blk: {
-        const result = this.display.acquireImageIndex(per_frame.image_available_semaphore, null, std.time.ns_per_s) catch |err| switch (err) {
+    const acquired_image = blk: {
+        const result = this.display.acquireImage(std.time.ns_per_s) catch |err| switch (err) {
             error.OutOfDate => {
                 this.dirty_swapchain = true;
                 return;
@@ -600,7 +608,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         };
 
         if (!result.optimal) this.dirty_swapchain = true;
-        break :blk result.image_index;
+        break :blk result.image;
     };
 
     try per_frame.cmd_encoder.begin();
@@ -608,11 +616,11 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
 
     per_frame.cmd_encoder.cmdMemoryBarrier(.{
         .image_barriers = &.{.{
-            .image = this.display.image(image_index),
+            .image = acquired_image.image(this.display),
             .subresource_range = .{
                 .aspect = .{ .color = true },
             },
-            .old_layout = if (this.images_initialized[image_index]) .present_src else .undefined,
+            .old_layout = acquired_image.initialLayout(this.display),
             .new_layout = .color_attachment,
             .src_stage = .{ .pipeline_start = true },
             .dst_stage = .{ .color_attachment_output = true },
@@ -624,7 +632,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     const render_pass = per_frame.cmd_encoder.cmdBeginRenderPass(.{
         .target = .{
             .color_attachment = .{
-                .image_view = this.display.imageView(image_index),
+                .image_view = acquired_image.imageView(this.display),
                 .load = .{ .clear = .{
                     .color = @as(math.Vec4, .{ 66.0, 130.0, 250.0, 255.0 }) / @as(math.Vec4, @splat(255.0)),
                 } },
@@ -650,7 +658,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     if (debug_rendering) {
         per_frame.cmd_encoder.cmdMemoryBarrier(.{
             .image_barriers = &.{.{
-                .image = this.display.image(image_index),
+                .image = acquired_image.image(this.display),
                 .subresource_range = .{
                     .aspect = .{ .color = true },
                 },
@@ -675,7 +683,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
             per_frame.cmd_encoder,
             .{
                 .color_attachment = .{
-                    .image_view = this.display.imageView(image_index),
+                    .image_view = acquired_image.imageView(this.display),
                     .load = .load,
                     .store = .store,
                 },
@@ -693,7 +701,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
 
     per_frame.cmd_encoder.cmdMemoryBarrier(.{
         .image_barriers = &.{.{
-            .image = this.display.image(image_index),
+            .image = acquired_image.image(this.display),
             .subresource_range = .{
                 .aspect = .{ .color = true },
             },
@@ -707,22 +715,42 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     });
 
     try per_frame.cmd_encoder.end();
+
+    this.timeline_value += 1;
     try this.device.submitCommands(.{
         .encoder = per_frame.cmd_encoder,
-        .wait_semaphores = &.{per_frame.image_available_semaphore},
-        .wait_dst_stages = &.{.{
-            .color_attachment_output = true,
-            .early_depth_tests = true,
+        .signals = &.{.{
+            .timeline = this.timeline,
+            .value = this.timeline_value,
         }},
-        .signal_semaphores = &.{per_frame.render_finished_semaphore},
-        .signal_fence = null,
+        .display_acquire_waits = &.{.{
+            .display = this.display,
+            .image = acquired_image,
+            .stages = .{
+                .color_attachment_output = true,
+            },
+        }},
+        .display_present_signals = &.{.{
+            .display = this.display,
+            .image = acquired_image,
+            .stages = .{
+                .color_attachment_output = true,
+            },
+        }},
     });
 
-    try per_frame.presented_fence.reset(this.device);
-    this.display.presentImage(image_index, &.{per_frame.render_finished_semaphore}, per_frame.presented_fence) catch |err| switch (err) {
-        error.Suboptimal, error.OutOfDate => this.dirty_swapchain = true,
+    const present_result = acquired_image.present(this.display) catch |err| switch (err) {
+        error.OutOfDate => {
+            this.dirty_swapchain = true;
+            return;
+        },
         else => return err,
     };
+
+    switch (present_result) {
+        .success => {},
+        .suboptimal => this.dirty_swapchain = true,
+    }
 }
 
 fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constants: PerFramePushConstants, aspect_ratio: f32) void {
@@ -892,24 +920,12 @@ fn initChunkPipeline(this: *Renderer, alloc: std.mem.Allocator) !void {
 }
 
 const PerFrameInFlight = struct {
-    presented_fence: gpu.Fence,
-    render_finished_semaphore: gpu.Semaphore,
-    image_available_semaphore: gpu.Semaphore,
     cmd_encoder: gpu.CommandEncoder,
     depth_image: gpu.Image,
     depth_image_view: gpu.Image.View,
     trash: std.ArrayList(gpu.AnyObject),
 
     pub fn init(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) !void {
-        this.presented_fence = try .init(renderer.device, true);
-        errdefer this.presented_fence.deinit(renderer.device);
-
-        this.render_finished_semaphore = try .init(renderer.device);
-        errdefer this.render_finished_semaphore.deinit(renderer.device);
-
-        this.image_available_semaphore = try .init(renderer.device);
-        errdefer this.image_available_semaphore.deinit(renderer.device);
-
         this.cmd_encoder = try .init(renderer.device);
         errdefer this.cmd_encoder.deinit(renderer.device);
 
@@ -924,9 +940,6 @@ const PerFrameInFlight = struct {
         this.trash.deinit(alloc);
         this.deinitViewportDependants(renderer, alloc);
         this.cmd_encoder.deinit(renderer.device);
-        this.image_available_semaphore.deinit(renderer.device);
-        this.render_finished_semaphore.deinit(renderer.device);
-        this.presented_fence.deinit(renderer.device);
     }
 
     pub fn initViewportDependants(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) !void {
