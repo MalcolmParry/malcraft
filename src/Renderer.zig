@@ -4,6 +4,7 @@ const zigimg = @import("zigimg");
 const mw = @import("mwengine");
 const gpu = mw.gpu;
 const math = mw.math;
+const block = @import("block.zig");
 const Chunk = @import("Chunk.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
 const ChunkMeshAllocator = @import("ChunkMeshAllocator.zig");
@@ -52,6 +53,7 @@ texture_sampler: gpu.Sampler,
 pub const Input = struct {
     wireframe: bool = false,
     break_block: bool = false,
+    place_block: bool = false,
     cam_reset: bool = false,
 };
 
@@ -80,7 +82,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     errdefer this.timeline.deinit(this.device);
 
     this.info = .{
-        .frames_in_flight = @intCast(this.display.imageCount()),
+        .frames_in_flight = @min(this.display.imageCount(), 3),
         .frame_count = 0,
     };
 
@@ -376,7 +378,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             }},
         });
 
-        try this.timeline.wait(this.timeline_value, std.time.ns_per_s, this.device);
+        try this.timeline.wait(this.device, this.timeline_value, std.time.ns_per_s);
     }
 
     try this.chunk_resource_set.update(this.device, &.{
@@ -501,7 +503,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         this.frame_timer = try .start();
 
     if (this.timeline_value >= this.per_frame_in_flight.len)
-        try this.timeline.wait(this.timeline_value - this.per_frame_in_flight.len + 1, std.time.ns_per_s, this.device);
+        try this.timeline.wait(this.device, this.timeline_value - this.per_frame_in_flight.len + 1, std.time.ns_per_s);
 
     const frame_slot = (this.info.frame_count + 1) % this.info.frames_in_flight;
     const per_frame = &this.per_frame_in_flight[frame_slot];
@@ -528,15 +530,36 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         return;
     }
 
-    if (input.break_block or this.window.isMouseDown(.five)) {
+    if (input.break_block or this.window.isMouseDown(.five)) blk: {
         const origin = this.camera.pos;
         const q = math.quatFromEuler(this.camera.euler);
         const dir = math.normalize(math.quatMulVec(q, math.dir_forward));
 
-        if (this.world.rayCast(origin, dir)) |pos| {
-            try this.world.setBlock(alloc, pos, .air);
-            try this.chunk_mesher.addRequestWithCollateral(pos);
-        }
+        const ray_cast = this.world.rayCast(origin, dir);
+        const pos: block.Pos = switch (ray_cast) {
+            .no_hit => break :blk,
+            .inside => @intFromFloat(@floor(origin)),
+            .hit => |x| x.pos,
+        };
+
+        try this.world.setBlock(alloc, pos, .air);
+        try this.chunk_mesher.addRequestWithCollateral(pos);
+    }
+
+    if (input.place_block) blk: {
+        const origin = this.camera.pos;
+        const q = math.quatFromEuler(this.camera.euler);
+        const dir = math.normalize(math.quatMulVec(q, math.dir_forward));
+
+        const ray_cast = this.world.rayCast(origin, dir);
+        const pos: block.Pos = switch (ray_cast) {
+            .no_hit => break :blk,
+            .inside => @intFromFloat(@floor(origin)),
+            .hit => |x| x.pos + x.face.dir(),
+        };
+
+        try this.world.setBlock(alloc, pos, .stone);
+        try this.chunk_mesher.addRequestWithCollateral(pos);
     }
 
     if (input.cam_reset) this.camera = .{};
@@ -867,7 +890,7 @@ fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.Pos
 }
 
 fn initFramesInFlight(this: *Renderer, alloc: std.mem.Allocator) !void {
-    this.per_frame_in_flight = try alloc.alloc(PerFrameInFlight, this.display.imageCount());
+    this.per_frame_in_flight = try alloc.alloc(PerFrameInFlight, this.info.frames_in_flight);
     errdefer alloc.free(this.per_frame_in_flight);
 
     for (this.per_frame_in_flight) |*x| {

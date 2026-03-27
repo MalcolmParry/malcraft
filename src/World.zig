@@ -41,43 +41,61 @@ pub fn setBlock(world: *World, alloc: std.mem.Allocator, pos: block.Pos, new: bl
     try chunk.setBlock(alloc, @intCast(rel_pos), new);
 }
 
-pub fn rayCast(world: *const World, origin: math.Vec3, dir: math.Vec3) ?block.Pos {
-    const origin_floor = @floor(origin);
-    const origin_floor_i: block.Pos = @intFromFloat(origin_floor);
+pub const RayCastResult = union(enum) {
+    no_hit,
+    inside,
+    hit: struct {
+        pos: block.Pos,
+        face: block.Face,
+    },
+};
 
-    const dir_sign = std.math.sign(dir);
-    const dir_sign_i: block.Pos = @intFromFloat(dir_sign);
-    const dir_inv = @as(math.Vec3, @splat(1)) / dir;
+pub fn rayCast(world: *const World, origin: math.Vec3, dir: math.Vec3) RayCastResult {
+    if (@reduce(.And, dir == @as(math.Vec3, @splat(0)))) return .no_hit;
 
-    const dist = @abs(dir_inv);
-    const half_vec: math.Vec3 = @splat(0.5);
-    var side_dist = (dir_sign * (origin_floor - origin) + (dir_sign * half_vec) + half_vec) * dist;
+    const pos_f = @floor(origin);
+    var pos: block.Pos = @intFromFloat(pos_f);
 
-    var block_pos = origin_floor_i;
-    const max_iterations = 64;
-    for (0..max_iterations) |_| {
-        if (world.getBlock(block_pos)) |x| {
-            if (x.isOpaque()) return block_pos;
-        }
+    const step_f = std.math.sign(dir);
+    const step: block.Pos = @intFromFloat(step_f);
 
-        const side_dist_yzx: math.Vec3 = .{
-            side_dist[1],
-            side_dist[2],
-            side_dist[0],
-        };
+    const inv_dir = @as(math.Vec3, @splat(1.0)) / dir;
+    const delta = @abs(inv_dir);
 
-        const side_dist_zxy: math.Vec3 = .{
-            side_dist[2],
-            side_dist[0],
-            side_dist[1],
-        };
+    const half: math.Vec3 = @splat(0.5);
+    var side_dist = ((step_f * (pos_f - origin)) + (step_f * half) + half) * delta;
 
-        const mask = side_dist <= @min(side_dist_yzx, side_dist_zxy);
-        const int_mask: block.Pos = @intFromBool(mask);
-        const float_mask: math.Vec3 = @floatFromInt(int_mask);
-        side_dist += float_mask * dist;
-        block_pos += int_mask * dir_sign_i;
+    if (world.getBlock(pos)) |b| {
+        if (b.isOpaque()) return .inside;
     }
 
-    return null;
+    const max_iterations = 64;
+    for (0..max_iterations) |_| {
+        const axis: u8 = if (side_dist[0] < side_dist[1])
+            if (side_dist[0] < side_dist[2])
+                0
+            else
+                2
+        else if (side_dist[1] < side_dist[2])
+            1
+        else
+            2;
+
+        side_dist[axis] += delta[axis];
+        pos[axis] += step[axis];
+
+        if (world.getBlock(pos)) |b| {
+            if (b.isOpaque()) {
+                const pos_face = block.Face.posDirFromAxis(axis);
+                const face = if (step[axis] > 0) pos_face.opposite() else pos_face;
+
+                return .{ .hit = .{
+                    .pos = pos,
+                    .face = face,
+                } };
+            }
+        }
+    }
+
+    return .no_hit;
 }

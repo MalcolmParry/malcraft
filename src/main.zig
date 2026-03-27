@@ -29,6 +29,7 @@ pub fn main() !void {
                 .mouse_down => |button| {
                     switch (button) {
                         .left => renderer_input.break_block = true,
+                        .right => renderer_input.place_block = true,
                         else => {},
                     }
                 },
