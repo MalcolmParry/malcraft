@@ -13,12 +13,13 @@ const World = @import("World.zig");
 const AssetManager = @import("AssetManager.zig");
 
 const Renderer = @This();
-const debug_rendering = false;
+const debug_rendering = true;
 
 info: Info,
 stage_man: gpu.StagingManager,
 upload_man: gpu.UploadManager,
 asset_man: AssetManager,
+immediate: mw.ImmediateRenderer,
 debug_renderer: if (debug_rendering) mw.DebugRenderer else void,
 destruct_queue: std.ArrayList(gpu.AnyObject),
 event_queue: mw.EventQueue,
@@ -49,6 +50,11 @@ camera: Camera,
 texture_image: gpu.Image,
 texture_view: gpu.Image.View,
 texture_sampler: gpu.Sampler,
+
+text_stuff: struct {
+    face: mw.text.Face,
+    loaded: mw.text.Face.Loaded,
+},
 
 pub const Input = struct {
     wireframe: bool = false,
@@ -102,29 +108,6 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 
     this.asset_man = try .init(this.device, alloc);
     errdefer this.asset_man.deinit(this.device, alloc);
-
-    if (debug_rendering) {
-        this.debug_renderer = try .init(.{
-            .alloc = alloc,
-            .device = this.device,
-            .stage_man = &this.stage_man,
-            .frames_in_flight = this.info.frames_in_flight,
-            .vbuffer_size = 128 * 1024,
-            .line_shaders = &.{
-                this.asset_man.getShader(.debug_line_vert),
-                this.asset_man.getShader(.debug_line_pixel),
-            },
-            .image_shaders = &.{
-                this.asset_man.getShader(.debug_image_vert),
-                this.asset_man.getShader(.debug_image_pixel),
-            },
-            .render_target_desc = .{
-                .color_format = this.display.imageFormat(),
-                .depth_format = null,
-            },
-        });
-    }
-    errdefer if (debug_rendering) this.debug_renderer.deinit();
 
     this.images_initialized = try alloc.alloc(bool, this.info.frames_in_flight);
     errdefer alloc.free(this.images_initialized);
@@ -184,18 +167,123 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.dirty_swapchain = false;
     this.camera = .{};
 
+    this.immediate = try .init(.{
+        .alloc = alloc,
+        .device = this.device,
+        .frames_in_flight = this.info.frames_in_flight,
+        .streaming_buffer_size_pf = 128 * 1024,
+        .color_format = this.display.imageFormat(),
+        .box_info = .{
+            .shaders = &.{
+                this.asset_man.getShader(.immediate_box_vert),
+                this.asset_man.getShader(.immediate_box_frag),
+            },
+        },
+    });
+    errdefer this.immediate.deinit(this.device);
+
     if (debug_rendering) {
-        const font = try std.fs.cwd().openFile("res/font/Roboto_Condensed-Regular.ttf", .{});
-        // const font = try std.fs.cwd().openFile("res/font/NFPixels-Regular.ttf", .{});
-        defer font.close();
+        const file = "res/font/Roboto_Condensed-Regular.ttf";
+        // const file = "res/font/NFPixels-Regular.ttf";
+        var face: mw.text.Face = try .init(file);
+        errdefer face.deinit();
 
-        var buffer: [512]u8 = undefined;
-        var reader = font.reader(&buffer);
-        var ttf: mw.TTF = try .parse(alloc, &reader);
-        defer ttf.deinit(alloc);
+        var loaded: mw.text.Face.Loaded = .{
+            .face = &face,
+            .render_mode = .grayscale,
+            .atlas_size = .{ 1024, 1024 },
+            .char_height_px = 64,
+        };
+        errdefer loaded.deinit(alloc, this.device);
 
-        const glyph = ttf.glyphs[38];
-        try renderGlyph(this, &ttf, glyph, .{ 500, 500 }, 32);
+        const cmd_encoder = try this.device.initCommandEncoder();
+        defer cmd_encoder.deinit(this.device);
+
+        try cmd_encoder.begin();
+
+        const to_load =
+            \\abcdefghijklmnopqrstuvwxyz
+            \\ABCDEFGHIJKLMNOPQRSTUVWXYZ
+            \\`0123456789-=
+            \\~!@#$%^&*()_+
+            \\[]\;',./
+            \\{}|:"<>?
+            \\ 
+        ;
+
+        for (to_load) |c| {
+            try loaded.loadGlyph(.{
+                .alloc = alloc,
+                .device = this.device,
+                .stage_man = &this.stage_man,
+                .cmd_encoder = cmd_encoder,
+                .codepoint = c,
+            });
+        }
+
+        try cmd_encoder.end();
+        this.timeline_value += 1;
+        try this.device.submitCommands(.{
+            .encoder = cmd_encoder,
+            .signals = &.{.{
+                .timeline = this.timeline,
+                .value = this.timeline_value,
+            }},
+        });
+        try this.timeline.wait(this.device, this.timeline_value, std.time.ns_per_s);
+
+        this.text_stuff = .{
+            .face = face,
+            .loaded = loaded,
+        };
+    }
+
+    if (debug_rendering) {
+        this.debug_renderer = try .init(.{
+            .alloc = alloc,
+            .device = this.device,
+            .stage_man = &this.stage_man,
+            .frames_in_flight = this.info.frames_in_flight,
+            .vbuffer_size = 128 * 1024,
+            .line_shaders = &.{
+                this.asset_man.getShader(.debug_line_vert),
+                this.asset_man.getShader(.debug_line_pixel),
+            },
+            .image_shaders = &.{
+                this.asset_man.getShader(.debug_image_vert),
+                this.asset_man.getShader(.debug_image_pixel),
+            },
+            .text_shaders = &.{
+                this.asset_man.getShader(.debug_text_vert),
+                this.asset_man.getShader(.debug_text_pixel),
+            },
+            .render_target_desc = .{
+                .color_format = this.display.imageFormat(),
+                .depth_format = null,
+            },
+            .font_face_loaded = &this.text_stuff.loaded,
+        });
+    }
+    errdefer if (debug_rendering) this.debug_renderer.deinit();
+
+    {
+        // try this.debug_renderer.drawImage(.{
+        //     .view = this.text_stuff.loaded.atlases.items[0].view,
+        //     .mat = .{
+        //         .{ 500, 0, 0 },
+        //         .{ 0, 500, 0 },
+        //         .{ 0, 0, 1 },
+        //     },
+        //     .uv_top_left = .{ 0.9, 0.9 },
+        // });
+
+        try this.debug_renderer.drawText("very gret", .{
+            .{ 1, 0, 0 },
+            .{ 0, 1, 100 },
+            .{ 0, 0, 1 },
+        });
+
+        // try this.debug_renderer.drawLine(.{ 1, 134 }, .{ 26, 168 }, 3);
     }
 
     {
@@ -244,7 +332,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         });
         errdefer this.texture_view.deinit(this.device, alloc);
 
-        const staging = try this.stage_man.allocate(u8, layer_size * image_paths.len);
+        const staging = try this.stage_man.allocateBytesAligned(layer_size * image_paths.len, .@"4");
         defer this.stage_man.reset();
 
         for (image_paths, 0..) |image_path, i| {
@@ -393,52 +481,11 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     }, alloc);
 }
 
-fn renderGlyph(renderer: *@This(), ttf: *mw.TTF, glyph: mw.TTF.Glyph, offset: math.Vec2, max_iterations: usize) !void {
-    if (!glyph.compound) {
-        return renderSimpleGlyph(renderer, ttf, ttf.simple_glyphs[glyph.offset], offset);
-    }
-
-    if (max_iterations == 0) return error.TooManyIterations;
-    const components = glyph.components(ttf);
-
-    for (components) |comp| {
-        try renderGlyph(renderer, ttf, ttf.glyphs[comp.index], offset + comp.floatOffset(), max_iterations - 1);
-    }
-}
-
-const Point = @Vector(2, i16);
-fn renderSimpleGlyph(renderer: *@This(), ttf: *mw.TTF, glyph: mw.TTF.SimpleGlyph, offset: math.Vec2) !void {
-    var citer: mw.TTF.SimpleGlyph.ContourIterator = .{
-        .glyph = glyph,
-        .ttf = ttf,
-    };
-
-    while (citer.next()) |points| {
-        const thickness = 5;
-        const res = 30;
-
-        var iter: mw.TTF.ContourOutlineIterator = .{ .contour = points };
-        while (iter.next()) |segment| {
-            switch (segment) {
-                .line => |line| try renderer.debug_renderer.drawLine(
-                    line.start + offset,
-                    line.end + offset,
-                    thickness,
-                ),
-                .bezier => |bezier| try renderer.debug_renderer.drawBezier(
-                    bezier.start + offset,
-                    bezier.mid + offset,
-                    bezier.end + offset,
-                    thickness,
-                    res,
-                ),
-            }
-        }
-    }
-}
-
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.device.waitUntilIdle() catch @panic("failed to wait for device in deinit");
+
+    this.text_stuff.loaded.deinit(alloc, this.device);
+    this.text_stuff.face.deinit();
 
     this.texture_sampler.deinit(this.device, alloc);
     this.texture_view.deinit(this.device, alloc);
@@ -453,6 +500,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
     this.destruct_queue.deinit(alloc);
     alloc.free(this.images_initialized);
+    this.immediate.deinit(this.device);
     if (debug_rendering) this.debug_renderer.deinit();
     this.asset_man.deinit(this.device, alloc);
     this.upload_man.deinit();
@@ -656,9 +704,12 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         .target = .{
             .color_attachment = .{
                 .image_view = acquired_image.imageView(this.display),
-                .load = .{ .clear = .{
-                    .color = @as(math.Vec4, .{ 66.0, 130.0, 250.0, 255.0 }) / @as(math.Vec4, @splat(255.0)),
-                } },
+                .load = .{
+                    .clear = .{
+                        .color = @as(math.Vec4, .{ 66.0, 130.0, 250.0, 255.0 }) / @as(math.Vec4, @splat(255.0)),
+                        // .color = .{ 0, 0, 0, 1 },
+                    },
+                },
                 .store = .store,
             },
             .depth_attachment = .{
@@ -721,6 +772,59 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         );
         // this.debug_renderer.nextFrame();
     }
+
+    per_frame.cmd_encoder.cmdMemoryBarrier(.{
+        .image_barriers = &.{.{
+            .image = acquired_image.image(this.display),
+            .subresource_range = .{
+                .aspect = .{ .color = true },
+            },
+            .old_layout = .color_attachment,
+            .new_layout = .color_attachment,
+            .src_stage = .{ .color_attachment_output = true },
+            .dst_stage = .{ .color_attachment_output = true },
+            .src_access = .{ .color_attachment_write = true },
+            .dst_access = .{ .color_attachment_write = true },
+        }},
+    });
+
+    try this.immediate.begin(@as(@Vector(2, u16), @intCast(viewport)));
+
+    {
+        const width = 5;
+        const length = 50;
+        const color: [4]u8 = @splat(0);
+        try this.immediate.drawRect(.{
+            .transform = .{
+                .pos = .{
+                    .norm = @splat(0.5),
+                    .offset = @splat(0),
+                },
+                .size = .{
+                    .norm = @splat(0),
+                    .offset = .{ length, width },
+                },
+                .pivot = @splat(0.5),
+            },
+            .color = color,
+        });
+        try this.immediate.drawRect(.{
+            .transform = .{
+                .pos = .{
+                    .norm = @splat(0.5),
+                    .offset = @splat(0),
+                },
+                .size = .{
+                    .norm = @splat(0),
+                    .offset = .{ width, length },
+                },
+                .pivot = @splat(0.5),
+            },
+            .color = color,
+        });
+    }
+
+    try this.immediate.render(per_frame.cmd_encoder, &this.stage_man, acquired_image.imageView(this.display));
 
     per_frame.cmd_encoder.cmdMemoryBarrier(.{
         .image_barriers = &.{.{

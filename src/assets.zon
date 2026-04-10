@@ -36,5 +36,29 @@
             .bin = "res/shaders/debug/image.frag.spv",
             .kind = .pixel,
         },
+        .debug_text_vert = .{
+            .src = "deps/mwengine/src/shaders/debug/text.vert.glsl",
+            .compile_opts = .{},
+            .bin = "res/shaders/debug/text.vert.spv",
+            .kind = .vertex,
+        },
+        .debug_text_pixel = .{
+            .src = "deps/mwengine/src/shaders/debug/text.frag.glsl",
+            .compile_opts = .{},
+            .bin = "res/shaders/debug/text.frag.spv",
+            .kind = .pixel,
+        },
+        .immediate_box_vert = .{
+            .src = "deps/mwengine/src/shaders/immediate/box.vert.glsl",
+            .compile_opts = .{},
+            .bin = "res/shaders/immediate/box.vert.spv",
+            .kind = .vertex,
+        },
+        .immediate_box_frag = .{
+            .src = "deps/mwengine/src/shaders/immediate/box.frag.glsl",
+            .compile_opts = .{},
+            .bin = "res/shaders/immediate/box.frag.spv",
+            .kind = .pixel,
+        },
     },
 }

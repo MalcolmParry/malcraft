@@ -34,7 +34,10 @@ pub fn build(b: *Build) !void {
         }),
     });
 
-    const znoise = b.dependency("znoise", .{});
+    const znoise = b.dependency("znoise", .{
+        .target = target,
+        .optimize = optimize,
+    });
     exe.root_module.addImport("znoise", znoise.module("root"));
     exe.linkLibrary(znoise.artifact("FastNoiseLite"));
 

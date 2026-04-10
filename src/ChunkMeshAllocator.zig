@@ -102,7 +102,7 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const Chunk
     const dst: gpu.Buffer.Region = .{
         .buffer = this.buffer,
         .offset = on_gpu.face_offset * @sizeOf(ChunkMesher.GreedyQuad),
-        .size_or_whole = .{ .size = size_bytes },
+        .size = size_bytes,
     };
 
     try this.upload_man.submit(ChunkMesher.GreedyQuad, .{
