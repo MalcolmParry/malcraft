@@ -228,6 +228,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             .signals = &.{.{
                 .timeline = this.timeline,
                 .value = this.timeline_value,
+                .stages = .{ .all_commands = true },
             }},
         });
         try this.timeline.wait(this.device, this.timeline_value, std.time.ns_per_s);
@@ -463,6 +464,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             .signals = &.{.{
                 .timeline = this.timeline,
                 .value = this.timeline_value,
+                .stages = .{ .all_commands = true },
             }},
         });
 
@@ -791,9 +793,10 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     try this.immediate.begin(@as(@Vector(2, u16), @intCast(viewport)));
 
     {
-        const width = 5;
-        const length = 50;
-        const color: [4]u8 = @splat(0);
+        const length: i16 = @intFromFloat(viewport_f[1] * 0.025);
+        const width = @divTrunc(length, 10);
+        const color: [4]u8 = .{ 0, 0, 0, 255 };
+
         try this.immediate.drawRect(.{
             .transform = .{
                 .pos = .{
@@ -849,6 +852,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         .signals = &.{.{
             .timeline = this.timeline,
             .value = this.timeline_value,
+            .stages = .{ .all_commands = true },
         }},
         .display_acquire_waits = &.{.{
             .display = this.display,
