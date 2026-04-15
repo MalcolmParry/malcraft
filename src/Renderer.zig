@@ -775,26 +775,13 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         // this.debug_renderer.nextFrame();
     }
 
-    per_frame.cmd_encoder.cmdMemoryBarrier(.{
-        .image_barriers = &.{.{
-            .image = acquired_image.image(this.display),
-            .subresource_range = .{
-                .aspect = .{ .color = true },
-            },
-            .old_layout = .color_attachment,
-            .new_layout = .color_attachment,
-            .src_stage = .{ .color_attachment_output = true },
-            .dst_stage = .{ .color_attachment_output = true },
-            .src_access = .{ .color_attachment_write = true },
-            .dst_access = .{ .color_attachment_write = true },
-        }},
-    });
-
     try this.immediate.begin(@as(@Vector(2, u16), @intCast(viewport)));
 
     {
+        const outline_times_2 = 2;
         const length: i16 = @intFromFloat(viewport_f[1] * 0.025);
         const width = @divTrunc(length, 10);
+        const outline_color: [4]u8 = .{ 128, 128, 128, 255 };
         const color: [4]u8 = .{ 0, 0, 0, 255 };
 
         try this.immediate.drawRect(.{
@@ -809,7 +796,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
                 },
                 .pivot = @splat(0.5),
             },
-            .color = color,
+            .color = outline_color,
         });
         try this.immediate.drawRect(.{
             .transform = .{
@@ -820,6 +807,35 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
                 .size = .{
                     .norm = @splat(0),
                     .offset = .{ width, length },
+                },
+                .pivot = @splat(0.5),
+            },
+            .color = outline_color,
+        });
+
+        try this.immediate.drawRect(.{
+            .transform = .{
+                .pos = .{
+                    .norm = @splat(0.5),
+                    .offset = @splat(0),
+                },
+                .size = .{
+                    .norm = @splat(0),
+                    .offset = .{ length - outline_times_2, width - outline_times_2 },
+                },
+                .pivot = @splat(0.5),
+            },
+            .color = color,
+        });
+        try this.immediate.drawRect(.{
+            .transform = .{
+                .pos = .{
+                    .norm = @splat(0.5),
+                    .offset = @splat(0),
+                },
+                .size = .{
+                    .norm = @splat(0),
+                    .offset = .{ width - outline_times_2, length - outline_times_2 },
                 },
                 .pivot = @splat(0.5),
             },
