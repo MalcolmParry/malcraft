@@ -736,7 +736,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     });
 
     const push_constants: PerFramePushConstants = .{
-        .vp = math.toArray(this.camera.vp(aspect_ratio)),
+        .vp = math.matrixToArray(this.camera.vp(aspect_ratio), .column_major),
     };
 
     this.drawChunks(render_pass, push_constants, aspect_ratio);
@@ -1004,7 +1004,7 @@ const Plane = struct {
 
 fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.Pos, loaded_mesh: ChunkMesher.GpuLoaded) void {
     const push_constants: ChunkPushConstants = .{
-        .pos = math.toArray(pos),
+        .pos = pos,
     };
 
     render_pass.cmdPushConstants(

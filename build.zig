@@ -72,32 +72,73 @@ pub fn build(b: *Build) !void {
     run_step.dependOn(&run.step);
 }
 
+const ShaderLanguage = enum {
+    glsl,
+    slang,
+};
+
+const ShaderStage = enum {
+    vertex,
+    pixel,
+};
+
 fn buildShaders(b: *Build, build_step: *Build.Step) !void {
     const shaders = @import("src/shader_list.zon");
+    const base_bin_path = "res/shaders/";
 
     inline for (std.meta.fields(@TypeOf(shaders))) |field| {
-        const data = @field(shaders, field.name);
-        const src = b.path(data.src);
+        const entry = @field(shaders, field.name);
+        const Entry = @TypeOf(entry);
 
-        const compile = b.addSystemCommand(&.{"glslangValidator"});
-        inline for (std.meta.fields(@TypeOf(data.compile_opts))) |field2| {
-            compile.addArg(@field(data.compile_opts, field2.name));
-        }
+        const src = b.path(entry.src);
 
-        compile.addArg("-V");
-        compile.addFileInput(src);
-        compile.addFileArg(src);
-        compile.addArg("-o");
-        const comp_out = compile.addOutputFileArg(b.fmt("{s}.no-opt", .{data.bin}));
+        const compile_opts_raw = if (@hasField(Entry, "compile_opts")) entry.compile_opts else .{};
+        const compile_opts: [std.meta.fields(@TypeOf(compile_opts_raw)).len][]const u8 = compile_opts_raw;
+
+        const language: ShaderLanguage = if (@hasField(Entry, "language")) entry.language else .glsl;
+        const stage: ShaderStage = entry.stage;
+
+        const compile, const comp_out = blk: switch (language) {
+            .glsl => {
+                const compile = b.addSystemCommand(&.{"glslangValidator"});
+                compile.addArgs(&compile_opts);
+                compile.addArg("-V");
+                compile.addFileInput(src);
+                compile.addFileArg(src);
+                compile.addArg("-o");
+                const comp_out = compile.addOutputFileArg(b.fmt("{s}.no-opt", .{field.name}));
+
+                break :blk .{ compile, comp_out };
+            },
+            .slang => {
+                const compile = b.addSystemCommand(&.{"slangc"});
+                compile.addFileInput(src);
+                compile.addFileArg(src);
+
+                compile.addArgs(&compile_opts);
+                compile.addArgs(&.{ "-target", "spirv" });
+                compile.addArgs(&.{ "-profile", "spirv_1_3" });
+                compile.addArgs(&.{ "-entry", entry.entry });
+                compile.addArgs(&.{ "-stage", switch (stage) {
+                    .vertex => "vertex",
+                    .pixel => "fragment",
+                } });
+
+                compile.addArg("-o");
+                const comp_out = compile.addOutputFileArg(b.fmt("{s}.no-opt", .{field.name}));
+
+                break :blk .{ compile, comp_out };
+            },
+        };
 
         const opt = b.addSystemCommand(&.{ "spirv-opt", "-O" });
         opt.addFileInput(comp_out);
         opt.addFileArg(comp_out);
         opt.addArg("-o");
-        const opt_out = opt.addOutputFileArg(data.bin);
+        const opt_out = opt.addOutputFileArg(field.name);
         opt.step.dependOn(&compile.step);
 
-        const install = b.addInstallFile(opt_out, data.bin);
+        const install = b.addInstallFile(opt_out, b.fmt("{s}/{s}.spv", .{ base_bin_path, field.name }));
         install.step.dependOn(&opt.step);
         build_step.dependOn(&install.step);
     }

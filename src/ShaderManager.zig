@@ -15,7 +15,7 @@ pub fn init(device: gpu.Device, alloc: std.mem.Allocator) !ShaderManager {
         const shader_code = try shader_file.readToEndAlloc(alloc, 1024 * 1024);
         defer alloc.free(shader_code);
 
-        shader.* = try gpu.Shader.fromSpirv(device, shader_kinds[i], @ptrCast(@alignCast(shader_code)), alloc);
+        shader.* = try gpu.Shader.fromSpirv(device, shader_stages[i], @ptrCast(@alignCast(shader_code)), alloc);
     }
 
     return .{
@@ -57,17 +57,17 @@ const shader_bin_paths = blk: {
     var result: [shader_count][]const u8 = undefined;
 
     for (std.meta.fields(@TypeOf(shader_list)), 0..) |field, i| {
-        result[i] = @field(shader_list, field.name).bin;
+        result[i] = "res/shaders/" ++ field.name ++ ".spv";
     }
 
     break :blk result;
 };
 
-const shader_kinds = blk: {
+const shader_stages = blk: {
     var result: [shader_count]gpu.Shader.Stage = undefined;
 
     for (std.meta.fields(@TypeOf(shader_list)), 0..) |field, i| {
-        result[i] = @field(shader_list, field.name).kind;
+        result[i] = @field(shader_list, field.name).stage;
     }
 
     break :blk result;
