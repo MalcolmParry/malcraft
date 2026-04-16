@@ -10,7 +10,7 @@ const ChunkMesher = @import("ChunkMesher.zig");
 const ChunkMeshAllocator = @import("ChunkMeshAllocator.zig");
 const WorldGenerator = @import("WorldGenerator.zig");
 const World = @import("World.zig");
-const AssetManager = @import("AssetManager.zig");
+const ShaderManager = @import("ShaderManager.zig");
 
 const Renderer = @This();
 const debug_rendering = true;
@@ -18,7 +18,7 @@ const debug_rendering = true;
 info: Info,
 stage_man: gpu.StagingManager,
 upload_man: gpu.UploadManager,
-asset_man: AssetManager,
+shader_man: ShaderManager,
 immediate: mw.ImmediateRenderer,
 debug_renderer: if (debug_rendering) mw.DebugRenderer else void,
 destruct_queue: std.ArrayList(gpu.AnyObject),
@@ -108,8 +108,8 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     };
     errdefer this.upload_man.deinit();
 
-    this.asset_man = try .init(this.device, alloc);
-    errdefer this.asset_man.deinit(this.device, alloc);
+    this.shader_man = try .init(this.device, alloc);
+    errdefer this.shader_man.deinit(this.device, alloc);
 
     this.images_initialized = try alloc.alloc(bool, this.info.frames_in_flight);
     errdefer alloc.free(this.images_initialized);
@@ -178,8 +178,8 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         .color_format = this.display.imageFormat(),
         .box_info = .{
             .shaders = &.{
-                this.asset_man.getShader(.immediate_box_vert),
-                this.asset_man.getShader(.immediate_box_frag),
+                this.shader_man.getShader(.immediate_box_vert),
+                this.shader_man.getShader(.immediate_box_frag),
             },
         },
     });
@@ -250,16 +250,16 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             .frames_in_flight = this.info.frames_in_flight,
             .vbuffer_size = 128 * 1024,
             .line_shaders = &.{
-                this.asset_man.getShader(.debug_line_vert),
-                this.asset_man.getShader(.debug_line_pixel),
+                this.shader_man.getShader(.debug_line_vert),
+                this.shader_man.getShader(.debug_line_pixel),
             },
             .image_shaders = &.{
-                this.asset_man.getShader(.debug_image_vert),
-                this.asset_man.getShader(.debug_image_pixel),
+                this.shader_man.getShader(.debug_image_vert),
+                this.shader_man.getShader(.debug_image_pixel),
             },
             .text_shaders = &.{
-                this.asset_man.getShader(.debug_text_vert),
-                this.asset_man.getShader(.debug_text_pixel),
+                this.shader_man.getShader(.debug_text_vert),
+                this.shader_man.getShader(.debug_text_pixel),
             },
             .render_target_desc = .{
                 .color_format = this.display.imageFormat(),
@@ -507,7 +507,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     alloc.free(this.images_initialized);
     this.immediate.deinit(this.device);
     if (debug_rendering) this.debug_renderer.deinit();
-    this.asset_man.deinit(this.device, alloc);
+    this.shader_man.deinit(this.device, alloc);
     this.upload_man.deinit();
     this.stage_man.deinit(this.device, alloc);
     this.timeline.deinit(this.device);
@@ -1058,8 +1058,8 @@ fn initChunkPipeline(this: *Renderer, alloc: std.mem.Allocator) !void {
         },
         .resource_layouts = &.{this.chunk_resource_layout},
         .shaders = &.{
-            this.asset_man.getShader(.chunk_opaque_vert),
-            this.asset_man.getShader(.chunk_opaque_pixel),
+            this.shader_man.getShader(.chunk_opaque_vert),
+            this.shader_man.getShader(.chunk_opaque_pixel),
         },
         .vertex_input_bindings = &.{.{
             .binding = 0,

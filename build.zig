@@ -73,7 +73,7 @@ pub fn build(b: *Build) !void {
 }
 
 fn buildShaders(b: *Build, build_step: *Build.Step) !void {
-    const shaders = @import("src/assets.zon").shaders;
+    const shaders = @import("src/shader_list.zon");
 
     inline for (std.meta.fields(@TypeOf(shaders))) |field| {
         const data = @field(shaders, field.name);
