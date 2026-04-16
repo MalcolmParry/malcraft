@@ -37,6 +37,7 @@ total_timer: std.time.Timer,
 last_cursor: @Vector(2, f32),
 dirty_swapchain: bool,
 wireframe: bool,
+mouse_lock: bool,
 
 world: World,
 world_gen: WorldGenerator,
@@ -61,6 +62,7 @@ pub const Input = struct {
     break_block: bool = false,
     place_block: bool = false,
     cam_reset: bool = false,
+    mouse_lock_toggle: bool = false,
 };
 
 pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
@@ -165,6 +167,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.total_timer = try .start();
     this.last_cursor = .{ 0, 0 };
     this.dirty_swapchain = false;
+    this.mouse_lock = true;
     this.camera = .{};
 
     this.immediate = try .init(.{
@@ -608,8 +611,17 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
             .hit => |x| x.pos + x.face.dir(),
         };
 
-        try this.world.setBlock(alloc, pos, .stone);
+        this.world.setBlock(alloc, pos, .stone) catch |err| switch (err) {
+            error.ChunkNotPresent => break :blk,
+            else => return err,
+        };
         try this.chunk_mesher.addRequestWithCollateral(pos);
+    }
+
+    if (input.mouse_lock_toggle) {
+        this.mouse_lock = !this.mouse_lock;
+
+        try this.window.setCursorMode(if (this.mouse_lock) .disabled else .normal);
     }
 
     if (input.cam_reset) this.camera = .{};

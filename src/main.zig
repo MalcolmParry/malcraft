@@ -23,6 +23,7 @@ pub fn main() !void {
                         .escape => should_close = true,
                         .f => renderer_input.wireframe = true,
                         .o => renderer_input.cam_reset = true,
+                        .left_alt => renderer_input.mouse_lock_toggle = true,
                         else => {},
                     }
                 },
