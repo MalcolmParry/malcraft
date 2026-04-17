@@ -95,7 +95,7 @@ fn buildShaders(b: *Build, build_step: *Build.Step) !void {
         const compile_opts_raw = if (@hasField(Entry, "compile_opts")) entry.compile_opts else .{};
         const compile_opts: [std.meta.fields(@TypeOf(compile_opts_raw)).len][]const u8 = compile_opts_raw;
 
-        const language: ShaderLanguage = if (@hasField(Entry, "language")) entry.language else .glsl;
+        const language: ShaderLanguage = if (@hasField(Entry, "language")) entry.language else .slang;
         const stage: ShaderStage = entry.stage;
 
         const compile, const comp_out = blk: switch (language) {
@@ -116,6 +116,7 @@ fn buildShaders(b: *Build, build_step: *Build.Step) !void {
                 compile.addFileArg(src);
 
                 compile.addArgs(&compile_opts);
+                compile.addArg("-O3");
                 compile.addArgs(&.{ "-target", "spirv" });
                 compile.addArgs(&.{ "-profile", "spirv_1_3" });
                 compile.addArgs(&.{ "-entry", entry.entry });

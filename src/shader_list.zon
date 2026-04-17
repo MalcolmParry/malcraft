@@ -1,48 +1,53 @@
 .{
-    .chunk_opaque_vert = .{
-        .src = "src/shaders/chunk_opaque.glsl",
-        .compile_opts = .{ "-S", "vert", "-D_VERTEX" },
+    .chunk_opaque_vertex = .{
+        .src = "src/shaders/chunk_opaque.slang",
         .stage = .vertex,
+        .entry = "vsMain",
     },
     .chunk_opaque_pixel = .{
-        .src = "src/shaders/chunk_opaque.glsl",
-        .compile_opts = .{ "-S", "frag", "-D_PIXEL" },
+        .src = "src/shaders/chunk_opaque.slang",
         .stage = .pixel,
+        .entry = "psMain",
     },
+    .immediate_box_vertex = .{
+        .src = "deps/mwengine/src/shaders/immediate/box.slang",
+        .stage = .vertex,
+        .entry = "vsMain",
+    },
+    .immediate_box_pixel = .{
+        .src = "deps/mwengine/src/shaders/immediate/box.slang",
+        .stage = .pixel,
+        .entry = "psMain",
+    },
+
     .debug_line_vert = .{
         .src = "deps/mwengine/src/shaders/debug/line.vert.glsl",
         .stage = .vertex,
+        .language = .glsl,
     },
     .debug_line_pixel = .{
         .src = "deps/mwengine/src/shaders/debug/line.frag.glsl",
         .stage = .pixel,
+        .language = .glsl,
     },
     .debug_image_vert = .{
         .src = "deps/mwengine/src/shaders/debug/image.vert.glsl",
         .stage = .vertex,
+        .language = .glsl,
     },
     .debug_image_pixel = .{
         .src = "deps/mwengine/src/shaders/debug/image.frag.glsl",
         .stage = .pixel,
+        .language = .glsl,
     },
     .debug_text_vert = .{
         .src = "deps/mwengine/src/shaders/debug/text.vert.glsl",
         .stage = .vertex,
+        .language = .glsl,
     },
     .debug_text_pixel = .{
         .src = "deps/mwengine/src/shaders/debug/text.frag.glsl",
         .stage = .pixel,
-    },
-    .immediate_box_vert = .{
-        .src = "deps/mwengine/src/shaders/immediate/box.slang",
-        .stage = .vertex,
-        .language = .slang,
-        .entry = "vsMain",
-    },
-    .immediate_box_frag = .{
-        .src = "deps/mwengine/src/shaders/immediate/box.slang",
-        .stage = .pixel,
-        .language = .slang,
-        .entry = "psMain",
+        .language = .glsl,
     },
 }

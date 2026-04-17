@@ -178,8 +178,8 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
         .color_format = this.display.imageFormat(),
         .box_info = .{
             .shaders = &.{
-                this.shader_man.getShader(.immediate_box_vert),
-                this.shader_man.getShader(.immediate_box_frag),
+                this.shader_man.getShader(.immediate_box_vertex),
+                this.shader_man.getShader(.immediate_box_pixel),
             },
         },
     });
@@ -736,7 +736,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     });
 
     const push_constants: PerFramePushConstants = .{
-        .vp = math.matrixToArray(this.camera.vp(aspect_ratio), .column_major),
+        .vp = math.matrixToArray(this.camera.vp(aspect_ratio), .row_major),
     };
 
     this.drawChunks(render_pass, push_constants, aspect_ratio);
@@ -1058,7 +1058,7 @@ fn initChunkPipeline(this: *Renderer, alloc: std.mem.Allocator) !void {
         },
         .resource_layouts = &.{this.chunk_resource_layout},
         .shaders = &.{
-            this.shader_man.getShader(.chunk_opaque_vert),
+            this.shader_man.getShader(.chunk_opaque_vertex),
             this.shader_man.getShader(.chunk_opaque_pixel),
         },
         .vertex_input_bindings = &.{.{
