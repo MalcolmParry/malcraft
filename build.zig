@@ -95,42 +95,24 @@ fn buildShaders(b: *Build, build_step: *Build.Step) !void {
         const compile_opts_raw = if (@hasField(Entry, "compile_opts")) entry.compile_opts else .{};
         const compile_opts: [std.meta.fields(@TypeOf(compile_opts_raw)).len][]const u8 = compile_opts_raw;
 
-        const language: ShaderLanguage = if (@hasField(Entry, "language")) entry.language else .slang;
         const stage: ShaderStage = entry.stage;
 
-        const compile, const comp_out = blk: switch (language) {
-            .glsl => {
-                const compile = b.addSystemCommand(&.{"glslangValidator"});
-                compile.addArgs(&compile_opts);
-                compile.addArg("-V");
-                compile.addFileInput(src);
-                compile.addFileArg(src);
-                compile.addArg("-o");
-                const comp_out = compile.addOutputFileArg(b.fmt("{s}.no-opt", .{field.name}));
+        const compile = b.addSystemCommand(&.{"slangc"});
+        compile.addFileInput(src);
+        compile.addFileArg(src);
 
-                break :blk .{ compile, comp_out };
-            },
-            .slang => {
-                const compile = b.addSystemCommand(&.{"slangc"});
-                compile.addFileInput(src);
-                compile.addFileArg(src);
+        compile.addArgs(&compile_opts);
+        compile.addArg("-O3");
+        compile.addArgs(&.{ "-target", "spirv" });
+        compile.addArgs(&.{ "-profile", "spirv_1_3" });
+        compile.addArgs(&.{ "-entry", entry.entry });
+        compile.addArgs(&.{ "-stage", switch (stage) {
+            .vertex => "vertex",
+            .pixel => "fragment",
+        } });
 
-                compile.addArgs(&compile_opts);
-                compile.addArg("-O3");
-                compile.addArgs(&.{ "-target", "spirv" });
-                compile.addArgs(&.{ "-profile", "spirv_1_3" });
-                compile.addArgs(&.{ "-entry", entry.entry });
-                compile.addArgs(&.{ "-stage", switch (stage) {
-                    .vertex => "vertex",
-                    .pixel => "fragment",
-                } });
-
-                compile.addArg("-o");
-                const comp_out = compile.addOutputFileArg(b.fmt("{s}.no-opt", .{field.name}));
-
-                break :blk .{ compile, comp_out };
-            },
-        };
+        compile.addArg("-o");
+        const comp_out = compile.addOutputFileArg(b.fmt("{s}.no-opt", .{field.name}));
 
         const opt = b.addSystemCommand(&.{ "spirv-opt", "-O" });
         opt.addFileInput(comp_out);

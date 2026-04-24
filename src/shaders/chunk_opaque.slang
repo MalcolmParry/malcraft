@@ -77,7 +77,7 @@ static uint vid_flip_table[12] = {
     // not flipped
     0, 1, 2, 3, 4, 5,
     // flipped
-    0, 1, 5, 1, 2, 5
+    0, 1, 5, 1, 2, 5,
 };
 
 [[shader("vertex")]]
@@ -104,8 +104,9 @@ VSOutput vsMain(VSInput input) {
     int3 right_offset = w * right_table[vid] * face_right_table[face];
     int3 up_offset = h * up_table[vid] * face_up_table[face];
     int3 face_pos = face_origin + right_offset + up_offset;
+    int3 vertex_pos = face_pos + block_pos;
 
-    o.position = mul(float4(face_pos + block_pos, 1), pc.vp);
+    o.position = mul(float4(vertex_pos, 1), pc.vp);
     o.packed = face | (tex_id << 3);
     o.ao = ao_table[(upper >> ao_index_table[vid]) & 3];
 

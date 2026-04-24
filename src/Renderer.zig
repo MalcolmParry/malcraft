@@ -13,14 +13,12 @@ const World = @import("World.zig");
 const ShaderManager = @import("ShaderManager.zig");
 
 const Renderer = @This();
-const debug_rendering = true;
 
 info: Info,
 stage_man: gpu.StagingManager,
 upload_man: gpu.UploadManager,
 shader_man: ShaderManager,
 immediate: mw.ImmediateRenderer,
-debug_renderer: if (debug_rendering) mw.DebugRenderer else void,
 destruct_queue: std.ArrayList(gpu.AnyObject),
 event_queue: mw.EventQueue,
 window: mw.Window,
@@ -52,10 +50,8 @@ texture_image: gpu.Image,
 texture_view: gpu.Image.View,
 texture_sampler: gpu.Sampler,
 
-text_stuff: struct {
-    face: mw.text.Face,
-    loaded: mw.text.Face.Loaded,
-},
+font_face: mw.text.Face,
+glyph_cache: mw.text.GlyphCache,
 
 pub const Input = struct {
     wireframe: bool = false,
@@ -182,27 +178,28 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
                 this.shader_man.getShader(.immediate_box_pixel),
             },
         },
+        .image_info = .{
+            .shaders = &.{
+                this.shader_man.getShader(.immediate_image_vertex),
+                this.shader_man.getShader(.immediate_image_pixel),
+            },
+        },
     });
     errdefer this.immediate.deinit(this.device);
 
-    if (debug_rendering) {
+    {
+        const height = 64;
         const file = "res/font/Roboto_Condensed-Regular.ttf";
         // const file = "res/font/NFPixels-Regular.ttf";
         var face: mw.text.Face = try .init(file);
         errdefer face.deinit();
 
-        var loaded: mw.text.Face.Loaded = .{
-            .face = &face,
-            .render_mode = .grayscale,
-            .atlas_size = .{ 1024, 1024 },
-            .char_height_px = 64,
+        var cache: mw.text.GlyphCache = .{
+            .alloc = alloc,
+            .stage_man = &this.stage_man,
+            .atlas_size = @splat(512),
         };
-        errdefer loaded.deinit(alloc, this.device);
-
-        const cmd_encoder = try this.device.initCommandEncoder();
-        defer cmd_encoder.deinit(this.device);
-
-        try cmd_encoder.begin();
+        errdefer cache.deinit(this.device);
 
         const to_load =
             \\abcdefghijklmnopqrstuvwxyz
@@ -211,83 +208,20 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             \\~!@#$%^&*()_+
             \\[]\;',./
             \\{}|:"<>?
-            \\ 
+            \\
         ;
 
         for (to_load) |c| {
-            try loaded.loadGlyph(.{
-                .alloc = alloc,
+            try cache.loadGlyph(.{
                 .device = this.device,
-                .stage_man = &this.stage_man,
-                .cmd_encoder = cmd_encoder,
+                .face = &face,
                 .codepoint = c,
+                .height = height,
             });
         }
 
-        try cmd_encoder.end();
-        this.timeline_value += 1;
-        try this.device.submitCommands(.{
-            .encoder = cmd_encoder,
-            .signals = &.{.{
-                .timeline = this.timeline,
-                .value = this.timeline_value,
-                .stages = .{ .all_commands = true },
-            }},
-        });
-        try this.timeline.wait(this.device, this.timeline_value, std.time.ns_per_s);
-
-        this.text_stuff = .{
-            .face = face,
-            .loaded = loaded,
-        };
-    }
-
-    if (debug_rendering) {
-        this.debug_renderer = try .init(.{
-            .alloc = alloc,
-            .device = this.device,
-            .stage_man = &this.stage_man,
-            .frames_in_flight = this.info.frames_in_flight,
-            .vbuffer_size = 128 * 1024,
-            .line_shaders = &.{
-                this.shader_man.getShader(.debug_line_vert),
-                this.shader_man.getShader(.debug_line_pixel),
-            },
-            .image_shaders = &.{
-                this.shader_man.getShader(.debug_image_vert),
-                this.shader_man.getShader(.debug_image_pixel),
-            },
-            .text_shaders = &.{
-                this.shader_man.getShader(.debug_text_vert),
-                this.shader_man.getShader(.debug_text_pixel),
-            },
-            .render_target_desc = .{
-                .color_format = this.display.imageFormat(),
-                .depth_format = null,
-            },
-            .font_face_loaded = &this.text_stuff.loaded,
-        });
-    }
-    errdefer if (debug_rendering) this.debug_renderer.deinit();
-
-    {
-        // try this.debug_renderer.drawImage(.{
-        //     .view = this.text_stuff.loaded.atlases.items[0].view,
-        //     .mat = .{
-        //         .{ 500, 0, 0 },
-        //         .{ 0, 500, 0 },
-        //         .{ 0, 0, 1 },
-        //     },
-        //     .uv_top_left = .{ 0.9, 0.9 },
-        // });
-
-        try this.debug_renderer.drawText("very gret", .{
-            .{ 1, 0, 0 },
-            .{ 0, 1, 100 },
-            .{ 0, 0, 1 },
-        });
-
-        // try this.debug_renderer.drawLine(.{ 1, 134 }, .{ 26, 168 }, 3);
+        this.font_face = face;
+        this.glyph_cache = cache;
     }
 
     {
@@ -489,8 +423,8 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.device.waitUntilIdle() catch @panic("failed to wait for device in deinit");
 
-    this.text_stuff.loaded.deinit(alloc, this.device);
-    this.text_stuff.face.deinit();
+    this.glyph_cache.deinit(this.device);
+    this.font_face.deinit();
 
     this.texture_sampler.deinit(this.device, alloc);
     this.texture_view.deinit(this.device, alloc);
@@ -506,7 +440,6 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.destruct_queue.deinit(alloc);
     alloc.free(this.images_initialized);
     this.immediate.deinit(this.device);
-    if (debug_rendering) this.debug_renderer.deinit();
     this.shader_man.deinit(this.device, alloc);
     this.upload_man.deinit();
     this.stage_man.deinit(this.device, alloc);
@@ -743,50 +676,6 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
 
     render_pass.cmdEnd();
 
-    if (debug_rendering) {
-        per_frame.cmd_encoder.cmdMemoryBarrier(.{
-            .image_barriers = &.{.{
-                .image = acquired_image.image(this.display),
-                .subresource_range = .{
-                    .aspect = .{ .color = true },
-                },
-                .old_layout = .color_attachment,
-                .new_layout = .color_attachment,
-                .src_stage = .{ .color_attachment_output = true },
-                .dst_stage = .{ .color_attachment_output = true },
-                .src_access = .{ .color_attachment_write = true },
-                .dst_access = .{ .color_attachment_write = true },
-            }},
-        });
-
-        // try this.debug_renderer.drawLine(.{ 0, 0 }, .{ 800, 700 }, 10);
-        // try this.debug_renderer.drawImage(this.texture_view, .{
-        //     .{ 100, 0, 0 },
-        //     .{ 0, 100, 600 },
-        //     .{ 0, 0, 1 },
-        // });
-
-        const image_size = this.display.imageSize();
-        try this.debug_renderer.render(
-            per_frame.cmd_encoder,
-            .{
-                .color_attachment = .{
-                    .image_view = acquired_image.imageView(this.display),
-                    .load = .load,
-                    .store = .store,
-                },
-            },
-            image_size,
-            math.matMulMany(math.Mat4, .{
-                math.scale(.{ 1, -1, 0 }),
-                math.translate(.{ -1, -1, 0 }),
-                math.scale(.{ 2, 2, 0 }),
-                math.scale(.{ 1 / math.i2f(f32, image_size[0]), 1 / math.i2f(f32, image_size[1]), 0 }),
-            }),
-        );
-        // this.debug_renderer.nextFrame();
-    }
-
     try this.immediate.begin(@as(@Vector(2, u16), @intCast(viewport)));
 
     {
@@ -855,7 +744,16 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         });
     }
 
-    try this.immediate.render(per_frame.cmd_encoder, &this.stage_man, acquired_image.imageView(this.display));
+    try this.glyph_cache.upload(this.device, per_frame.cmd_encoder);
+    try this.immediate.drawImage(.{
+        .view = this.glyph_cache.atlases.items[0].view,
+        .transform = .{
+            .pos = .{ .offset = @splat(100) },
+            .size = .{ .offset = @splat(500) },
+        },
+    });
+
+    try this.immediate.render(this.device, per_frame.cmd_encoder, acquired_image.imageView(this.display));
 
     per_frame.cmd_encoder.cmdMemoryBarrier(.{
         .image_barriers = &.{.{

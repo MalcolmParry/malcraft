@@ -19,35 +19,14 @@
         .stage = .pixel,
         .entry = "psMain",
     },
-
-    .debug_line_vert = .{
-        .src = "deps/mwengine/src/shaders/debug/line.vert.glsl",
+    .immediate_image_vertex = .{
+        .src = "deps/mwengine/src/shaders/immediate/image.slang",
         .stage = .vertex,
-        .language = .glsl,
+        .entry = "vsMain",
     },
-    .debug_line_pixel = .{
-        .src = "deps/mwengine/src/shaders/debug/line.frag.glsl",
+    .immediate_image_pixel = .{
+        .src = "deps/mwengine/src/shaders/immediate/image.slang",
         .stage = .pixel,
-        .language = .glsl,
-    },
-    .debug_image_vert = .{
-        .src = "deps/mwengine/src/shaders/debug/image.vert.glsl",
-        .stage = .vertex,
-        .language = .glsl,
-    },
-    .debug_image_pixel = .{
-        .src = "deps/mwengine/src/shaders/debug/image.frag.glsl",
-        .stage = .pixel,
-        .language = .glsl,
-    },
-    .debug_text_vert = .{
-        .src = "deps/mwengine/src/shaders/debug/text.vert.glsl",
-        .stage = .vertex,
-        .language = .glsl,
-    },
-    .debug_text_pixel = .{
-        .src = "deps/mwengine/src/shaders/debug/text.frag.glsl",
-        .stage = .pixel,
-        .language = .glsl,
+        .entry = "psMain",
     },
 }
