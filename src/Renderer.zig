@@ -13,6 +13,7 @@ const World = @import("World.zig");
 const ShaderManager = @import("ShaderManager.zig");
 
 const Renderer = @This();
+const dt_hist_size = 256;
 
 info: Info,
 stage_man: gpu.StagingManager,
@@ -52,6 +53,8 @@ texture_sampler: gpu.Sampler,
 
 font_face: mw.text.Face,
 glyph_cache: mw.text.GlyphCache,
+
+dt_hist: [dt_hist_size]u64,
 
 pub const Input = struct {
     wireframe: bool = false,
@@ -184,13 +187,20 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
                 this.shader_man.getShader(.immediate_image_pixel),
             },
         },
+        .text_info = .{
+            .glyph_cache = &this.glyph_cache,
+            .shaders = &.{
+                this.shader_man.getShader(.immediate_text_vertex),
+                this.shader_man.getShader(.immediate_text_pixel),
+            },
+        },
     });
     errdefer this.immediate.deinit(this.device);
 
     {
-        const height = 64;
-        const file = "res/font/Roboto_Condensed-Regular.ttf";
-        // const file = "res/font/NFPixels-Regular.ttf";
+        // const file = "res/fonts/Roboto_Condensed-Regular.ttf";
+        // const file = "res/fonts/NFPixels-Regular.ttf";
+        const file = "res/fonts/press-start-2p/PressStart2P-vaV7.ttf";
         var face: mw.text.Face = try .init(file);
         errdefer face.deinit();
 
@@ -200,25 +210,6 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
             .atlas_size = @splat(512),
         };
         errdefer cache.deinit(this.device);
-
-        const to_load =
-            \\abcdefghijklmnopqrstuvwxyz
-            \\ABCDEFGHIJKLMNOPQRSTUVWXYZ
-            \\`0123456789-=
-            \\~!@#$%^&*()_+
-            \\[]\;',./
-            \\{}|:"<>?
-            \\
-        ;
-
-        for (to_load) |c| {
-            try cache.loadGlyph(.{
-                .device = this.device,
-                .face = &face,
-                .codepoint = c,
-                .height = height,
-            });
-        }
 
         this.font_face = face;
         this.glyph_cache = cache;
@@ -596,7 +587,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         if (this.window.isKeyDown(.left_control))
             speed = 1000;
 
-        if (!math.eql(move_vector, @as(math.Vec3, @splat(0)))) {
+        if (!math.eql(move_vector, math.splat3(f32, 0))) {
             const q = math.quatFromEuler(this.camera.euler);
             move_vector = math.quatMulVec(q, move_vector);
             move_vector = math.normalize(move_vector);
@@ -610,9 +601,9 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         var moved = cursor - this.last_cursor;
         this.last_cursor = cursor;
 
-        if (!math.eql(moved, @as(math.Vec2, @splat(0)))) {
+        if (!math.eql(moved, math.splat2(f32, 0))) {
             moved *= @splat(math.rad(0.18));
-            this.camera.euler += math.Vec3{ 0, moved[1], moved[0] };
+            this.camera.euler += math.shuffle(moved, &.{ .zero, .y, .x });
         }
     }
 
@@ -678,6 +669,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
 
     try this.immediate.begin(@as(@Vector(2, u16), @intCast(viewport)));
 
+    // crosshair
     {
         const outline_times_2 = 2;
         const length: i16 = @intFromFloat(viewport_f[1] * 0.025);
@@ -687,12 +679,8 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
 
         try this.immediate.drawRect(.{
             .transform = .{
-                .pos = .{
-                    .norm = @splat(0.5),
-                    .offset = @splat(0),
-                },
+                .pos = .{ .norm = @splat(0.5) },
                 .size = .{
-                    .norm = @splat(0),
                     .offset = .{ length, width },
                 },
                 .pivot = @splat(0.5),
@@ -701,12 +689,8 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         });
         try this.immediate.drawRect(.{
             .transform = .{
-                .pos = .{
-                    .norm = @splat(0.5),
-                    .offset = @splat(0),
-                },
+                .pos = .{ .norm = @splat(0.5) },
                 .size = .{
-                    .norm = @splat(0),
                     .offset = .{ width, length },
                 },
                 .pivot = @splat(0.5),
@@ -716,12 +700,8 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
 
         try this.immediate.drawRect(.{
             .transform = .{
-                .pos = .{
-                    .norm = @splat(0.5),
-                    .offset = @splat(0),
-                },
+                .pos = .{ .norm = @splat(0.5) },
                 .size = .{
-                    .norm = @splat(0),
                     .offset = .{ length - outline_times_2, width - outline_times_2 },
                 },
                 .pivot = @splat(0.5),
@@ -730,12 +710,8 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         });
         try this.immediate.drawRect(.{
             .transform = .{
-                .pos = .{
-                    .norm = @splat(0.5),
-                    .offset = @splat(0),
-                },
+                .pos = .{ .norm = @splat(0.5) },
                 .size = .{
-                    .norm = @splat(0),
                     .offset = .{ width - outline_times_2, length - outline_times_2 },
                 },
                 .pivot = @splat(0.5),
@@ -744,15 +720,68 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         });
     }
 
-    try this.glyph_cache.upload(this.device, per_frame.cmd_encoder);
-    try this.immediate.drawImage(.{
-        .view = this.glyph_cache.atlases.items[0].view,
-        .transform = .{
-            .pos = .{ .offset = @splat(100) },
-            .size = .{ .offset = @splat(500) },
-        },
-    });
+    {
+        const hist_slot = this.info.frame_count % dt_hist_size;
+        this.dt_hist[hist_slot] = dt_ns;
 
+        const hist_count = @min(this.info.frame_count + 1, dt_hist_size);
+        const hist = this.dt_hist[0..hist_count];
+
+        const sorted = try alloc.dupe(u64, hist);
+        defer alloc.free(sorted);
+
+        std.mem.sort(u64, sorted, {}, struct {
+            fn less(_: void, left: u64, right: u64) bool {
+                return left < right;
+            }
+        }.less);
+
+        const median = sorted[hist_count / 2];
+        const median_s = math.i2f(f32, median) / std.time.ns_per_s;
+        const median_fps = 1 / median_s;
+
+        const low = sorted[hist_count / 10];
+        const low_s = math.i2f(f32, low) / std.time.ns_per_s;
+        const low_fps = 1 / low_s;
+
+        const cam_euler = @mod(this.camera.euler, @as(math.Vec3, @splat(math.pi * 2)));
+
+        const text = try std.fmt.allocPrint(alloc,
+            \\FPS: {d: >4.0}, {d: >5.2}ms
+            \\Low: {d: >4.0}, {d: >5.2}ms
+            \\
+            \\X:   {d: >8.2}
+            \\Y:   {d: >8.2}
+            \\Z:   {d: >8.2}
+            \\
+            \\Yaw:   {d: >6.2}
+            \\Pitch: {d: >6.2}
+        , .{
+            median_fps,
+            median_s * std.time.ms_per_s,
+            low_fps,
+            low_s * std.time.ms_per_s,
+            this.camera.pos[0],
+            this.camera.pos[1],
+            this.camera.pos[2],
+            math.deg(cam_euler[2]),
+            math.deg(cam_euler[1]),
+        });
+        defer alloc.free(text);
+
+        try this.immediate.drawText(.{
+            .font_face = &this.font_face,
+            .height_px = 24,
+            .text = text,
+            .pos = .{
+                .norm = .{ 0, 1 },
+                .offset = .{ 8, -8 },
+            },
+            .color = .{ 0, 0, 0, 255 },
+        });
+    }
+
+    try this.glyph_cache.upload(this.device, per_frame.cmd_encoder);
     try this.immediate.render(this.device, per_frame.cmd_encoder, acquired_image.imageView(this.display));
 
     per_frame.cmd_encoder.cmdMemoryBarrier(.{

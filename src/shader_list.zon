@@ -29,4 +29,14 @@
         .stage = .pixel,
         .entry = "psMain",
     },
+    .immediate_text_vertex = .{
+        .src = "deps/mwengine/src/shaders/immediate/text.slang",
+        .stage = .vertex,
+        .entry = "vsMain",
+    },
+    .immediate_text_pixel = .{
+        .src = "deps/mwengine/src/shaders/immediate/text.slang",
+        .stage = .pixel,
+        .entry = "psMain",
+    },
 }
