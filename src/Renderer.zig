@@ -740,7 +740,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         const median_s = math.i2f(f32, median) / std.time.ns_per_s;
         const median_fps = 1 / median_s;
 
-        const low = sorted[hist_count / 10];
+        const low = sorted[hist_count / 10 * 9];
         const low_s = math.i2f(f32, low) / std.time.ns_per_s;
         const low_fps = 1 / low_s;
 
