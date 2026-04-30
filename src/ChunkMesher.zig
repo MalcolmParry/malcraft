@@ -49,7 +49,6 @@ threads: []std.Thread,
 queue: std.AutoArrayHashMapUnmanaged(Chunk.Pos, void),
 
 meshing_time_ns: u64,
-total_chunks_meshed: u64,
 face_count: u64,
 
 pub const InitInfo = struct {
@@ -63,7 +62,6 @@ pub fn init(this: *ChunkMesher, info: InitInfo) !void {
     this.arena = .init(info.alloc);
     this.mesh_alloc = info.mesh_alloc;
     this.meshing_time_ns = 0;
-    this.total_chunks_meshed = 0;
     this.face_count = 0;
     this.queue = .empty;
 
@@ -88,9 +86,7 @@ pub fn init(this: *ChunkMesher, info: InitInfo) !void {
 
 pub fn deinit(this: *ChunkMesher) void {
     std.log.info("total chunk mesh time {} ns", .{this.meshing_time_ns});
-    std.log.info("mesh time per chunk {} ns", .{std.math.divTrunc(u64, this.meshing_time_ns, this.total_chunks_meshed) catch 0});
-    std.log.info("total chunks meshed {}", .{this.total_chunks_meshed});
-    std.log.info("total chunk quads {}", .{this.face_count});
+    std.log.info("mesh time per chunk {} ns", .{std.math.divTrunc(u64, this.meshing_time_ns, this.mesh_alloc.loaded_meshes.count()) catch 0});
     this.thread_info.shutdown();
 
     for (this.threads) |thread| {
@@ -196,8 +192,6 @@ pub fn meshMany(this: *ChunkMesher) !void {
 
         this.face_count += job.faces.len;
     }
-
-    this.total_chunks_meshed += completed;
 }
 
 const Job = struct {

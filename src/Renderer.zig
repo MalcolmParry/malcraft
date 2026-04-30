@@ -14,6 +14,7 @@ const ShaderManager = @import("ShaderManager.zig");
 
 const Renderer = @This();
 const dt_hist_size = 256;
+const cpu_time_hist_size = 256;
 
 info: Info,
 stage_man: gpu.StagingManager,
@@ -32,7 +33,6 @@ timeline_value: gpu.Timeline.Value,
 images_initialized: []bool,
 per_frame_in_flight: []PerFrameInFlight,
 frame_timer: std.time.Timer,
-total_timer: std.time.Timer,
 last_cursor: @Vector(2, f32),
 dirty_swapchain: bool,
 wireframe: bool,
@@ -55,6 +55,7 @@ font_face: mw.text.Face,
 glyph_cache: mw.text.GlyphCache,
 
 dt_hist: [dt_hist_size]u64,
+cpu_time_hist: [cpu_time_hist_size]u64,
 
 pub const Input = struct {
     wireframe: bool = false,
@@ -163,11 +164,11 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     try this.initChunkPipeline(alloc);
     errdefer this.chunk_pipeline.deinit(this.device, alloc);
 
-    this.total_timer = try .start();
     this.last_cursor = .{ 0, 0 };
     this.dirty_swapchain = false;
     this.mouse_lock = true;
     this.camera = .{};
+    this.cpu_time_hist[0] = 0;
 
     this.immediate = try .init(.{
         .alloc = alloc,
@@ -440,10 +441,6 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.instance.deinit(alloc);
     this.window.deinit();
     this.event_queue.deinit();
-
-    const total_time_s: f64 = @as(f64, @floatFromInt(this.total_timer.read())) / std.time.ns_per_s;
-    const fps: f64 = @as(f64, @floatFromInt(this.info.frame_count)) / total_time_s;
-    std.log.info("mean fps {}", .{fps});
 }
 
 fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
@@ -485,6 +482,13 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     const frame_slot = (this.info.frame_count + 1) % this.info.frames_in_flight;
     const per_frame = &this.per_frame_in_flight[frame_slot];
     this.info.frame_count += 1;
+
+    var cpu_work_timer: std.time.Timer = try .start();
+    defer {
+        const ns = cpu_work_timer.read();
+        const slot = this.info.frame_count % cpu_time_hist_size;
+        this.cpu_time_hist[slot] = ns;
+    }
 
     gpu.AnyObject.deinitAllReversed(per_frame.trash.items, this.device, alloc);
     per_frame.trash.clearRetainingCapacity();
@@ -596,7 +600,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         }
     }
 
-    {
+    if (this.mouse_lock) {
         const cursor = this.window.getCursorPos();
         var moved = cursor - this.last_cursor;
         this.last_cursor = cursor;
@@ -670,7 +674,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     try this.immediate.begin(@as(@Vector(2, u16), @intCast(viewport)));
 
     // crosshair
-    {
+    if (this.mouse_lock) {
         const outline_times_2 = 2;
         const length: i16 = @intFromFloat(viewport_f[1] * 0.025);
         const width = @divTrunc(length, 10);
@@ -746,6 +750,18 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
 
         const cam_euler = @mod(this.camera.euler, @as(math.Vec3, @splat(math.pi * 2)));
 
+        const cpu_hist_count = @min(this.info.frame_count + 1, cpu_time_hist_size);
+        const cpu_hist = this.cpu_time_hist[0..cpu_hist_count];
+
+        const cpu_time_sorted = try alloc.dupe(u64, cpu_hist);
+        defer alloc.free(cpu_time_sorted);
+
+        std.mem.sort(u64, cpu_time_sorted, {}, struct {
+            fn less(_: void, left: u64, right: u64) bool {
+                return left < right;
+            }
+        }.less);
+
         const text = try std.fmt.allocPrint(alloc,
             \\FPS: {d: >4.0}, {d: >5.2}ms
             \\Low: {d: >4.0}, {d: >5.2}ms
@@ -756,6 +772,11 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
             \\
             \\Yaw:   {d: >6.2}
             \\Pitch: {d: >6.2}
+            \\
+            \\CPU Time: {d: >5}μs
+            \\Mesh Buffer: {} / {}kb
+            \\Meshed Chunks: {}
+            \\Quad Count: {}
         , .{
             median_fps,
             median_s * std.time.ms_per_s,
@@ -766,6 +787,11 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
             this.camera.pos[2],
             math.deg(cam_euler[2]),
             math.deg(cam_euler[1]),
+            cpu_time_sorted[cpu_hist_count / 2] / 1000,
+            (ChunkMeshAllocator.buffer_size - this.chunk_mesh_alloc.queryBytesFree()) / 1024,
+            ChunkMeshAllocator.buffer_size / 1024,
+            this.chunk_mesh_alloc.loaded_meshes.count(),
+            this.chunk_mesher.face_count,
         });
         defer alloc.free(text);
 
