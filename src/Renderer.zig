@@ -675,11 +675,39 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
 
     // crosshair
     if (this.mouse_lock) {
-        const outline_times_2 = 2;
-        const length: i16 = @intFromFloat(viewport_f[1] * 0.025);
-        const width = @divTrunc(length, 10);
-        const outline_color: [4]u8 = .{ 128, 128, 128, 255 };
+        const scale = viewport_f[1] * 0.00035;
+        const length_f = @max(11, scale * 100);
+        const width_f = @max(3, scale * 7);
+        const outline_f = @max(1, scale * 2);
+
+        const outline_color: [4]u8 = .{ 150, 150, 150, 255 };
         const color: [4]u8 = .{ 0, 0, 0, 255 };
+
+        const length = @as(i16, @intFromFloat(length_f)) | 1;
+        const width = @as(i16, @intFromFloat(width_f)) | 1;
+        const outline: i16 = @intFromFloat(outline_f);
+        const outline_2 = outline * 2;
+
+        try this.immediate.drawRect(.{
+            .transform = .{
+                .pos = .{ .norm = @splat(0.5) },
+                .size = .{
+                    .offset = .{ length + outline_2, width + outline_2 },
+                },
+                .pivot = @splat(0.5),
+            },
+            .color = outline_color,
+        });
+        try this.immediate.drawRect(.{
+            .transform = .{
+                .pos = .{ .norm = @splat(0.5) },
+                .size = .{
+                    .offset = .{ width + outline_2, length + outline_2 },
+                },
+                .pivot = @splat(0.5),
+            },
+            .color = outline_color,
+        });
 
         try this.immediate.drawRect(.{
             .transform = .{
@@ -689,34 +717,13 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
                 },
                 .pivot = @splat(0.5),
             },
-            .color = outline_color,
-        });
-        try this.immediate.drawRect(.{
-            .transform = .{
-                .pos = .{ .norm = @splat(0.5) },
-                .size = .{
-                    .offset = .{ width, length },
-                },
-                .pivot = @splat(0.5),
-            },
-            .color = outline_color,
-        });
-
-        try this.immediate.drawRect(.{
-            .transform = .{
-                .pos = .{ .norm = @splat(0.5) },
-                .size = .{
-                    .offset = .{ length - outline_times_2, width - outline_times_2 },
-                },
-                .pivot = @splat(0.5),
-            },
             .color = color,
         });
         try this.immediate.drawRect(.{
             .transform = .{
                 .pos = .{ .norm = @splat(0.5) },
                 .size = .{
-                    .offset = .{ width - outline_times_2, length - outline_times_2 },
+                    .offset = .{ width, length },
                 },
                 .pivot = @splat(0.5),
             },
@@ -798,12 +805,15 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         try this.immediate.drawText(.{
             .font_face = &this.font_face,
             .height_px = 24,
+            .height_in_atlas_px = 24,
             .text = text,
             .pos = .{
                 .norm = .{ 0, 1 },
                 .offset = .{ 8, -8 },
             },
             .color = .{ 0, 0, 0, 255 },
+            .outline_width = 1,
+            .outline_color = @splat(255),
         });
     }
 
