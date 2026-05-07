@@ -16,5 +16,9 @@
             .url = "git+https://github.com/zig-gamedev/znoise.git#01c8b354cc3ef7f2293de75e58d3298a77d7ed06",
             .hash = "znoise-0.3.0-dev-gK1op9ikAQDrS4G22GluyaQaabjGzhdnhV2QyCoLE8z7",
         },
+        .znet = .{
+            .url = "git+https://github.com/connellr023/znet.git#17b0bc804766681a6958d359b8a0826aead0ae1c",
+            .hash = "znet-0.0.0-PGDNtG5RAAACmyNeHBX4NSToYiNXbww31WrAUaGy7p4K",
+        },
     },
 }

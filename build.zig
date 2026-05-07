@@ -5,6 +5,7 @@ pub fn build(b: *Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // game
     const mwengine = b.dependency("mwengine", .{
         .target = target,
         .optimize = optimize,
@@ -15,7 +16,7 @@ pub fn build(b: *Build) !void {
         .optimize = optimize,
     });
 
-    const exe = b.addExecutable(.{
+    const game = b.addExecutable(.{
         .name = "malcraft",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
@@ -38,8 +39,15 @@ pub fn build(b: *Build) !void {
         .target = target,
         .optimize = optimize,
     });
-    exe.root_module.addImport("znoise", znoise.module("root"));
-    exe.linkLibrary(znoise.artifact("FastNoiseLite"));
+    game.root_module.addImport("znoise", znoise.module("root"));
+    game.linkLibrary(znoise.artifact("FastNoiseLite"));
+
+    const znet = b.dependency("znet", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    game.root_module.addImport("znet", znet.module("znet"));
+    game.root_module.linkLibrary(znet.artifact("znet"));
 
     const default_render_radius: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 64 else 3;
     const default_vrender_radius: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 16 else 1;
@@ -49,7 +57,7 @@ pub fn build(b: *Build) !void {
     options.addOption(u32, "render_radius", b.option(u32, "render-radius", "") orelse default_render_radius);
     options.addOption(u32, "vrender_radius", b.option(u32, "render-height", "") orelse default_vrender_radius);
     options.addOption(bool, "render_borders_with_nonexistant_chunks", b.option(bool, "borders", "Should render borders with nonexistant chunks (kind of broken now)") orelse true);
-    exe.root_module.addOptions("options", options);
+    game.root_module.addOptions("options", options);
 
     const res_install = b.addInstallDirectory(.{
         .source_dir = b.path("res"),
@@ -57,10 +65,35 @@ pub fn build(b: *Build) !void {
         .install_subdir = "res",
     });
 
+    // server
+    const server = b.addExecutable(.{
+        .name = "server",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/server.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{
+                    .name = "mwengine",
+                    .module = mwengine.module("mwengine"),
+                },
+            },
+        }),
+    });
+
+    server.root_module.addImport("znet", znet.module("znet"));
+    server.root_module.linkLibrary(znet.artifact("znet"));
+
+    const build_server = b.option(bool, "server", "build the server instead of the client") orelse false;
+    const exe = if (build_server) server else game;
+
     const exe_install = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&exe_install.step);
-    b.getInstallStep().dependOn(&res_install.step);
-    try buildShaders(b, b.getInstallStep());
+
+    if (!build_server) {
+        b.getInstallStep().dependOn(&res_install.step);
+        try buildShaders(b, &exe_install.step);
+    }
 
     const run_step = b.step("run", "");
     const run = b.addRunArtifact(exe);
