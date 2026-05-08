@@ -11,6 +11,7 @@ pub fn main() !void {
     var app: App = undefined;
     try app.init(alloc);
     defer app.deinit(alloc);
+
     const renderer = &app.renderer;
     while (!(should_close or renderer.window.shouldClose())) {
         renderer.window.update();
@@ -38,6 +39,7 @@ pub fn main() !void {
             }
         }
 
+        try app.tick(alloc);
         try renderer.render(renderer_input, alloc);
     }
 }

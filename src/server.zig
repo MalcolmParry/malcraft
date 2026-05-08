@@ -1,5 +1,6 @@
 const std = @import("std");
 const znet = @import("znet");
+const net = @import("net.zig");
 
 pub fn main() !void {
     var alloc_obj = std.heap.DebugAllocator(.{}).init;
@@ -24,6 +25,7 @@ pub fn main() !void {
 
     std.log.info("server started", .{});
 
+    var next_player_id: u32 = 0;
     while (true) {
         const anyevent = try host.service(100) orelse continue;
 
@@ -31,6 +33,18 @@ pub fn main() !void {
             .connect => |data| {
                 const address: znet.Address = .{ .inner = data.peer.ptr.address };
                 std.log.info("connection from {x} on {}", .{ address.inner.host, address.inner.port });
+
+                const message: net.server_message.Init = .{
+                    .player_id = next_player_id,
+                };
+                next_player_id += 1;
+
+                var buffer: [512]u8 = undefined;
+                var writer = std.Io.Writer.fixed(&buffer);
+                try message.encode(&writer);
+
+                const packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
+                try data.peer.send(packet);
             },
             .disconnect => |data| {
                 _ = data;

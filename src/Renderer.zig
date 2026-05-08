@@ -1,7 +1,6 @@
 const std = @import("std");
 const options = @import("options");
 const zigimg = @import("zigimg");
-const znet = @import("znet");
 const mw = @import("mwengine");
 const gpu = mw.gpu;
 const math = mw.math;
@@ -16,9 +15,6 @@ const ShaderManager = @import("ShaderManager.zig");
 const Renderer = @This();
 const dt_hist_size = 256;
 const cpu_time_hist_size = 256;
-
-host: znet.Host,
-server: znet.Peer,
 
 info: Info,
 stage_man: gpu.StagingManager,
@@ -70,29 +66,6 @@ pub const Input = struct {
 };
 
 pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
-    try znet.init();
-    errdefer znet.deinit();
-
-    const host = try znet.Host.init(.{
-        .addr = null,
-        .peer_limit = 1,
-        .channel_limit = .{ .count = 1 },
-        .incoming_bandwidth = .unlimited,
-        .outgoing_bandwidth = .unlimited,
-    });
-    errdefer host.deinit();
-    this.host = host;
-
-    const peer = try host.connect(.{
-        .addr = try .init(.{
-            .ip = .{ .ipv4 = "localhost" },
-            .port = .{ .uint = 5000 },
-        }),
-        .channel_limit = .{ .count = 1 },
-        .data = 0,
-    });
-    this.server = peer;
-
     this.event_queue = try .init(alloc);
     errdefer this.event_queue.deinit();
 
@@ -469,9 +442,6 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.instance.deinit(alloc);
     this.window.deinit();
     this.event_queue.deinit();
-
-    this.host.deinit();
-    znet.deinit();
 }
 
 fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
@@ -525,22 +495,6 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     per_frame.trash.clearRetainingCapacity();
     try this.chunk_mesh_alloc.freeQueued();
     this.stage_man.nextFrame();
-
-    while (try this.host.service(0)) |anyevent| switch (anyevent) {
-        .connect => |event| {
-            const addr: znet.Address = .{ .inner = event.peer.ptr.address };
-            std.log.info("connected to server at {x} on {}", .{ addr.inner.host, addr.inner.port });
-        },
-        .disconnect => |_| {
-            const addr: znet.Address = .{ .inner = this.server.ptr.address };
-            std.log.info("disconnected from server at {x} on {}", .{ addr.inner.host, addr.inner.port });
-
-            return error.ServerClosed;
-        },
-        .receive => |event| {
-            defer event.packet.deinit();
-        },
-    };
 
     if (this.dirty_swapchain) {
         try this.device.waitUntilIdle();
