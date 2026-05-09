@@ -115,6 +115,7 @@ fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData
                     .left_alt => {
                         app.mouse_lock = !app.mouse_lock;
                         try app.window.setCursorMode(if (app.mouse_lock) .disabled else .normal);
+                        app.last_cursor = app.window.getCursorPos();
                     },
                     else => {},
                 }
