@@ -97,6 +97,7 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
         .camera = app.camera,
         .input = renderer_input,
         .viewport = app.window.getFramebufferSize(),
+        .show_crosshair = app.mouse_lock,
     }, alloc);
 }
 

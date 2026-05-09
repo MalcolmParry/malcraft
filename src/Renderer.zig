@@ -32,7 +32,6 @@ images_initialized: []bool,
 per_frame_in_flight: []PerFrameInFlight,
 dirty_swapchain: bool,
 wireframe: bool,
-mouse_lock: bool,
 
 world: World,
 world_gen: WorldGenerator,
@@ -50,7 +49,9 @@ font_face: mw.text.Face,
 glyph_cache: mw.text.GlyphCache,
 
 dt_hist: [dt_hist_size]u64,
+dt_hist_scratch: [dt_hist_size]u64,
 cpu_time_hist: [cpu_time_hist_size]u64,
+cpu_time_hist_scratch: [cpu_time_hist_size]u64,
 
 pub const FrameData = struct {
     pub const Input = struct {
@@ -63,6 +64,8 @@ pub const FrameData = struct {
     camera: Camera,
     viewport: mw.gpu.Image.Size2D,
     input: Input = .{},
+
+    show_crosshair: bool,
 };
 
 pub const InitInfo = struct {
@@ -615,7 +618,7 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
     try this.immediate.begin(@as(@Vector(2, u16), @intCast(data.viewport)));
 
     // crosshair
-    if (this.mouse_lock) {
+    if (data.show_crosshair) {
         const scale = viewport_f[1] * 0.00035;
         const length_f = @max(11, scale * 100);
         const width_f = @max(3, scale * 7);
@@ -676,35 +679,31 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
         const hist_slot = this.info.frame_count % dt_hist_size;
         this.dt_hist[hist_slot] = data.dt_ns;
 
-        const hist_count = @min(this.info.frame_count + 1, dt_hist_size);
-        const hist = this.dt_hist[0..hist_count];
+        const dt_hist_count = @min(this.info.frame_count + 1, dt_hist_size);
+        const dt_hist_sorted = this.dt_hist_scratch[0..dt_hist_count];
+        @memcpy(dt_hist_sorted, this.dt_hist[0..dt_hist_count]);
 
-        const sorted = try alloc.dupe(u64, hist);
-        defer alloc.free(sorted);
-
-        std.mem.sort(u64, sorted, {}, struct {
+        std.mem.sort(u64, dt_hist_sorted, {}, struct {
             fn less(_: void, left: u64, right: u64) bool {
                 return left < right;
             }
         }.less);
 
-        const median = sorted[hist_count / 2];
+        const median = dt_hist_sorted[dt_hist_count / 2];
         const median_s = math.i2f(f32, median) / std.time.ns_per_s;
         const median_fps = 1 / median_s;
 
-        const low = sorted[hist_count / 10 * 9];
+        const low = dt_hist_sorted[dt_hist_count / 10 * 9];
         const low_s = math.i2f(f32, low) / std.time.ns_per_s;
         const low_fps = 1 / low_s;
 
         const cam_euler = @mod(data.camera.euler, @as(math.Vec3, @splat(math.pi * 2)));
 
         const cpu_hist_count = @min(this.info.frame_count + 1, cpu_time_hist_size);
-        const cpu_hist = this.cpu_time_hist[0..cpu_hist_count];
+        const cpu_hist_sorted = this.cpu_time_hist_scratch[0..cpu_hist_count];
+        @memcpy(cpu_hist_sorted, this.cpu_time_hist[0..cpu_hist_count]);
 
-        const cpu_time_sorted = try alloc.dupe(u64, cpu_hist);
-        defer alloc.free(cpu_time_sorted);
-
-        std.mem.sort(u64, cpu_time_sorted, {}, struct {
+        std.mem.sort(u64, cpu_hist_sorted, {}, struct {
             fn less(_: void, left: u64, right: u64) bool {
                 return left < right;
             }
@@ -735,7 +734,7 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
             data.camera.pos[2],
             math.deg(cam_euler[2]),
             math.deg(cam_euler[1]),
-            cpu_time_sorted[cpu_hist_count / 2] / 1000,
+            cpu_hist_sorted[cpu_hist_count / 2] / 1000,
             (ChunkMeshAllocator.buffer_size - this.chunk_mesh_alloc.queryBytesFree()) / 1024,
             ChunkMeshAllocator.buffer_size / 1024,
             this.chunk_mesh_alloc.loaded_meshes.count(),
