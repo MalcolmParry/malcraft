@@ -1,3 +1,6 @@
 [submodule "deps/mwengine"]
 	path = deps/mwengine
 	url = https://github.com/MalcolmParry/mwengine.git
+[submodule "deps/znet"]
+	path = deps/znet
+	url = https://github.com/MalcolmParry/znet.git

@@ -4,6 +4,7 @@ const zigimg = @import("zigimg");
 const mw = @import("mwengine");
 const gpu = mw.gpu;
 const math = mw.math;
+const Camera = @import("Camera.zig");
 const block = @import("block.zig");
 const Chunk = @import("Chunk.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
@@ -22,18 +23,13 @@ upload_man: gpu.UploadManager,
 shader_man: ShaderManager,
 immediate: mw.ImmediateRenderer,
 destruct_queue: std.ArrayList(gpu.AnyObject),
-event_queue: mw.EventQueue,
-window: mw.Window,
 instance: gpu.Instance,
 device: gpu.Device,
 display: gpu.Display,
-last_image_index: ?u32,
 timeline: gpu.Timeline,
 timeline_value: gpu.Timeline.Value,
 images_initialized: []bool,
 per_frame_in_flight: []PerFrameInFlight,
-frame_timer: std.time.Timer,
-last_cursor: @Vector(2, f32),
 dirty_swapchain: bool,
 wireframe: bool,
 mouse_lock: bool,
@@ -45,7 +41,6 @@ chunk_mesher: ChunkMesher,
 chunk_resource_layout: gpu.ResourceSet.Layout,
 chunk_resource_set: gpu.ResourceSet,
 chunk_pipeline: gpu.GraphicsPipeline,
-camera: Camera,
 
 texture_image: gpu.Image,
 texture_view: gpu.Image.View,
@@ -57,21 +52,26 @@ glyph_cache: mw.text.GlyphCache,
 dt_hist: [dt_hist_size]u64,
 cpu_time_hist: [cpu_time_hist_size]u64,
 
-pub const Input = struct {
-    wireframe: bool = false,
-    break_block: bool = false,
-    place_block: bool = false,
-    cam_reset: bool = false,
-    mouse_lock_toggle: bool = false,
+pub const FrameData = struct {
+    pub const Input = struct {
+        wireframe: bool = false,
+        break_block: bool = false,
+        place_block: bool = false,
+    };
+
+    dt_ns: u64,
+    camera: Camera,
+    viewport: mw.gpu.Image.Size2D,
+    input: Input = .{},
 };
 
-pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
-    this.event_queue = try .init(alloc);
-    errdefer this.event_queue.deinit();
+pub const InitInfo = struct {
+    alloc: std.mem.Allocator,
+    window: *mw.Window,
+};
 
-    this.window = try .init(alloc, "malcraft", .{ 100, 100 }, &this.event_queue);
-    errdefer this.window.deinit();
-    try this.window.setCursorMode(.disabled);
+pub fn init(this: *@This(), info: InitInfo) !void {
+    const alloc = info.alloc;
 
     this.instance = try .init(options.gpu_validation, alloc);
     errdefer this.instance.deinit(alloc);
@@ -80,8 +80,7 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     this.device = try .init(this.instance, phys_device, alloc);
     errdefer this.device.deinit(alloc);
 
-    this.last_image_index = null;
-    this.display = try .init(this.device, &this.window, alloc);
+    this.display = try .init(this.device, info.window, alloc);
     errdefer this.display.deinit(alloc);
     std.log.info("display size: {}", .{this.display.imageSize()});
 
@@ -164,11 +163,9 @@ pub fn init(this: *@This(), alloc: std.mem.Allocator) !void {
     try this.initChunkPipeline(alloc);
     errdefer this.chunk_pipeline.deinit(this.device, alloc);
 
-    this.last_cursor = .{ 0, 0 };
     this.dirty_swapchain = false;
-    this.mouse_lock = true;
-    this.camera = .{};
-    this.cpu_time_hist[0] = 0;
+    @memset(&this.dt_hist, 0);
+    @memset(&this.cpu_time_hist, 0);
 
     this.immediate = try .init(.{
         .alloc = alloc,
@@ -440,8 +437,6 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.display.deinit(alloc);
     this.device.deinit(alloc);
     this.instance.deinit(alloc);
-    this.window.deinit();
-    this.event_queue.deinit();
 }
 
 fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
@@ -473,9 +468,8 @@ fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
     }.lessThanFn);
 }
 
-pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
-    if (this.info.frame_count == 0)
-        this.frame_timer = try .start();
+pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
+    const input = data.input;
 
     if (this.timeline_value >= this.per_frame_in_flight.len)
         try this.timeline.wait(this.device, this.timeline_value - this.per_frame_in_flight.len + 1, std.time.ns_per_s);
@@ -499,9 +493,8 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     if (this.dirty_swapchain) {
         try this.device.waitUntilIdle();
 
-        const new_viewport = this.window.getFramebufferSize();
-        std.log.info("rebuilding swapchain {}", .{new_viewport});
-        try this.display.rebuild(new_viewport, alloc);
+        std.log.info("rebuilding swapchain {}", .{data.viewport});
+        try this.display.rebuild(data.viewport, alloc);
         for (this.per_frame_in_flight) |*x| {
             x.deinitViewportDependants(this, alloc);
             try x.initViewportDependants(this, alloc);
@@ -512,9 +505,9 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         return;
     }
 
-    if (input.break_block or this.window.isMouseDown(.five)) blk: {
-        const origin = this.camera.pos;
-        const q = math.quatFromEuler(this.camera.euler);
+    if (input.break_block) blk: {
+        const origin = data.camera.pos;
+        const q = math.quatFromEuler(data.camera.euler);
         const dir = math.normalize(math.quatMulVec(q, math.dir_forward));
 
         const ray_cast = this.world.rayCast(origin, dir);
@@ -529,8 +522,8 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     }
 
     if (input.place_block) blk: {
-        const origin = this.camera.pos;
-        const q = math.quatFromEuler(this.camera.euler);
+        const origin = data.camera.pos;
+        const q = math.quatFromEuler(data.camera.euler);
         const dir = math.normalize(math.quatMulVec(q, math.dir_forward));
 
         const ray_cast = this.world.rayCast(origin, dir);
@@ -547,14 +540,6 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         try this.chunk_mesher.addRequestWithCollateral(pos);
     }
 
-    if (input.mouse_lock_toggle) {
-        this.mouse_lock = !this.mouse_lock;
-
-        try this.window.setCursorMode(if (this.mouse_lock) .disabled else .normal);
-    }
-
-    if (input.cam_reset) this.camera = .{};
-
     try this.world_gen.genMany(&this.world, &this.chunk_mesher, alloc);
     try this.chunk_mesher.meshMany();
 
@@ -564,53 +549,8 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         try this.initChunkPipeline(alloc);
     }
 
-    const viewport = this.window.getFramebufferSize();
-    const viewport_f: math.Vec2 = @floatFromInt(viewport);
+    const viewport_f: math.Vec2 = @floatFromInt(data.viewport);
     const aspect_ratio = viewport_f[0] / viewport_f[1];
-    const dt_ns = this.frame_timer.lap();
-    const dt = @as(f32, @floatFromInt(dt_ns)) / std.time.ns_per_s;
-
-    {
-        var move_vector: math.Vec3 = @splat(0);
-
-        if (this.window.isKeyDown(.w))
-            move_vector += math.dir_forward;
-        if (this.window.isKeyDown(.s))
-            move_vector -= math.dir_forward;
-        if (this.window.isKeyDown(.a))
-            move_vector -= math.dir_right;
-        if (this.window.isKeyDown(.d))
-            move_vector += math.dir_right;
-        if (this.window.isKeyDown(.e))
-            move_vector += math.dir_up;
-        if (this.window.isKeyDown(.q))
-            move_vector -= math.dir_up;
-
-        var speed: f32 = 40;
-        if (this.window.isKeyDown(.left_shift))
-            speed = 200;
-        if (this.window.isKeyDown(.left_control))
-            speed = 1000;
-
-        if (!math.eql(move_vector, math.splat3(f32, 0))) {
-            const q = math.quatFromEuler(this.camera.euler);
-            move_vector = math.quatMulVec(q, move_vector);
-            move_vector = math.normalize(move_vector);
-            move_vector *= @splat(dt * speed);
-            this.camera.pos += move_vector;
-        }
-    }
-
-    if (this.mouse_lock) {
-        const cursor = this.window.getCursorPos();
-        var moved = cursor - this.last_cursor;
-        this.last_cursor = cursor;
-
-        if (!math.eql(moved, math.splat2(f32, 0))) {
-            moved *= @splat(math.rad(0.18));
-            this.camera.euler += math.shuffle(moved, &.{ .zero, .y, .x });
-        }
-    }
 
     const acquired_image = blk: {
         const result = this.display.acquireImage(std.time.ns_per_s) catch |err| switch (err) {
@@ -665,14 +605,14 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     });
 
     const push_constants: PerFramePushConstants = .{
-        .vp = math.matrixToArray(this.camera.vp(aspect_ratio), .row_major),
+        .vp = math.matrixToArray(data.camera.vp(aspect_ratio), .row_major),
     };
 
-    this.drawChunks(render_pass, push_constants, aspect_ratio);
+    this.drawChunks(render_pass, push_constants, aspect_ratio, data.camera);
 
     render_pass.cmdEnd();
 
-    try this.immediate.begin(@as(@Vector(2, u16), @intCast(viewport)));
+    try this.immediate.begin(@as(@Vector(2, u16), @intCast(data.viewport)));
 
     // crosshair
     if (this.mouse_lock) {
@@ -734,7 +674,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
 
     {
         const hist_slot = this.info.frame_count % dt_hist_size;
-        this.dt_hist[hist_slot] = dt_ns;
+        this.dt_hist[hist_slot] = data.dt_ns;
 
         const hist_count = @min(this.info.frame_count + 1, dt_hist_size);
         const hist = this.dt_hist[0..hist_count];
@@ -756,7 +696,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
         const low_s = math.i2f(f32, low) / std.time.ns_per_s;
         const low_fps = 1 / low_s;
 
-        const cam_euler = @mod(this.camera.euler, @as(math.Vec3, @splat(math.pi * 2)));
+        const cam_euler = @mod(data.camera.euler, @as(math.Vec3, @splat(math.pi * 2)));
 
         const cpu_hist_count = @min(this.info.frame_count + 1, cpu_time_hist_size);
         const cpu_hist = this.cpu_time_hist[0..cpu_hist_count];
@@ -790,9 +730,9 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
             median_s * std.time.ms_per_s,
             low_fps,
             low_s * std.time.ms_per_s,
-            this.camera.pos[0],
-            this.camera.pos[1],
-            this.camera.pos[2],
+            data.camera.pos[0],
+            data.camera.pos[1],
+            data.camera.pos[2],
             math.deg(cam_euler[2]),
             math.deg(cam_euler[1]),
             cpu_time_sorted[cpu_hist_count / 2] / 1000,
@@ -876,7 +816,7 @@ pub fn render(this: *@This(), input: Input, alloc: std.mem.Allocator) !void {
     }
 }
 
-fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constants: PerFramePushConstants, aspect_ratio: f32) void {
+fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constants: PerFramePushConstants, aspect_ratio: f32, camera: Camera) void {
     render_pass.cmdBindPipeline(this.chunk_pipeline);
     render_pass.cmdBindResourceSets(this.chunk_pipeline, &.{this.chunk_resource_set}, 0);
     render_pass.cmdBindVertexBuffer(0, this.chunk_mesh_alloc.buffer.region());
@@ -887,8 +827,8 @@ fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constant
     }, @ptrCast(&push_constants));
 
     // frustum culling stuff
-    const frustum_planes = frustumPlanes(this.camera, aspect_ratio);
-    const q = math.quatFromEuler(this.camera.euler);
+    const frustum_planes = frustumPlanes(camera, aspect_ratio);
+    const q = math.quatFromEuler(camera.euler);
     const forward = math.quatMulVec(q, math.dir_forward);
     const right = math.quatMulVec(q, math.dir_right);
     const up = math.quatMulVec(q, math.dir_up);
@@ -904,7 +844,7 @@ fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constant
         const e_ws = chunk_size_f / math.splat3(f32, 2);
         // center
         const c_ws = pos + e_ws;
-        const c_vs = pointToViewSpace(c_ws, this.camera.pos, forward, right, up);
+        const c_vs = pointToViewSpace(c_ws, camera.pos, forward, right, up);
         const e_vs = pointToViewSpace(e_ws, @splat(0), af, ar, au);
         const min = c_vs - e_vs;
         const max = c_vs + e_vs;
@@ -1116,33 +1056,6 @@ const ChunkPushConstants = struct {
 
 const PerFramePushConstants = struct {
     vp: [16]f32,
-};
-
-const Camera = struct {
-    pos: math.Vec3 = .{ 0, 0, 210 },
-    euler: math.Vec3 = .{ 0, 0, 0 },
-    v_fov: f32 = math.rad(90.0),
-    near: f32 = 0.1,
-    far: f32 = 10_000,
-
-    fn view(this: Camera) math.Mat4 {
-        return math.matMulMany(math.Mat4, .{
-            math.rotateEuler(this.euler),
-            math.translate(-this.pos),
-        });
-    }
-
-    fn proj(this: Camera, aspect_ratio: f32) math.Mat4 {
-        return math.matMul(
-            math.Mat4,
-            math.perspective(aspect_ratio, this.v_fov, this.near, this.far),
-            math.to_vulkan,
-        );
-    }
-
-    fn vp(this: Camera, aspect_ratio: f32) math.Mat4 {
-        return math.matMul(math.Mat4, this.proj(aspect_ratio), this.view());
-    }
 };
 
 pub const Info = struct {

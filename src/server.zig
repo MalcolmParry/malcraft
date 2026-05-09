@@ -31,8 +31,7 @@ pub fn main() !void {
 
         switch (anyevent) {
             .connect => |data| {
-                const address: znet.Address = .{ .inner = data.peer.ptr.address };
-                std.log.info("connection from {x} on {}", .{ address.inner.host, address.inner.port });
+                std.log.info("connection from {f}", .{data.peer.address()});
 
                 const message: net.server_message.Init = .{
                     .player_id = next_player_id,
@@ -47,7 +46,7 @@ pub fn main() !void {
                 try data.peer.send(packet);
             },
             .disconnect => |data| {
-                _ = data;
+                std.log.info("disconnected {f}", .{data.peer.address()});
             },
             .receive => |data| {
                 defer data.packet.deinit();

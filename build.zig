@@ -16,6 +16,11 @@ pub fn build(b: *Build) !void {
         .optimize = optimize,
     });
 
+    const znet = b.dependency("znet", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const game = b.addExecutable(.{
         .name = "malcraft",
         .root_module = b.createModule(.{
@@ -31,6 +36,10 @@ pub fn build(b: *Build) !void {
                     .name = "zigimg",
                     .module = zigimg.module("zigimg"),
                 },
+                .{
+                    .name = "znet",
+                    .module = znet.module("znet"),
+                },
             },
         }),
     });
@@ -41,13 +50,6 @@ pub fn build(b: *Build) !void {
     });
     game.root_module.addImport("znoise", znoise.module("root"));
     game.linkLibrary(znoise.artifact("FastNoiseLite"));
-
-    const znet = b.dependency("znet", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    game.root_module.addImport("znet", znet.module("znet"));
-    game.root_module.linkLibrary(znet.artifact("znet"));
 
     const default_render_radius: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 64 else 3;
     const default_vrender_radius: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 16 else 1;
@@ -77,12 +79,13 @@ pub fn build(b: *Build) !void {
                     .name = "mwengine",
                     .module = mwengine.module("mwengine"),
                 },
+                .{
+                    .name = "znet",
+                    .module = znet.module("znet"),
+                },
             },
         }),
     });
-
-    server.root_module.addImport("znet", znet.module("znet"));
-    server.root_module.linkLibrary(znet.artifact("znet"));
 
     const build_server = b.option(bool, "server", "build the server instead of the client") orelse false;
     const exe = if (build_server) server else game;

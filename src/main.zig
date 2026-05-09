@@ -7,39 +7,11 @@ pub fn main() !void {
     defer _ = alloc_obj.deinit();
     const alloc = alloc_obj.allocator();
 
-    var should_close: bool = false;
     var app: App = undefined;
     try app.init(alloc);
     defer app.deinit(alloc);
 
-    const renderer = &app.renderer;
-    while (!(should_close or renderer.window.shouldClose())) {
-        renderer.window.update();
-        var renderer_input: Renderer.Input = .{};
-        while (renderer.event_queue.pending()) {
-            switch (renderer.event_queue.pop()) {
-                .resize => |_| renderer.dirty_swapchain = true,
-                .key_down => |key| {
-                    switch (key) {
-                        .escape => should_close = true,
-                        .f => renderer_input.wireframe = true,
-                        .o => renderer_input.cam_reset = true,
-                        .left_alt => renderer_input.mouse_lock_toggle = true,
-                        else => {},
-                    }
-                },
-                .mouse_down => |button| {
-                    switch (button) {
-                        .left => renderer_input.break_block = true,
-                        .right => renderer_input.place_block = true,
-                        else => {},
-                    }
-                },
-                else => {},
-            }
-        }
-
+    while (!app.should_close) {
         try app.tick(alloc);
-        try renderer.render(renderer_input, alloc);
     }
 }
