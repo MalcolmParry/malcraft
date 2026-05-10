@@ -11,8 +11,7 @@ host: znet.Host,
 server: znet.Peer,
 
 should_close: bool = false,
-event_queue: mw.EventQueue,
-window: mw.Window,
+window: *mw.Window,
 renderer: Renderer,
 
 frame_timer: std.time.Timer,
@@ -42,30 +41,24 @@ pub fn init(app: *App, alloc: std.mem.Allocator) !void {
         .data = 0,
     });
 
-    var event_queue: mw.EventQueue = try .init(alloc);
-    errdefer event_queue.deinit();
+    const window: *mw.Window = try .init(alloc, "malcraft", .{ 100, 100 });
+    errdefer window.deinit();
+    try window.setCursorMode(.disabled);
 
     app.* = .{
         .host = host,
         .server = peer,
 
-        .event_queue = event_queue,
-        .window = undefined,
+        .window = window,
         .renderer = undefined,
 
         .frame_timer = try .start(),
-        .last_cursor = undefined,
+        .last_cursor = window.getCursorPos(),
     };
-
-    app.window = try .init(alloc, "malcraft", .{ 100, 100 }, &app.event_queue);
-    errdefer app.window.deinit();
-
-    try app.window.setCursorMode(.disabled);
-    app.last_cursor = app.window.getCursorPos();
 
     try app.renderer.init(.{
         .alloc = alloc,
-        .window = &app.window,
+        .window = app.window,
     });
     errdefer app.renderer.deinit(alloc);
 }
@@ -73,7 +66,6 @@ pub fn init(app: *App, alloc: std.mem.Allocator) !void {
 pub fn deinit(app: *App, alloc: std.mem.Allocator) void {
     app.renderer.deinit(alloc);
     app.window.deinit();
-    app.event_queue.deinit();
 
     app.server.disconnect(0);
     app.host.flush();
@@ -107,32 +99,30 @@ fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData
     _ = alloc;
 
     var renderer_input: Renderer.FrameData.Input = .{};
-    while (app.event_queue.pending()) {
-        switch (app.event_queue.pop()) {
-            .resize => |_| app.renderer.dirty_swapchain = true,
-            .key_down => |key| {
-                switch (key) {
-                    .escape => app.should_close = true,
-                    .f => renderer_input.wireframe = true,
-                    .o => app.camera = .default,
-                    .left_alt => {
-                        app.mouse_lock = !app.mouse_lock;
-                        try app.window.setCursorMode(if (app.mouse_lock) .disabled else .normal);
-                        app.last_cursor = app.window.getCursorPos();
-                    },
-                    else => {},
-                }
-            },
-            .mouse_down => |button| {
-                switch (button) {
-                    .left => renderer_input.break_block = true,
-                    .right => renderer_input.place_block = true,
-                    else => {},
-                }
-            },
-            else => {},
-        }
-    }
+    while (app.window.popEvent()) |event| switch (event) {
+        .resize => |_| app.renderer.dirty_swapchain = true,
+        .key_down => |key| {
+            switch (key) {
+                .escape => app.should_close = true,
+                .f => renderer_input.wireframe = true,
+                .o => app.camera = .default,
+                .left_alt => {
+                    app.mouse_lock = !app.mouse_lock;
+                    try app.window.setCursorMode(if (app.mouse_lock) .disabled else .normal);
+                    app.last_cursor = app.window.getCursorPos();
+                },
+                else => {},
+            }
+        },
+        .mouse_down => |button| {
+            switch (button) {
+                .left => renderer_input.break_block = true,
+                .right => renderer_input.place_block = true,
+                else => {},
+            }
+        },
+        else => {},
+    };
 
     if (app.window.isMouseDown(.five)) renderer_input.break_block = true;
 
