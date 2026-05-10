@@ -10,16 +10,13 @@ const Chunk = @import("Chunk.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
 const ChunkMeshAllocator = @import("ChunkMeshAllocator.zig");
 const ShaderManager = @import("ShaderManager.zig");
-
+const UIRenderer = @import("UIRenderer.zig");
 const Renderer = @This();
-const dt_hist_size = 256;
-const cpu_time_hist_size = 256;
 
 info: Info,
 stage_man: gpu.StagingManager,
 upload_man: gpu.UploadManager,
 shader_man: ShaderManager,
-immediate: mw.ImmediateRenderer,
 destruct_queue: std.ArrayList(gpu.AnyObject),
 instance: gpu.Instance,
 device: gpu.Device,
@@ -31,6 +28,7 @@ per_frame_in_flight: []PerFrameInFlight,
 dirty_swapchain: bool,
 wireframe: bool,
 
+ui: UIRenderer,
 chunk_mesh_alloc: ChunkMeshAllocator,
 chunk_resource_layout: gpu.ResourceSet.Layout,
 chunk_resource_set: gpu.ResourceSet,
@@ -39,14 +37,6 @@ chunk_pipeline: gpu.GraphicsPipeline,
 texture_image: gpu.Image,
 texture_view: gpu.Image.View,
 texture_sampler: gpu.Sampler,
-
-font_face: mw.text.Face,
-glyph_cache: mw.text.GlyphCache,
-
-dt_hist: [dt_hist_size]u64,
-dt_hist_scratch: [dt_hist_size]u64,
-cpu_time_hist: [cpu_time_hist_size]u64,
-cpu_time_hist_scratch: [cpu_time_hist_size]u64,
 
 pub const FrameData = struct {
     pub const Input = struct {
@@ -145,54 +135,16 @@ pub fn init(this: *@This(), info: InitInfo) !void {
     errdefer this.chunk_pipeline.deinit(this.device, alloc);
 
     this.dirty_swapchain = false;
-    @memset(&this.dt_hist, 0);
-    @memset(&this.cpu_time_hist, 0);
 
-    this.immediate = try .init(.{
+    try this.ui.init(.{
         .alloc = alloc,
         .device = this.device,
-        .frames_in_flight = this.info.frames_in_flight,
-        .streaming_buffer_size_pf = 128 * 1024,
+        .stage_man = &this.stage_man,
+        .shader_man = &this.shader_man,
         .color_format = this.display.imageFormat(),
-        .box_info = .{
-            .shaders = &.{
-                this.shader_man.getShader(.immediate_box_vertex),
-                this.shader_man.getShader(.immediate_box_pixel),
-            },
-        },
-        .image_info = .{
-            .shaders = &.{
-                this.shader_man.getShader(.immediate_image_vertex),
-                this.shader_man.getShader(.immediate_image_pixel),
-            },
-        },
-        .text_info = .{
-            .glyph_cache = &this.glyph_cache,
-            .shaders = &.{
-                this.shader_man.getShader(.immediate_text_vertex),
-                this.shader_man.getShader(.immediate_text_pixel),
-            },
-        },
+        .frames_in_flight = this.info.frames_in_flight,
     });
-    errdefer this.immediate.deinit(this.device);
-
-    {
-        // const file = "res/fonts/Roboto_Condensed-Regular.ttf";
-        // const file = "res/fonts/NFPixels-Regular.ttf";
-        const file = "res/fonts/press-start-2p/PressStart2P-vaV7.ttf";
-        var face: mw.text.Face = try .init(file);
-        errdefer face.deinit();
-
-        var cache: mw.text.GlyphCache = .{
-            .alloc = alloc,
-            .stage_man = &this.stage_man,
-            .atlas_size = @splat(512),
-        };
-        errdefer cache.deinit(this.device);
-
-        this.font_face = face;
-        this.glyph_cache = cache;
-    }
+    errdefer this.ui.deinit(this.device);
 
     {
         const image_paths: [2][]const u8 = .{
@@ -394,20 +346,17 @@ pub fn init(this: *@This(), info: InitInfo) !void {
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.device.waitUntilIdle() catch @panic("failed to wait for device in deinit");
 
-    this.glyph_cache.deinit(this.device);
-    this.font_face.deinit();
-
     this.texture_sampler.deinit(this.device, alloc);
     this.texture_view.deinit(this.device, alloc);
     this.texture_image.deinit(this.device, alloc);
     this.chunk_mesh_alloc.deinit();
 
+    this.ui.deinit(this.device);
     this.deinitFramesInFlight(alloc);
     this.chunk_pipeline.deinit(this.device, alloc);
     gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
     this.destruct_queue.deinit(alloc);
     alloc.free(this.images_initialized);
-    this.immediate.deinit(this.device);
     this.shader_man.deinit(this.device, alloc);
     this.upload_man.deinit();
     this.stage_man.deinit(this.device, alloc);
@@ -426,13 +375,6 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
     const frame_slot = (this.info.frame_count + 1) % this.info.frames_in_flight;
     const per_frame = &this.per_frame_in_flight[frame_slot];
     this.info.frame_count += 1;
-
-    var cpu_work_timer: std.time.Timer = try .start();
-    defer {
-        const ns = cpu_work_timer.read();
-        const slot = this.info.frame_count % cpu_time_hist_size;
-        this.cpu_time_hist[slot] = ns;
-    }
 
     gpu.AnyObject.deinitAllReversed(per_frame.trash.items, this.device, alloc);
     per_frame.trash.clearRetainingCapacity();
@@ -523,150 +465,20 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
 
     render_pass.cmdEnd();
 
-    try this.immediate.begin(@as(@Vector(2, u16), @intCast(data.viewport)));
-
-    // crosshair
-    if (data.show_crosshair) {
-        const scale = viewport_f[1] * 0.00035;
-        const length_f = @max(11, scale * 100);
-        const width_f = @max(3, scale * 7);
-        const outline_f = @max(1, scale * 2);
-
-        const outline_color: [4]u8 = .{ 150, 150, 150, 255 };
-        const color: [4]u8 = .{ 0, 0, 0, 255 };
-
-        const length = @as(i16, @intFromFloat(length_f)) | 1;
-        const width = @as(i16, @intFromFloat(width_f)) | 1;
-        const outline: i16 = @intFromFloat(outline_f);
-        const outline_2 = outline * 2;
-
-        try this.immediate.drawRect(.{
-            .transform = .{
-                .pos = .{ .norm = @splat(0.5) },
-                .size = .{
-                    .offset = .{ length + outline_2, width + outline_2 },
-                },
-                .pivot = @splat(0.5),
-            },
-            .color = outline_color,
-        });
-        try this.immediate.drawRect(.{
-            .transform = .{
-                .pos = .{ .norm = @splat(0.5) },
-                .size = .{
-                    .offset = .{ width + outline_2, length + outline_2 },
-                },
-                .pivot = @splat(0.5),
-            },
-            .color = outline_color,
-        });
-
-        try this.immediate.drawRect(.{
-            .transform = .{
-                .pos = .{ .norm = @splat(0.5) },
-                .size = .{
-                    .offset = .{ length, width },
-                },
-                .pivot = @splat(0.5),
-            },
-            .color = color,
-        });
-        try this.immediate.drawRect(.{
-            .transform = .{
-                .pos = .{ .norm = @splat(0.5) },
-                .size = .{
-                    .offset = .{ width, length },
-                },
-                .pivot = @splat(0.5),
-            },
-            .color = color,
-        });
-    }
-
-    {
-        const hist_slot = this.info.frame_count % dt_hist_size;
-        this.dt_hist[hist_slot] = data.dt_ns;
-
-        const dt_hist_count = @min(this.info.frame_count + 1, dt_hist_size);
-        const dt_hist_sorted = this.dt_hist_scratch[0..dt_hist_count];
-        @memcpy(dt_hist_sorted, this.dt_hist[0..dt_hist_count]);
-
-        std.mem.sort(u64, dt_hist_sorted, {}, struct {
-            fn less(_: void, left: u64, right: u64) bool {
-                return left < right;
-            }
-        }.less);
-
-        const median = dt_hist_sorted[dt_hist_count / 2];
-        const median_s = math.i2f(f32, median) / std.time.ns_per_s;
-        const median_fps = 1 / median_s;
-
-        const low = dt_hist_sorted[dt_hist_count / 10 * 9];
-        const low_s = math.i2f(f32, low) / std.time.ns_per_s;
-        const low_fps = 1 / low_s;
-
-        const cam_euler = @mod(data.camera.euler, @as(math.Vec3, @splat(math.pi * 2)));
-
-        const cpu_hist_count = @min(this.info.frame_count + 1, cpu_time_hist_size);
-        const cpu_hist_sorted = this.cpu_time_hist_scratch[0..cpu_hist_count];
-        @memcpy(cpu_hist_sorted, this.cpu_time_hist[0..cpu_hist_count]);
-
-        std.mem.sort(u64, cpu_hist_sorted, {}, struct {
-            fn less(_: void, left: u64, right: u64) bool {
-                return left < right;
-            }
-        }.less);
-
-        const text = try std.fmt.allocPrint(alloc,
-            \\FPS: {d: >4.0}, {d: >5.2}ms
-            \\Low: {d: >4.0}, {d: >5.2}ms  (10% Low)
-            \\
-            \\X:   {d: >8.2}
-            \\Y:   {d: >8.2}
-            \\Z:   {d: >8.2}
-            \\
-            \\Yaw:   {d: >6.2}
-            \\Pitch: {d: >6.2}
-            \\
-            \\CPU Time: {d: >5}μs
-            \\90% High: {d: >5}μs
-            \\Mesh Buffer: {} / {}kb
-            \\Meshed Chunks: {}
-        , .{
-            median_fps,
-            median_s * std.time.ms_per_s,
-            low_fps,
-            low_s * std.time.ms_per_s,
-            data.camera.pos[0],
-            data.camera.pos[1],
-            data.camera.pos[2],
-            math.deg(cam_euler[2]),
-            math.deg(cam_euler[1]),
-            cpu_hist_sorted[cpu_hist_count / 2] / 1000,
-            cpu_hist_sorted[cpu_hist_count / 10 * 9] / 1000,
-            (ChunkMeshAllocator.buffer_size - this.chunk_mesh_alloc.queryBytesFree()) / 1024,
-            ChunkMeshAllocator.buffer_size / 1024,
-            this.chunk_mesh_alloc.loaded_meshes.count(),
-        });
-        defer alloc.free(text);
-
-        try this.immediate.drawText(.{
-            .font_face = &this.font_face,
-            .height_px = 24,
-            .height_in_atlas_px = 24,
-            .text = text,
-            .pos = .{
-                .norm = .{ 0, 1 },
-                .offset = .{ 8, -8 },
-            },
-            .color = .{ 0, 0, 0, 255 },
-            .outline_width = 1,
-            .outline_color = @splat(255),
-        });
-    }
-
-    try this.glyph_cache.upload(this.device, per_frame.cmd_encoder);
-    try this.immediate.render(this.device, per_frame.cmd_encoder, acquired_image.imageView(this.display));
+    try this.ui.render(.{
+        .alloc = alloc,
+        .device = this.device,
+        .image_view = acquired_image.imageView(this.display),
+        .cmd_encoder = per_frame.cmd_encoder,
+        .viewport = data.viewport,
+        .frame_count = this.info.frame_count,
+        .dt_ns = data.dt_ns,
+        .show_crosshair = data.show_crosshair,
+        .camera = data.camera,
+        .chunk_mesh_buffer_bytes_used = (ChunkMeshAllocator.buffer_size - this.chunk_mesh_alloc.queryBytesFree()) / 1024,
+        .chunk_mesh_buffer_bytes_total = ChunkMeshAllocator.buffer_size / 1024,
+        .loaded_mesh_count = this.chunk_mesh_alloc.loaded_meshes.count(),
+    });
 
     per_frame.cmd_encoder.cmdMemoryBarrier(.{
         .image_barriers = &.{.{
