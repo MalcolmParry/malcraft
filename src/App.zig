@@ -45,21 +45,23 @@ pub fn init(app: *App, alloc: std.mem.Allocator) !void {
     var event_queue: mw.EventQueue = try .init(alloc);
     errdefer event_queue.deinit();
 
-    var window: mw.Window = try .init(alloc, "malcraft", .{ 100, 100 }, &app.event_queue);
-    errdefer window.deinit();
-    try window.setCursorMode(.disabled);
-
     app.* = .{
         .host = host,
         .server = peer,
 
         .event_queue = event_queue,
-        .window = window,
+        .window = undefined,
         .renderer = undefined,
 
         .frame_timer = try .start(),
-        .last_cursor = window.getCursorPos(),
+        .last_cursor = undefined,
     };
+
+    app.window = try .init(alloc, "malcraft", .{ 100, 100 }, &app.event_queue);
+    errdefer app.window.deinit();
+
+    try app.window.setCursorMode(.disabled);
+    app.last_cursor = app.window.getCursorPos();
 
     try app.renderer.init(.{
         .alloc = alloc,
@@ -132,7 +134,7 @@ fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData
         }
     }
 
-    if (app.window.isKeyDown(.five)) renderer_input.break_block = true;
+    if (app.window.isMouseDown(.five)) renderer_input.break_block = true;
 
     {
         var move_vector: math.Vec3 = @splat(0);

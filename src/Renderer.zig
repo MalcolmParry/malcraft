@@ -711,7 +711,7 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
 
         const text = try std.fmt.allocPrint(alloc,
             \\FPS: {d: >4.0}, {d: >5.2}ms
-            \\Low: {d: >4.0}, {d: >5.2}ms
+            \\Low: {d: >4.0}, {d: >5.2}ms  (10% Low)
             \\
             \\X:   {d: >8.2}
             \\Y:   {d: >8.2}
@@ -721,6 +721,7 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
             \\Pitch: {d: >6.2}
             \\
             \\CPU Time: {d: >5}μs
+            \\90% High: {d: >5}μs
             \\Mesh Buffer: {} / {}kb
             \\Meshed Chunks: {}
             \\Quad Count: {}
@@ -735,6 +736,7 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
             math.deg(cam_euler[2]),
             math.deg(cam_euler[1]),
             cpu_hist_sorted[cpu_hist_count / 2] / 1000,
+            cpu_hist_sorted[cpu_hist_count / 10 * 9] / 1000,
             (ChunkMeshAllocator.buffer_size - this.chunk_mesh_alloc.queryBytesFree()) / 1024,
             ChunkMeshAllocator.buffer_size / 1024,
             this.chunk_mesh_alloc.loaded_meshes.count(),

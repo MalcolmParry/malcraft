@@ -13,6 +13,7 @@ const i32x2 = @Vector(2, i32);
 height_map: std.AutoHashMapUnmanaged(i32x2, *HeightMap),
 queue: Deque(Chunk.Pos),
 alloc: std.mem.Allocator,
+total_time: u64 = 0,
 
 const HeightMap = struct {
     const Map = [Chunk.len][Chunk.len]i16;
@@ -35,6 +36,7 @@ pub fn deinit(gen: *WorldGenerator) void {
     while (iter.next()) |kv| gen.alloc.destroy(kv.value_ptr.*);
     gen.height_map.deinit(gen.alloc);
     gen.queue.deinit(gen.alloc);
+    std.log.info("world gen time: {}μs", .{gen.total_time / std.time.ns_per_us});
 }
 
 const target_gen_time_ns = 8_000_000;
@@ -64,6 +66,8 @@ pub fn genMany(
         try mesher.addRequest(pos + @as(Chunk.Pos, .{ 0, 0, 1 }));
         try mesher.addRequest(pos + @as(Chunk.Pos, .{ 0, 0, -1 }));
     }
+
+    gen.total_time += timer.read();
 }
 
 pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
@@ -74,18 +78,27 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
     const pos = chunk_pos * Chunk.size;
     const one_to_one = try gen.alloc.create(Chunk.OneToOne);
 
-    var iter: Chunk.Iterator = .{};
-    while (iter.next()) |chunk_rel| {
-        const block_pos = pos + @as(block.Pos, @intCast(chunk_rel));
-        const grass_height = map.map[chunk_rel[1]][chunk_rel[0]];
+    for (0..Chunk.len) |ux| {
+        for (0..Chunk.len) |uy| {
+            const col = &one_to_one.blocks[ux][uy];
+            const h = map.map[uy][ux];
+            const hr: i32 = h - pos[2];
 
-        const kind: block.Kind = switch (std.math.order(block_pos[2], grass_height)) {
-            .gt => .air,
-            .eq => .grass,
-            .lt => .stone,
-        };
+            if (hr <= 0) {
+                @memset(col, .air);
 
-        one_to_one.setBlock(chunk_rel, kind);
+                if (hr == 0)
+                    col[0] = .grass;
+            } else if (hr >= Chunk.len) {
+                @memset(col, .stone);
+            } else {
+                const hru: usize = @intCast(hr);
+
+                @memset(col[0..hru], .stone);
+                col[hru] = .grass;
+                @memset(col[hru + 1 ..], .air);
+            }
+        }
     }
 
     return .{ .data = .{ .one_to_one = one_to_one } };

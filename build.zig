@@ -52,7 +52,7 @@ pub fn build(b: *Build) !void {
     game.linkLibrary(znoise.artifact("FastNoiseLite"));
 
     const default_render_radius: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 64 else 3;
-    const default_vrender_radius: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 16 else 1;
+    const default_vrender_radius: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 16 else 8;
 
     const options = b.addOptions();
     options.addOption(bool, "gpu_validation", b.option(bool, "gpu-validation", "") orelse (optimize != .ReleaseFast));

@@ -16,7 +16,7 @@ pub const OneToOne = struct {
 
     pub inline fn setBlock(one_to_one: *OneToOne, pos: RelPos, new: block.Kind) void {
         const x, const y, const z = pos;
-        one_to_one.blocks[z][y][x] = new;
+        one_to_one.blocks[x][y][z] = new;
     }
 };
 
@@ -36,7 +36,7 @@ pub fn deinit(chunk: *Chunk, alloc: std.mem.Allocator) void {
 pub inline fn getBlock(chunk: *const Chunk, pos: RelPos) block.Kind {
     return switch (chunk.data) {
         .single => |single| single,
-        .one_to_one => |one_to_one| one_to_one.blocks[pos[2]][pos[1]][pos[0]],
+        .one_to_one => |one_to_one| one_to_one.blocks[pos[0]][pos[1]][pos[2]],
     };
 }
 
@@ -50,7 +50,7 @@ pub fn setBlock(chunk: *Chunk, alloc: std.mem.Allocator, pos: RelPos, new: block
             @memset(flat, old);
 
             const x, const y, const z = pos;
-            one_to_one.blocks[z][y][x] = new;
+            one_to_one.blocks[x][y][z] = new;
 
             chunk.* = .{ .data = .{
                 .one_to_one = one_to_one,
