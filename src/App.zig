@@ -5,6 +5,11 @@ const znet = @import("znet");
 const net = @import("net.zig");
 const Renderer = @import("Renderer.zig");
 const Camera = @import("Camera.zig");
+const block = @import("block.zig");
+const Chunk = @import("Chunk.zig");
+const World = @import("World.zig");
+const WorldGenerator = @import("WorldGenerator.zig");
+const ChunkMesher = @import("ChunkMesher.zig");
 const App = @This();
 
 host: znet.Host,
@@ -18,6 +23,10 @@ frame_timer: std.time.Timer,
 camera: Camera = .default,
 mouse_lock: bool = true,
 last_cursor: math.Vec2,
+
+world: World,
+world_gen: WorldGenerator,
+chunk_mesher: ChunkMesher,
 
 pub fn init(app: *App, alloc: std.mem.Allocator) !void {
     try znet.init();
@@ -45,6 +54,10 @@ pub fn init(app: *App, alloc: std.mem.Allocator) !void {
     errdefer window.deinit();
     try window.setCursorMode(.disabled);
 
+    var world_gen: WorldGenerator = try .init(alloc);
+    errdefer world_gen.deinit();
+    try world_gen.queueChunks();
+
     app.* = .{
         .host = host,
         .server = peer,
@@ -54,6 +67,10 @@ pub fn init(app: *App, alloc: std.mem.Allocator) !void {
 
         .frame_timer = try .start(),
         .last_cursor = window.getCursorPos(),
+
+        .world = .{},
+        .world_gen = world_gen,
+        .chunk_mesher = undefined,
     };
 
     try app.renderer.init(.{
@@ -61,11 +78,22 @@ pub fn init(app: *App, alloc: std.mem.Allocator) !void {
         .window = app.window,
     });
     errdefer app.renderer.deinit(alloc);
+
+    try app.chunk_mesher.init(.{
+        .alloc = alloc,
+        .world = &app.world,
+        .mesh_alloc = &app.renderer.chunk_mesh_alloc,
+    });
+    errdefer app.chunk_mesher.deinit();
 }
 
 pub fn deinit(app: *App, alloc: std.mem.Allocator) void {
     app.renderer.deinit(alloc);
     app.window.deinit();
+
+    app.chunk_mesher.deinit();
+    app.world_gen.deinit();
+    app.world.deinit(alloc);
 
     app.server.disconnect(0);
     app.host.flush();
@@ -76,6 +104,9 @@ pub fn deinit(app: *App, alloc: std.mem.Allocator) void {
 pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
     const dt_ns = app.frame_timer.lap();
     const dt = @as(f32, @floatFromInt(dt_ns)) / std.time.ns_per_s;
+
+    try app.world_gen.genMany(alloc, &app.world, &app.chunk_mesher);
+    try app.chunk_mesher.meshMany();
 
     app.window.update();
     if (app.window.shouldClose()) app.should_close = true;
@@ -96,8 +127,7 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
 }
 
 fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData.Input {
-    _ = alloc;
-
+    var break_block: bool = false;
     var renderer_input: Renderer.FrameData.Input = .{};
     while (app.window.popEvent()) |event| switch (event) {
         .resize => |_| app.renderer.dirty_swapchain = true,
@@ -116,15 +146,46 @@ fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData
         },
         .mouse_down => |button| {
             switch (button) {
-                .left => renderer_input.break_block = true,
-                .right => renderer_input.place_block = true,
+                .left => break_block = true,
+                .right => blk: {
+                    const origin = app.camera.pos;
+                    const q = math.quatFromEuler(app.camera.euler);
+                    const dir = math.normalize(math.quatMulVec(q, math.dir_forward));
+
+                    const ray_cast = app.world.rayCast(origin, dir);
+                    const pos: block.Pos = switch (ray_cast) {
+                        .no_hit => break :blk,
+                        .inside => @intFromFloat(@floor(origin)),
+                        .hit => |x| x.pos + x.face.dir(),
+                    };
+
+                    app.world.setBlock(alloc, pos, .stone) catch |err| switch (err) {
+                        error.ChunkNotPresent => break :blk,
+                        else => return err,
+                    };
+                    try app.chunk_mesher.addRequestWithCollateral(pos);
+                },
                 else => {},
             }
         },
         else => {},
     };
 
-    if (app.window.isMouseDown(.five)) renderer_input.break_block = true;
+    if (break_block or app.window.isMouseDown(.five)) blk: {
+        const origin = app.camera.pos;
+        const q = math.quatFromEuler(app.camera.euler);
+        const dir = math.normalize(math.quatMulVec(q, math.dir_forward));
+
+        const ray_cast = app.world.rayCast(origin, dir);
+        const pos: block.Pos = switch (ray_cast) {
+            .no_hit => break :blk,
+            .inside => @intFromFloat(@floor(origin)),
+            .hit => |x| x.pos,
+        };
+
+        try app.world.setBlock(alloc, pos, .air);
+        try app.chunk_mesher.addRequestWithCollateral(pos);
+    }
 
     {
         var move_vector: math.Vec3 = @splat(0);

@@ -49,7 +49,6 @@ threads: []std.Thread,
 queue: std.AutoArrayHashMapUnmanaged(Chunk.Pos, void),
 
 meshing_time_ns: u64,
-face_count: u64,
 
 pub const InitInfo = struct {
     alloc: std.mem.Allocator,
@@ -62,7 +61,6 @@ pub fn init(this: *ChunkMesher, info: InitInfo) !void {
     this.arena = .init(info.alloc);
     this.mesh_alloc = info.mesh_alloc;
     this.meshing_time_ns = 0;
-    this.face_count = 0;
     this.queue = .empty;
 
     const thread_count: u8 = @min(255, @max(1, std.Thread.getCpuCount() catch 1));
@@ -189,8 +187,6 @@ pub fn meshMany(this: *ChunkMesher) !void {
             job.faces,
             job.pos,
         );
-
-        this.face_count += job.faces.len;
     }
 }
 

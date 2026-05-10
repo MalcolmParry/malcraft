@@ -1,4 +1,5 @@
 const std = @import("std");
+const options = @import("options");
 const mw = @import("mwengine");
 const math = mw.math;
 const block = @import("block.zig");
@@ -23,8 +24,8 @@ const HeightMap = struct {
     map: Map,
 };
 
-pub fn init(gen: *WorldGenerator, alloc: std.mem.Allocator) !void {
-    gen.* = .{
+pub fn init(alloc: std.mem.Allocator) !WorldGenerator {
+    return .{
         .height_map = .empty,
         .queue = .empty,
         .alloc = alloc,
@@ -42,9 +43,9 @@ pub fn deinit(gen: *WorldGenerator) void {
 const target_gen_time_ns = 8_000_000;
 pub fn genMany(
     gen: *WorldGenerator,
+    alloc: std.mem.Allocator,
     world: *World,
     mesher: *ChunkMesher,
-    alloc: std.mem.Allocator,
 ) !void {
     var timer: std.time.Timer = try .start();
 
@@ -176,4 +177,34 @@ fn getOrCreateHeightMap(gen: *WorldGenerator, pos: i32x2) !*HeightMap {
 
 fn zeroToOne(x: f32) f32 {
     return (x + 1) / 2;
+}
+
+pub fn queueChunks(gen: *WorldGenerator) !void {
+    const alloc = gen.alloc;
+    const render_radius: i32 = @intCast(options.render_radius);
+    const vertical_render_radius: i32 = @intCast(options.vrender_radius);
+    const chunk_count = (render_radius * 2 + 1) * (render_radius * 2 + 1) * (vertical_render_radius * 2 + 1);
+
+    try gen.queue.ensureUnusedCapacity(alloc, chunk_count);
+
+    var z: i32 = 0;
+    while (z <= vertical_render_radius) : (z += 1) {
+        var y: i32 = -render_radius;
+        while (y <= render_radius) : (y += 1) {
+            var x: i32 = -render_radius;
+            while (x <= render_radius) : (x += 1) {
+                const pos: Chunk.Pos = .{ x, y, z };
+                gen.queue.pushBackAssumeCapacity(pos);
+            }
+        }
+    }
+
+    const queue = gen.queue.buffer[0..gen.queue.len];
+    std.mem.sort(Chunk.Pos, queue, {}, struct {
+        fn lessThanFn(_: void, left: Chunk.Pos, right: Chunk.Pos) bool {
+            const f_left: math.Vec3 = @floatFromInt(left);
+            const f_right: math.Vec3 = @floatFromInt(right);
+            return math.lengthSqr(f_left) < math.lengthSqr(f_right);
+        }
+    }.lessThanFn);
 }

@@ -9,8 +9,6 @@ const block = @import("block.zig");
 const Chunk = @import("Chunk.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
 const ChunkMeshAllocator = @import("ChunkMeshAllocator.zig");
-const WorldGenerator = @import("WorldGenerator.zig");
-const World = @import("World.zig");
 const ShaderManager = @import("ShaderManager.zig");
 
 const Renderer = @This();
@@ -33,10 +31,7 @@ per_frame_in_flight: []PerFrameInFlight,
 dirty_swapchain: bool,
 wireframe: bool,
 
-world: World,
-world_gen: WorldGenerator,
 chunk_mesh_alloc: ChunkMeshAllocator,
-chunk_mesher: ChunkMesher,
 chunk_resource_layout: gpu.ResourceSet.Layout,
 chunk_resource_set: gpu.ResourceSet,
 chunk_pipeline: gpu.GraphicsPipeline,
@@ -56,8 +51,6 @@ cpu_time_hist_scratch: [cpu_time_hist_size]u64,
 pub const FrameData = struct {
     pub const Input = struct {
         wireframe: bool = false,
-        break_block: bool = false,
-        place_block: bool = false,
     };
 
     dt_ns: u64,
@@ -124,12 +117,6 @@ pub fn init(this: *@This(), info: InitInfo) !void {
     try this.initFramesInFlight(alloc);
     errdefer this.deinitFramesInFlight(alloc);
 
-    this.world = .{};
-    errdefer this.world.deinit(alloc);
-
-    try this.world_gen.init(alloc);
-    errdefer this.world_gen.deinit();
-
     try this.chunk_mesh_alloc.init(.{
         .device = this.device,
         .alloc = alloc,
@@ -137,15 +124,6 @@ pub fn init(this: *@This(), info: InitInfo) !void {
         .renderer_info = &this.info,
     });
     errdefer this.chunk_mesh_alloc.deinit();
-
-    try this.chunk_mesher.init(.{
-        .mesh_alloc = &this.chunk_mesh_alloc,
-        .alloc = alloc,
-        .world = &this.world,
-    });
-    errdefer this.chunk_mesher.deinit();
-
-    try this.loadChunks(alloc);
 
     this.chunk_resource_layout = try .init(this.device, .{
         .alloc = alloc,
@@ -422,10 +400,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.texture_sampler.deinit(this.device, alloc);
     this.texture_view.deinit(this.device, alloc);
     this.texture_image.deinit(this.device, alloc);
-    this.chunk_mesher.deinit();
     this.chunk_mesh_alloc.deinit();
-    this.world_gen.deinit();
-    this.world.deinit(alloc);
 
     this.deinitFramesInFlight(alloc);
     this.chunk_pipeline.deinit(this.device, alloc);
@@ -440,35 +415,6 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.display.deinit(alloc);
     this.device.deinit(alloc);
     this.instance.deinit(alloc);
-}
-
-fn loadChunks(this: *@This(), alloc: std.mem.Allocator) !void {
-    const render_radius: i32 = @intCast(options.render_radius);
-    const vertical_render_radius: i32 = @intCast(options.vrender_radius);
-    const chunk_count = (render_radius * 2 + 1) * (render_radius * 2 + 1) * (vertical_render_radius * 2 + 1);
-
-    try this.world_gen.queue.ensureUnusedCapacity(alloc, chunk_count);
-
-    var z: i32 = 0;
-    while (z <= vertical_render_radius) : (z += 1) {
-        var y: i32 = -render_radius;
-        while (y <= render_radius) : (y += 1) {
-            var x: i32 = -render_radius;
-            while (x <= render_radius) : (x += 1) {
-                const pos: Chunk.Pos = .{ x, y, z };
-                this.world_gen.queue.pushBackAssumeCapacity(pos);
-            }
-        }
-    }
-
-    const queue = this.world_gen.queue.buffer[0..this.world_gen.queue.len];
-    std.mem.sort(Chunk.Pos, queue, {}, struct {
-        fn lessThanFn(_: void, left: Chunk.Pos, right: Chunk.Pos) bool {
-            const f_left: math.Vec3 = @floatFromInt(left);
-            const f_right: math.Vec3 = @floatFromInt(right);
-            return math.lengthSqr(f_left) < math.lengthSqr(f_right);
-        }
-    }.lessThanFn);
 }
 
 pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
@@ -507,44 +453,6 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
         this.dirty_swapchain = false;
         return;
     }
-
-    if (input.break_block) blk: {
-        const origin = data.camera.pos;
-        const q = math.quatFromEuler(data.camera.euler);
-        const dir = math.normalize(math.quatMulVec(q, math.dir_forward));
-
-        const ray_cast = this.world.rayCast(origin, dir);
-        const pos: block.Pos = switch (ray_cast) {
-            .no_hit => break :blk,
-            .inside => @intFromFloat(@floor(origin)),
-            .hit => |x| x.pos,
-        };
-
-        try this.world.setBlock(alloc, pos, .air);
-        try this.chunk_mesher.addRequestWithCollateral(pos);
-    }
-
-    if (input.place_block) blk: {
-        const origin = data.camera.pos;
-        const q = math.quatFromEuler(data.camera.euler);
-        const dir = math.normalize(math.quatMulVec(q, math.dir_forward));
-
-        const ray_cast = this.world.rayCast(origin, dir);
-        const pos: block.Pos = switch (ray_cast) {
-            .no_hit => break :blk,
-            .inside => @intFromFloat(@floor(origin)),
-            .hit => |x| x.pos + x.face.dir(),
-        };
-
-        this.world.setBlock(alloc, pos, .stone) catch |err| switch (err) {
-            error.ChunkNotPresent => break :blk,
-            else => return err,
-        };
-        try this.chunk_mesher.addRequestWithCollateral(pos);
-    }
-
-    try this.world_gen.genMany(&this.world, &this.chunk_mesher, alloc);
-    try this.chunk_mesher.meshMany();
 
     if (input.wireframe) {
         try per_frame.trash.append(alloc, .{ .graphics_pipeline = this.chunk_pipeline });
@@ -724,7 +632,6 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
             \\90% High: {d: >5}μs
             \\Mesh Buffer: {} / {}kb
             \\Meshed Chunks: {}
-            \\Quad Count: {}
         , .{
             median_fps,
             median_s * std.time.ms_per_s,
@@ -740,7 +647,6 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
             (ChunkMeshAllocator.buffer_size - this.chunk_mesh_alloc.queryBytesFree()) / 1024,
             ChunkMeshAllocator.buffer_size / 1024,
             this.chunk_mesh_alloc.loaded_meshes.count(),
-            this.chunk_mesher.face_count,
         });
         defer alloc.free(text);
 
