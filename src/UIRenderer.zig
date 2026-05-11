@@ -14,7 +14,6 @@ const Renderer = @import("Renderer.zig");
 const UIRenderer = @This();
 
 const dt_hist_size = 256;
-const cpu_time_hist_size = 256;
 
 immediate: mw.ImmediateRenderer,
 font_face: mw.text.Face,

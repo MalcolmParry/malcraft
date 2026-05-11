@@ -6,6 +6,7 @@ const gpu = mw.gpu;
 const block = @import("block.zig");
 const Chunk = @import("Chunk.zig");
 const ChunkMeshAllocator = @import("ChunkMeshAllocator.zig");
+const TextureManager = @import("TextureManager.zig");
 const World = @import("World.zig");
 
 const ChunkMesher = @This();
@@ -16,7 +17,6 @@ pub const GpuLoaded = struct {
     face_offset: u32,
 };
 
-const TexId = u1;
 pub const GreedyQuad = packed struct(u64) {
     face: block.Face,
     x: u5,
@@ -27,7 +27,7 @@ pub const GreedyQuad = packed struct(u64) {
     /// height - 1 so range is 1-32
     h: u5,
     flip: u1,
-    tex_id: TexId,
+    tex_id: TextureManager.Id,
     unused: u2 = undefined,
     // 32 bit boundary
     ao_corners: AoCorners,
@@ -436,11 +436,7 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) v
 
                     const block_id = refs.this.getBlock(pos);
                     const quad_data: QuadData = .{
-                        .tex_id = switch (block_id) {
-                            .air => 0,
-                            .grass => 0,
-                            .stone => 1,
-                        },
+                        .tex_id = .fromBlockId(block_id),
                         .ao = ao,
                         .flip = shouldFlip(ao),
                     };
@@ -490,7 +486,7 @@ fn shouldFlip(ao: AoCorners) bool {
 const QuadData = struct {
     ao: AoCorners,
     flip: bool,
-    tex_id: TexId,
+    tex_id: TextureManager.Id,
 };
 
 fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, data: QuadData, face: block.Face, z: u5) void {

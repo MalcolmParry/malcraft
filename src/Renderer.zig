@@ -1,6 +1,5 @@
 const std = @import("std");
 const options = @import("options");
-const zigimg = @import("zigimg");
 const mw = @import("mwengine");
 const gpu = mw.gpu;
 const math = mw.math;
@@ -10,6 +9,7 @@ const Chunk = @import("Chunk.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
 const ChunkMeshAllocator = @import("ChunkMeshAllocator.zig");
 const ShaderManager = @import("ShaderManager.zig");
+const TextureManager = @import("TextureManager.zig");
 const UIRenderer = @import("UIRenderer.zig");
 const Renderer = @This();
 
@@ -29,14 +29,11 @@ dirty_swapchain: bool,
 wireframe: bool,
 
 ui: UIRenderer,
+texture_man: TextureManager,
 chunk_mesh_alloc: ChunkMeshAllocator,
 chunk_resource_layout: gpu.ResourceSet.Layout,
 chunk_resource_set: gpu.ResourceSet,
 chunk_pipeline: gpu.GraphicsPipeline,
-
-texture_image: gpu.Image,
-texture_view: gpu.Image.View,
-texture_sampler: gpu.Sampler,
 
 pub const FrameData = struct {
     pub const Input = struct {
@@ -146,198 +143,16 @@ pub fn init(this: *@This(), info: InitInfo) !void {
     });
     errdefer this.ui.deinit(this.device);
 
-    {
-        const image_paths: [2][]const u8 = .{
-            "res/textures/grass.png",
-            "res/textures/stone.png",
-        };
-        const Pixel = [4]u8;
-
-        const mip_levels = 5;
-        const size: gpu.Image.Size2D = .{ 16, 16 };
-        const pixel_count = @reduce(.Mul, size);
-        const layer_size = pixel_count * @sizeOf(Pixel);
-
-        this.texture_image = try .init(this.device, .{
-            .alloc = alloc,
-            .format = .rgba8_srgb,
-            .usage = .{
-                .src = true,
-                .dst = true,
-                .sampled = true,
-            },
-            .loc = .device,
-            .layer_count = image_paths.len,
-            .mip_count = mip_levels,
-            .size = size,
-        });
-        errdefer this.texture_image.deinit(this.device, alloc);
-
-        this.texture_sampler = try .init(this.device, .{
-            .alloc = alloc,
-            .min_filter = .nearest,
-            .mag_filter = .nearest,
-            .address_mode_u = .repeat,
-            .address_mode_v = .repeat,
-            .address_mode_w = .repeat,
-        });
-        errdefer this.texture_sampler.deinit(this.device, alloc);
-
-        this.texture_view = try .init(this.device, .{
-            .alloc = alloc,
-            .kind = .array_2d,
-            .image = this.texture_image,
-            .subresource_range = .{
-                .aspect = .{ .color = true },
-            },
-        });
-        errdefer this.texture_view.deinit(this.device, alloc);
-
-        const staging = try this.stage_man.allocateBytesAligned(layer_size * image_paths.len, .@"4");
-        defer this.stage_man.reset();
-
-        for (image_paths, 0..) |image_path, i| {
-            var read_buffer: [zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
-            var image = try zigimg.Image.fromFilePath(alloc, image_path, &read_buffer);
-            defer image.deinit(alloc);
-            var cropped = try image.crop(alloc, .{ .width = size[0], .height = size[1] });
-            try cropped.convert(alloc, .rgba32);
-            defer cropped.deinit(alloc);
-            @memcpy(staging.slice[layer_size * i .. layer_size * (i + 1)], cropped.rawBytes());
-        }
-
-        const cmd_encoder = try this.device.initCommandEncoder();
-        defer cmd_encoder.deinit(this.device);
-
-        try cmd_encoder.begin();
-
-        cmd_encoder.cmdMemoryBarrier(.{
-            .image_barriers = &.{.{
-                .image = this.texture_image,
-                .subresource_range = .{
-                    .aspect = .{ .color = true },
-                },
-                .old_layout = .undefined,
-                .new_layout = .transfer_dst,
-                .src_stage = .{ .pipeline_start = true },
-                .dst_stage = .{ .transfer = true },
-                .src_access = .{},
-                .dst_access = .{ .transfer_write = true },
-            }},
-        });
-
-        cmd_encoder.cmdCopyBufferToImage(.{
-            .region = .{
-                .size = .{ size[0], size[1], 1 },
-            },
-            .src = staging.region,
-            .dst = this.texture_image,
-            .layout = .transfer_dst,
-            .subresource = .{
-                .aspect = .{ .color = true },
-                .layer_count = image_paths.len,
-            },
-        });
-
-        var mip_size: gpu.Image.Size2D = size;
-        for (1..mip_levels) |level| {
-            const old_mip_size = mip_size;
-            if (mip_size[0] > 1) mip_size[0] /= 2;
-            if (mip_size[1] > 1) mip_size[1] /= 2;
-
-            cmd_encoder.cmdMemoryBarrier(.{
-                .image_barriers = &.{.{
-                    .image = this.texture_image,
-                    .subresource_range = .{
-                        .aspect = .{ .color = true },
-                        .mip_offset = @intCast(level - 1),
-                        .mip_count = 1,
-                    },
-                    .old_layout = .transfer_dst,
-                    .new_layout = .transfer_src,
-                    .src_stage = .{ .transfer = true },
-                    .dst_stage = .{ .transfer = true },
-                    .src_access = .{ .transfer_write = true },
-                    .dst_access = .{ .transfer_read = true },
-                }},
-            });
-
-            cmd_encoder.cmdCopyImageWithScaling(.{
-                .filter = .linear,
-                .src = this.texture_image,
-                .src_layout = .transfer_src,
-                .src_subresource = .{
-                    .aspect = .{ .color = true },
-                    .mip_level = @intCast(level - 1),
-                    .layer_count = image_paths.len,
-                },
-                .src_rect = .{ .size = old_mip_size },
-                .dst = this.texture_image,
-                .dst_layout = .transfer_dst,
-                .dst_subresource = .{
-                    .aspect = .{ .color = true },
-                    .mip_level = @intCast(level),
-                    .layer_count = image_paths.len,
-                },
-                .dst_rect = .{ .size = mip_size },
-            });
-
-            cmd_encoder.cmdMemoryBarrier(.{
-                .image_barriers = &.{.{
-                    .image = this.texture_image,
-                    .subresource_range = .{
-                        .aspect = .{ .color = true },
-                        .mip_offset = @intCast(level - 1),
-                        .mip_count = 1,
-                    },
-                    .old_layout = .transfer_src,
-                    .new_layout = .shader_read_only,
-                    .src_stage = .{ .transfer = true },
-                    .dst_stage = .{ .pixel_shader = true },
-                    .src_access = .{ .transfer_read = true },
-                    .dst_access = .{ .shader_read = true },
-                }},
-            });
-        }
-
-        cmd_encoder.cmdMemoryBarrier(.{
-            .image_barriers = &.{.{
-                .image = this.texture_image,
-                .subresource_range = .{
-                    .aspect = .{ .color = true },
-                    .mip_offset = mip_levels - 1,
-                    .mip_count = 1,
-                },
-                .old_layout = .transfer_dst,
-                .new_layout = .shader_read_only,
-                .src_stage = .{ .transfer = true },
-                .dst_stage = .{ .pixel_shader = true },
-                .src_access = .{ .transfer_write = true },
-                .dst_access = .{ .shader_read = true },
-            }},
-        });
-
-        try cmd_encoder.end();
-        this.timeline_value += 1;
-        try this.device.submitCommands(.{
-            .encoder = cmd_encoder,
-            .signals = &.{.{
-                .timeline = this.timeline,
-                .value = this.timeline_value,
-                .stages = .{ .all_commands = true },
-            }},
-        });
-
-        try this.timeline.wait(this.device, this.timeline_value, std.time.ns_per_s);
-    }
+    this.texture_man = try .init(alloc, this.device, &this.stage_man);
+    errdefer this.texture_man.deinit(alloc, this.device);
 
     try this.chunk_resource_set.update(this.device, &.{
         .{
             .binding = 0,
             .data = .{ .image = &.{.{
                 .layout = .shader_read_only,
-                .view = this.texture_view,
-                .sampler = this.texture_sampler,
+                .view = this.texture_man.view,
+                .sampler = this.texture_man.sampler,
             }} },
         },
     }, alloc);
@@ -346,10 +161,8 @@ pub fn init(this: *@This(), info: InitInfo) !void {
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.device.waitUntilIdle() catch @panic("failed to wait for device in deinit");
 
-    this.texture_sampler.deinit(this.device, alloc);
-    this.texture_view.deinit(this.device, alloc);
-    this.texture_image.deinit(this.device, alloc);
     this.chunk_mesh_alloc.deinit();
+    this.texture_man.deinit(alloc, this.device);
 
     this.ui.deinit(this.device);
     this.deinitFramesInFlight(alloc);
