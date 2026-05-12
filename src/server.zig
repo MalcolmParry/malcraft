@@ -2,11 +2,19 @@ const std = @import("std");
 const znet = @import("znet");
 const net = @import("net.zig");
 
+const tps = 20;
+const ms_per_tick = 50;
+const ns_per_tick = ms_per_tick * std.time.ns_per_ms;
+
 pub fn main() !void {
     var alloc_obj = std.heap.DebugAllocator(.{}).init;
     defer _ = alloc_obj.deinit();
     const alloc = alloc_obj.allocator();
     _ = alloc;
+
+    var console_input: ConsoleInput = .{};
+    const stdin_thread = try std.Thread.spawn(.{}, ConsoleInput.worker, .{&console_input});
+    defer stdin_thread.detach();
 
     try znet.init();
     defer znet.deinit();
@@ -21,15 +29,33 @@ pub fn main() !void {
         .incoming_bandwidth = .unlimited,
         .outgoing_bandwidth = .unlimited,
     });
-    defer shutdown(host);
+    defer net.shutdown(host);
 
     std.log.info("server started", .{});
 
     var next_player_id: u32 = 0;
+    var tick_timer = try std.time.Timer.start();
+    var tick_count: u64 = 0;
+    var total_work_ns: u64 = 0;
     while (true) {
-        const anyevent = try host.service(100) orelse continue;
+        _ = tick_timer.lap();
 
-        switch (anyevent) {
+        no_cmd: {
+            console_input.mutex.lock();
+            defer console_input.mutex.unlock();
+
+            if (console_input.len == 0) break :no_cmd;
+            const cmd = console_input.buffer[0..console_input.len];
+            console_input.len = 0;
+
+            if (std.ascii.eqlIgnoreCase(cmd, "quit")) {
+                break;
+            } else {
+                std.log.info("unknown command: {s}", .{cmd});
+            }
+        }
+
+        while (try host.service(0)) |anyevent| switch (anyevent) {
             .connect => |data| {
                 std.log.info("connection from {f}", .{data.peer.address()});
 
@@ -51,40 +77,47 @@ pub fn main() !void {
             .receive => |data| {
                 defer data.packet.deinit();
             },
-        }
+        };
+
+        const work_ns = tick_timer.read();
+        tick_count += 1;
+        total_work_ns += tick_timer.read();
+
+        if (work_ns > ns_per_tick) continue;
+        const remaining_ns = ns_per_tick - work_ns;
+        std.Thread.sleep(remaining_ns);
     }
 
     std.log.info("server stopped", .{});
+    std.log.info("tick count: {}", .{tick_count});
+    std.log.info("mean work time per tick: {}ns", .{std.math.divFloor(u64, total_work_ns, tick_count) catch 0});
 }
 
-fn shutdown(host: znet.Host) void {
-    defer host.deinit();
+const ConsoleInput = struct {
+    mutex: std.Thread.Mutex = .{},
+    buffer: [1024]u8 = undefined,
+    len: usize = 0,
 
-    var iter = host.iterPeers();
-    while (iter.next()) |peer| {
-        peer.disconnect(0);
-    }
+    fn worker(state: *ConsoleInput) !void {
+        var stdin_buffer: [1024]u8 = undefined;
+        const stdin_file = std.fs.File.stdin();
+        var stdin_reader = stdin_file.reader(&stdin_buffer);
+        const stdin = &stdin_reader.interface;
 
-    var timer = std.time.Timer.start() catch return;
-    while (timer.read() < std.time.ns_per_s * 3) {
-        while (host.service(100) catch return) |event| switch (event) {
-            .connect => |data| {
-                data.peer.disconnect(0);
-            },
-            .disconnect => {},
-            .receive => |data| {
-                data.packet.deinit();
-            },
-        };
+        while (true) {
+            const line = stdin.takeDelimiterExclusive('\n') catch |err| switch (err) {
+                error.EndOfStream => return,
+                else => return err,
+            };
 
-        var remaining: bool = false;
-        iter = host.iterPeers();
-        while (iter.next()) |peer| {
-            if (peer.state() != .disconnected) {
-                remaining = true;
-            }
+            stdin.toss(1);
+
+            state.mutex.lock();
+            defer state.mutex.unlock();
+
+            const n = @min(line.len, state.buffer.len);
+            @memcpy(state.buffer[0..n], line[0..n]);
+            state.len = n;
         }
-
-        if (!remaining) return;
     }
-}
+};

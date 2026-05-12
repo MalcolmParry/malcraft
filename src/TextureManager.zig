@@ -31,16 +31,13 @@ pub const Id = enum(u1) {
 };
 
 pub fn init(alloc: std.mem.Allocator, device: gpu.Device, stage_man: *gpu.StagingManager) !TextureManager {
-    const image_paths: [2][]const u8 = .{
-        "res/textures/grass.png",
-        "res/textures/stone.png",
-    };
     const Pixel = [4]u8;
 
     const mip_levels = 5;
     const size: gpu.Image.Size2D = .{ 16, 16 };
     const pixel_count = @reduce(.Mul, size);
     const layer_size = pixel_count * @sizeOf(Pixel);
+    const layer_count: u32 = @intCast(std.enums.values(Id).len);
 
     const image = try device.initImage(.{
         .alloc = alloc,
@@ -51,7 +48,7 @@ pub fn init(alloc: std.mem.Allocator, device: gpu.Device, stage_man: *gpu.Stagin
             .sampled = true,
         },
         .loc = .device,
-        .layer_count = image_paths.len,
+        .layer_count = layer_count,
         .mip_count = mip_levels,
         .size = size,
     });
@@ -77,7 +74,7 @@ pub fn init(alloc: std.mem.Allocator, device: gpu.Device, stage_man: *gpu.Stagin
     });
     errdefer view.deinit(device, alloc);
 
-    const staging = try stage_man.allocateBytesAligned(layer_size * image_paths.len, .@"4");
+    const staging = try stage_man.allocateBytesAligned(layer_size * layer_count, .@"4");
     defer stage_man.reset();
 
     for (std.enums.values(Id), 0..) |id, i| {
@@ -123,7 +120,7 @@ pub fn init(alloc: std.mem.Allocator, device: gpu.Device, stage_man: *gpu.Stagin
         .layout = .transfer_dst,
         .subresource = .{
             .aspect = .{ .color = true },
-            .layer_count = image_paths.len,
+            .layer_count = layer_count,
         },
     });
 
@@ -157,7 +154,7 @@ pub fn init(alloc: std.mem.Allocator, device: gpu.Device, stage_man: *gpu.Stagin
             .src_subresource = .{
                 .aspect = .{ .color = true },
                 .mip_level = @intCast(level - 1),
-                .layer_count = image_paths.len,
+                .layer_count = layer_count,
             },
             .src_rect = .{ .size = old_mip_size },
             .dst = image,
@@ -165,7 +162,7 @@ pub fn init(alloc: std.mem.Allocator, device: gpu.Device, stage_man: *gpu.Stagin
             .dst_subresource = .{
                 .aspect = .{ .color = true },
                 .mip_level = @intCast(level),
-                .layer_count = image_paths.len,
+                .layer_count = layer_count,
             },
             .dst_rect = .{ .size = mip_size },
         });

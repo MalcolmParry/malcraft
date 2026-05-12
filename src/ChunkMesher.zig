@@ -34,6 +34,12 @@ pub const GreedyQuad = packed struct(u64) {
     unused2: u24 = undefined,
 };
 
+comptime {
+    std.debug.assert(@bitSizeOf(block.Face) == 3);
+    std.debug.assert(@bitSizeOf(TextureManager.Id) == 1);
+    std.debug.assert(@bitSizeOf(AoCorners) == 8);
+}
+
 const AoCorners = packed struct(u8) {
     bl: u2,
     br: u2,
