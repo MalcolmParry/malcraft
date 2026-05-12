@@ -87,6 +87,10 @@ pub fn build(b: *Build) !void {
         }),
     });
 
+    server.root_module.addImport("znoise", znoise.module("root"));
+    server.linkLibrary(znoise.artifact("FastNoiseLite"));
+    server.root_module.addOptions("options", options);
+
     const build_server = b.option(bool, "server", "build the server instead of the client") orelse false;
     const exe = if (build_server) server else game;
 

@@ -1,6 +1,11 @@
 const std = @import("std");
 const znet = @import("znet");
 const net = @import("net.zig");
+const Chunk = @import("Chunk.zig");
+const World = @import("World.zig");
+const WorldGenerator = @import("WorldGenerator.zig");
+
+const max_packet_size = 2 + 12 + 1 + @sizeOf(Chunk.OneToOne);
 
 const tps = 20;
 const ms_per_tick = 50;
@@ -10,7 +15,6 @@ pub fn main() !void {
     var alloc_obj = std.heap.DebugAllocator(.{}).init;
     defer _ = alloc_obj.deinit();
     const alloc = alloc_obj.allocator();
-    _ = alloc;
 
     var console_input: ConsoleInput = .{};
     const stdin_thread = try std.Thread.spawn(.{}, ConsoleInput.worker, .{&console_input});
@@ -33,10 +37,23 @@ pub fn main() !void {
 
     std.log.info("server started", .{});
 
+    var world: World = .{};
+    defer world.deinit(alloc);
+
+    var world_gen: WorldGenerator = try .init(alloc);
+    defer world_gen.deinit();
+    try world_gen.queueChunks();
+
+    while (world_gen.queue.len != 0)
+        try world_gen.genMany(alloc, &world);
+
+    std.log.info("world gen done", .{});
+
     var next_player_id: u32 = 0;
     var tick_timer = try std.time.Timer.start();
     var tick_count: u64 = 0;
     var total_work_ns: u64 = 0;
+    var total_bytes_sent: usize = 0;
     while (true) {
         _ = tick_timer.lap();
 
@@ -59,17 +76,37 @@ pub fn main() !void {
             .connect => |data| {
                 std.log.info("connection from {f}", .{data.peer.address()});
 
-                const message: net.server_message.Init = .{
+                const init_message: net.server_message.Init = .{
                     .player_id = next_player_id,
                 };
                 next_player_id += 1;
 
-                var buffer: [512]u8 = undefined;
+                var buffer: [max_packet_size]u8 = undefined;
                 var writer = std.Io.Writer.fixed(&buffer);
-                try message.encode(&writer);
+                try init_message.encode(&writer);
 
-                const packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
-                try data.peer.send(packet);
+                const init_packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
+
+                total_bytes_sent += init_packet.dataSlice().len;
+                try data.peer.send(init_packet);
+
+                var iter = world.chunks.iterator();
+                while (iter.next()) |entry| {
+                    _ = writer.consumeAll();
+                    const pos = entry.key_ptr.*;
+                    const chunk = entry.value_ptr.*;
+
+                    const message: net.server_message.ChunkData = .{
+                        .pos = pos,
+                        .chunk = chunk,
+                    };
+
+                    try message.encode(&writer);
+                    const packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
+
+                    total_bytes_sent += packet.dataSlice().len;
+                    try data.peer.send(packet);
+                }
             },
             .disconnect => |data| {
                 std.log.info("disconnected {f}", .{data.peer.address()});
@@ -91,6 +128,7 @@ pub fn main() !void {
     std.log.info("server stopped", .{});
     std.log.info("tick count: {}", .{tick_count});
     std.log.info("mean work time per tick: {}ns", .{std.math.divFloor(u64, total_work_ns, tick_count) catch 0});
+    std.log.info("total bytes sent: {Bi}", .{total_bytes_sent});
 }
 
 const ConsoleInput = struct {

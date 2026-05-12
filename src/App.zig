@@ -8,7 +8,6 @@ const Camera = @import("Camera.zig");
 const block = @import("block.zig");
 const Chunk = @import("Chunk.zig");
 const World = @import("World.zig");
-const WorldGenerator = @import("WorldGenerator.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
 const App = @This();
 
@@ -25,7 +24,6 @@ mouse_lock: bool = true,
 last_cursor: math.Vec2,
 
 world: World,
-world_gen: WorldGenerator,
 chunk_mesher: ChunkMesher,
 
 pub fn init(app: *App, alloc: std.mem.Allocator) !void {
@@ -54,10 +52,6 @@ pub fn init(app: *App, alloc: std.mem.Allocator) !void {
     errdefer window.deinit();
     try window.setCursorMode(.disabled);
 
-    var world_gen: WorldGenerator = try .init(alloc);
-    errdefer world_gen.deinit();
-    try world_gen.queueChunks();
-
     app.* = .{
         .host = host,
         .server = peer,
@@ -69,7 +63,6 @@ pub fn init(app: *App, alloc: std.mem.Allocator) !void {
         .last_cursor = window.getCursorPos(),
 
         .world = .{},
-        .world_gen = world_gen,
         .chunk_mesher = undefined,
     };
 
@@ -92,7 +85,6 @@ pub fn deinit(app: *App, alloc: std.mem.Allocator) void {
     app.window.deinit();
 
     app.chunk_mesher.deinit();
-    app.world_gen.deinit();
     app.world.deinit(alloc);
 
     app.server.disconnect(0);
@@ -105,7 +97,6 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
     const dt_ns = app.frame_timer.lap();
     const dt = @as(f32, @floatFromInt(dt_ns)) / std.time.ns_per_s;
 
-    try app.world_gen.genMany(alloc, &app.world, &app.chunk_mesher);
     try app.chunk_mesher.meshMany();
 
     app.window.update();
@@ -233,8 +224,6 @@ fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData
 }
 
 fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: znet.Event) !void {
-    _ = alloc;
-
     switch (any_event) {
         .connect => |event| {
             std.log.info("connected to server at {f}", .{event.peer.address()});
@@ -254,6 +243,18 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: znet.Event
                     const msg = try net.server_message.Init.decode(&reader);
 
                     std.log.info("playerid: {}", .{msg.player_id});
+                },
+                .chunk_data => {
+                    const msg = try net.server_message.ChunkData.decode(alloc, &reader);
+
+                    try app.world.chunks.put(alloc, msg.pos, msg.chunk);
+                    try app.chunk_mesher.addRequest(msg.pos);
+                    try app.chunk_mesher.addRequest(msg.pos + Chunk.Pos{ 1, 0, 0 });
+                    try app.chunk_mesher.addRequest(msg.pos + Chunk.Pos{ -1, 0, 0 });
+                    try app.chunk_mesher.addRequest(msg.pos + Chunk.Pos{ 0, 1, 0 });
+                    try app.chunk_mesher.addRequest(msg.pos + Chunk.Pos{ 0, -1, 0 });
+                    try app.chunk_mesher.addRequest(msg.pos + Chunk.Pos{ 0, 0, 1 });
+                    try app.chunk_mesher.addRequest(msg.pos + Chunk.Pos{ 0, 0, -1 });
                 },
             }
         },

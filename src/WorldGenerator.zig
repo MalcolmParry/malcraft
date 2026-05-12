@@ -4,7 +4,6 @@ const mw = @import("mwengine");
 const math = mw.math;
 const block = @import("block.zig");
 const Chunk = @import("Chunk.zig");
-const ChunkMesher = @import("ChunkMesher.zig");
 const Deque = @import("deque.zig").Deque;
 const World = @import("World.zig");
 const znoise = @import("znoise");
@@ -45,7 +44,6 @@ pub fn genMany(
     gen: *WorldGenerator,
     alloc: std.mem.Allocator,
     world: *World,
-    mesher: *ChunkMesher,
 ) !void {
     var timer: std.time.Timer = try .start();
 
@@ -58,14 +56,6 @@ pub fn genMany(
         entry.value_ptr.* = chunk;
 
         if (!entry.found_existing and chunk.allAirFast()) continue;
-
-        try mesher.addRequest(pos);
-        try mesher.addRequest(pos + @as(Chunk.Pos, .{ 1, 0, 0 }));
-        try mesher.addRequest(pos + @as(Chunk.Pos, .{ -1, 0, 0 }));
-        try mesher.addRequest(pos + @as(Chunk.Pos, .{ 0, 1, 0 }));
-        try mesher.addRequest(pos + @as(Chunk.Pos, .{ 0, -1, 0 }));
-        try mesher.addRequest(pos + @as(Chunk.Pos, .{ 0, 0, 1 }));
-        try mesher.addRequest(pos + @as(Chunk.Pos, .{ 0, 0, -1 }));
     }
 
     gen.total_time += timer.read();

@@ -75,24 +75,3 @@ pub inline fn allOpaqueFast(chunk: *const Chunk) bool {
         else => false,
     };
 }
-
-pub const Iterator = struct {
-    pos: @Vector(3, u8) = @splat(0),
-
-    pub inline fn next(iter: *Iterator) ?RelPos {
-        const result = iter.pos;
-        if (result[2] == len) return null;
-
-        iter.pos[0] += 1;
-        if (iter.pos[0] == len) {
-            iter.pos[0] = 0;
-            iter.pos[1] += 1;
-            if (iter.pos[1] == len) {
-                iter.pos[1] = 0;
-                iter.pos[2] += 1;
-            }
-        }
-
-        return @intCast(result);
-    }
-};
