@@ -90,33 +90,37 @@ pub fn main() !void {
                 total_bytes_sent += init_packet.dataSlice().len;
                 try data.peer.send(init_packet);
 
+                const max_single_entries = (max_packet_size - 4) / 9;
                 var single_iter = world.single_chunks.iterator();
-                while (single_iter.next()) |entry| {
+                var remaining_packets = world.single_chunks.count();
+
+                while (remaining_packets > 0) {
                     _ = writer.consumeAll();
-                    const pos = entry.key_ptr.*;
-                    const chunk: Chunk = .{ .data = .{ .single = entry.value_ptr.* } };
+                    try writer.writeInt(u16, @intFromEnum(net.server_message.Kind.many_single_chunk_data), .little);
+                    try writer.writeInt(u16, @intCast(@min(remaining_packets, max_single_entries)), .little);
 
-                    const message: net.server_message.ChunkData = .{
-                        .pos = pos,
-                        .chunk = chunk,
-                    };
+                    for (0..max_single_entries) |_| {
+                        const entry = single_iter.next() orelse break;
+                        const pos = entry.key_ptr.*;
 
-                    try message.encode(&writer);
-                    const packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
+                        try writer.writeStruct(pos, .little);
+                        try writer.writeInt(u8, @intFromEnum(entry.value_ptr.*), .little);
+                        remaining_packets -= 1;
+                    }
 
-                    total_bytes_sent += packet.dataSlice().len;
-                    try data.peer.send(packet);
+                    const single_packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
+                    total_bytes_sent += single_packet.dataSlice().len;
+                    try data.peer.send(single_packet);
                 }
 
                 var one_to_one_iter = world.one_to_one_chunks.iterator();
                 while (one_to_one_iter.next()) |entry| {
                     _ = writer.consumeAll();
                     const pos = entry.key_ptr.*;
-                    const chunk: Chunk = .{ .data = .{ .one_to_one = entry.value_ptr.* } };
 
-                    const message: net.server_message.ChunkData = .{
+                    const message: net.server_message.OneToOneChunkData = .{
                         .pos = pos,
-                        .chunk = chunk,
+                        .chunk = entry.value_ptr.*,
                     };
 
                     try message.encode(&writer);

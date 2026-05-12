@@ -6,7 +6,13 @@ const block = @import("block.zig");
 pub const server_message = struct {
     pub const Kind = enum(u16) {
         init,
-        chunk_data,
+        one_to_one_chunk_data,
+
+        /// u16 for chunk count
+        /// each entry:
+        ///     Chunk.PackedPos
+        ///     block.Kind
+        many_single_chunk_data,
 
         pub fn decode(reader: *std.Io.Reader) !Kind {
             const int = try reader.takeInt(u16, .little);
@@ -32,68 +38,36 @@ pub const server_message = struct {
         }
     };
 
-    pub const ChunkData = struct {
+    pub const OneToOneChunkData = struct {
         pos: Chunk.PackedPos,
-        chunk: Chunk,
+        chunk: *Chunk.OneToOne,
 
-        const StorageType = enum(u8) {
-            single,
-            one_to_one,
-        };
-
-        pub fn encode(msg: ChunkData, writer: *std.Io.Writer) !void {
-            try writer.writeInt(u16, @intFromEnum(Kind.chunk_data), .little);
+        pub fn encode(msg: OneToOneChunkData, writer: *std.Io.Writer) !void {
+            try writer.writeInt(u16, @intFromEnum(Kind.one_to_one_chunk_data), .little);
             try writer.writeStruct(msg.pos, .little);
 
-            switch (msg.chunk.data) {
-                .single => |kind| {
-                    try writer.writeInt(u8, @intFromEnum(StorageType.single), .little);
-                    try writer.writeInt(u8, @intFromEnum(kind), .little);
-                },
-                .one_to_one => |one_to_one| {
-                    try writer.writeInt(u8, @intFromEnum(StorageType.one_to_one), .little);
-
-                    for (&one_to_one.blocks) |*plane| {
-                        for (plane) |*col| {
-                            try writer.writeSliceEndian(block.Kind, col, .little);
-                        }
-                    }
-                },
+            for (&msg.chunk.blocks) |*plane| {
+                for (plane) |*col| {
+                    try writer.writeSliceEndian(block.Kind, col, .little);
+                }
             }
         }
 
-        pub fn decode(alloc: std.mem.Allocator, reader: *std.Io.Reader) !ChunkData {
+        pub fn decode(alloc: std.mem.Allocator, reader: *std.Io.Reader) !OneToOneChunkData {
             const pos = try reader.takeStruct(Chunk.PackedPos, .little);
 
-            const storage_type_i = try reader.takeInt(u8, .little);
-            const storage_type = std.enums.fromInt(StorageType, storage_type_i) orelse return error.BadMessage;
+            const one_to_one = try alloc.create(Chunk.OneToOne);
+            errdefer alloc.destroy(one_to_one);
 
-            const chunk: Chunk = switch (storage_type) {
-                .single => .{ .data = .{
-                    .single = std.enums.fromInt(
-                        block.Kind,
-                        try reader.takeInt(u8, .little),
-                    ) orelse return error.BadMessage,
-                } },
-                .one_to_one => blk: {
-                    const one_to_one = try alloc.create(Chunk.OneToOne);
-                    errdefer alloc.destroy(one_to_one);
-
-                    for (&one_to_one.blocks) |*plane| {
-                        for (plane) |*col| {
-                            try reader.readSliceEndian(block.Kind, col, .little);
-                        }
-                    }
-
-                    break :blk .{ .data = .{
-                        .one_to_one = one_to_one,
-                    } };
-                },
-            };
+            for (&one_to_one.blocks) |*plane| {
+                for (plane) |*col| {
+                    try reader.readSliceEndian(block.Kind, col, .little);
+                }
+            }
 
             return .{
                 .pos = pos,
-                .chunk = chunk,
+                .chunk = one_to_one,
             };
         }
     };

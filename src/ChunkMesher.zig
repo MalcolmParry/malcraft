@@ -137,27 +137,24 @@ pub fn addRequestWithCollateral(mesher: *ChunkMesher, pos: block.Pos) !void {
     }
 }
 
+pub fn addRequestWithFullCollateral(mesher: *ChunkMesher, pos: Chunk.Pos) !void {
+    try mesher.addRequest(.pack(pos));
+    try mesher.addRequest(.pack(pos + Chunk.Pos{ 1, 0, 0 }));
+    try mesher.addRequest(.pack(pos + Chunk.Pos{ -1, 0, 0 }));
+    try mesher.addRequest(.pack(pos + Chunk.Pos{ 0, 1, 0 }));
+    try mesher.addRequest(.pack(pos + Chunk.Pos{ 0, -1, 0 }));
+    try mesher.addRequest(.pack(pos + Chunk.Pos{ 0, 0, 1 }));
+    try mesher.addRequest(.pack(pos + Chunk.Pos{ 0, 0, -1 }));
+}
+
 const target_mesh_time_ns = 4_000_000;
-const max_chunks_meshed = 1000;
+const max_chunks_meshed = 1024;
 pub fn meshMany(this: *ChunkMesher) !void {
     var timer: std.time.Timer = try .start();
     defer this.meshing_time_ns += timer.read();
 
     _ = this.arena.reset(.retain_capacity);
     const arena = this.arena.allocator();
-
-    const SortContext = struct {
-        map: *const @TypeOf(this.queue),
-
-        pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
-            const a_pos = ctx.map.keys()[a];
-            const b_pos = ctx.map.keys()[b];
-
-            return math.lengthSqr(a_pos.vec()) < math.lengthSqr(b_pos.vec());
-        }
-    };
-
-    this.queue.sort(SortContext{ .map = &this.queue });
 
     const job_count = @min(this.queue.count(), max_chunks_meshed);
     if (job_count == 0) return;

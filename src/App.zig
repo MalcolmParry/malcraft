@@ -236,28 +236,36 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: znet.Event
         .receive => |event| {
             defer event.packet.deinit();
             var reader = event.packet.reader();
-            const kind = try net.server_message.Kind.decode(&reader);
+            const msg_kind = try net.server_message.Kind.decode(&reader);
 
-            switch (kind) {
+            switch (msg_kind) {
                 .init => {
                     const msg = try net.server_message.Init.decode(&reader);
 
                     std.log.info("playerid: {}", .{msg.player_id});
                 },
-                .chunk_data => {
-                    const msg = try net.server_message.ChunkData.decode(alloc, &reader);
+                .one_to_one_chunk_data => {
+                    const msg = try net.server_message.OneToOneChunkData.decode(alloc, &reader);
 
                     app.world.removeChunk(alloc, msg.pos);
-                    try app.world.placeChunk(alloc, msg.pos, msg.chunk);
+                    try app.world.placeChunk(alloc, msg.pos, .{ .data = .{ .one_to_one = msg.chunk } });
+                    try app.chunk_mesher.addRequestWithFullCollateral(msg.pos.vec());
+                },
+                .many_single_chunk_data => {
+                    var timer: std.time.Timer = try .start();
+                    const count = try reader.takeInt(u16, .little);
+                    try app.world.single_chunks.ensureUnusedCapacity(alloc, count);
 
-                    const pos = msg.pos.vec();
-                    try app.chunk_mesher.addRequest(.pack(pos));
-                    try app.chunk_mesher.addRequest(.pack(pos + Chunk.Pos{ 1, 0, 0 }));
-                    try app.chunk_mesher.addRequest(.pack(pos + Chunk.Pos{ -1, 0, 0 }));
-                    try app.chunk_mesher.addRequest(.pack(pos + Chunk.Pos{ 0, 1, 0 }));
-                    try app.chunk_mesher.addRequest(.pack(pos + Chunk.Pos{ 0, -1, 0 }));
-                    try app.chunk_mesher.addRequest(.pack(pos + Chunk.Pos{ 0, 0, 1 }));
-                    try app.chunk_mesher.addRequest(.pack(pos + Chunk.Pos{ 0, 0, -1 }));
+                    for (0..count) |_| {
+                        const pos = try reader.takeStruct(Chunk.PackedPos, .little);
+                        const kind_i = try reader.takeInt(u8, .little);
+                        const kind = std.enums.fromInt(block.Kind, kind_i) orelse return error.BadMessage;
+
+                        try app.world.single_chunks.put(alloc, pos, kind);
+                        try app.chunk_mesher.addRequestWithFullCollateral(pos.vec());
+                    }
+
+                    std.log.info("processed packet: {} single chunks: {}ns", .{ count, timer.read() });
                 },
             }
         },
