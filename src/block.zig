@@ -3,6 +3,23 @@ const mw = @import("mwengine");
 const math = mw.math;
 
 pub const Pos = @Vector(3, i32);
+pub const PackedPos = packed struct(u64) {
+    x: i22,
+    y: i22,
+    z: i20,
+
+    pub fn pack(pos: Pos) PackedPos {
+        return .{
+            .x = @intCast(pos[0]),
+            .y = @intCast(pos[1]),
+            .z = @intCast(pos[2]),
+        };
+    }
+
+    pub fn vec(pos: PackedPos) Pos {
+        return .{ pos.x, pos.y, pos.z };
+    }
+};
 
 pub const Kind = enum(u2) {
     air,

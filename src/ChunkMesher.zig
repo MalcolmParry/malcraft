@@ -52,7 +52,7 @@ arena: std.heap.ArenaAllocator,
 mesh_alloc: *ChunkMeshAllocator,
 thread_info: MeshThreadInfo,
 threads: []std.Thread,
-queue: std.AutoArrayHashMapUnmanaged(Chunk.Pos, void),
+queue: std.AutoArrayHashMapUnmanaged(Chunk.PackedPos, void),
 
 meshing_time_ns: u64,
 
@@ -102,7 +102,7 @@ pub fn deinit(this: *ChunkMesher) void {
     this.arena.deinit();
 }
 
-pub fn addRequest(mesher: *ChunkMesher, pos: Chunk.Pos) !void {
+pub fn addRequest(mesher: *ChunkMesher, pos: Chunk.PackedPos) !void {
     try mesher.queue.put(mesher.alloc, pos, {});
 }
 
@@ -111,7 +111,7 @@ pub fn addRequest(mesher: *ChunkMesher, pos: Chunk.Pos) !void {
 pub fn addRequestWithCollateral(mesher: *ChunkMesher, pos: block.Pos) !void {
     const chunk_pos = World.chunkPosFromBlockPos(pos);
     const rel = World.chunkRelFromBlockPos(pos);
-    try mesher.addRequest(chunk_pos);
+    try mesher.addRequest(.pack(chunk_pos));
 
     const zero_mask = rel == @as(Chunk.Pos, @splat(0));
     const max_mask = rel == @as(Chunk.Pos, @splat(Chunk.len - 1));
@@ -121,7 +121,7 @@ pub fn addRequestWithCollateral(mesher: *ChunkMesher, pos: block.Pos) !void {
             if (zero_mask[axis]) {
                 var new = chunk_pos;
                 new[axis] -= 1;
-                try mesher.addRequest(new);
+                try mesher.addRequest(.pack(new));
             }
         }
     }
@@ -131,7 +131,7 @@ pub fn addRequestWithCollateral(mesher: *ChunkMesher, pos: block.Pos) !void {
             if (max_mask[axis]) {
                 var new = chunk_pos;
                 new[axis] += 1;
-                try mesher.addRequest(new);
+                try mesher.addRequest(.pack(new));
             }
         }
     }
@@ -153,7 +153,7 @@ pub fn meshMany(this: *ChunkMesher) !void {
             const a_pos = ctx.map.keys()[a];
             const b_pos = ctx.map.keys()[b];
 
-            return math.lengthSqr(a_pos) < math.lengthSqr(b_pos);
+            return math.lengthSqr(a_pos.vec()) < math.lengthSqr(b_pos.vec());
         }
     };
 
@@ -197,7 +197,7 @@ pub fn meshMany(this: *ChunkMesher) !void {
 }
 
 const Job = struct {
-    pos: Chunk.Pos,
+    pos: Chunk.PackedPos,
     // result
     faces: []GreedyQuad = &.{},
 };
@@ -293,7 +293,7 @@ fn worker(info: *MeshThreadInfo) void {
             state.quads.clearRetainingCapacity();
             for (&state.maps) |*map| map.clearRetainingCapacity();
 
-            greedyMeshWithFastExits(alloc, &state, info.world, job.pos);
+            greedyMeshWithFastExits(alloc, &state, info.world, job.pos.vec());
 
             job.faces = arena.dupe(GreedyQuad, state.quads.items) catch @panic("");
             completed += 1;
@@ -304,17 +304,17 @@ fn worker(info: *MeshThreadInfo) void {
 }
 
 fn greedyMeshWithFastExits(alloc: std.mem.Allocator, state: *MeshingState, world: *const World, pos: Chunk.Pos) void {
-    const chunk = world.chunks.get(pos) orelse return;
+    const chunk = world.chunks.get(.pack(pos)) orelse return;
     if (chunk.allAirFast()) return;
 
     const refs: ChunkRefs = .{
         .this = chunk,
-        .north = world.chunks.get(pos + @as(block.Pos, .{ 1, 0, 0 })),
-        .south = world.chunks.get(pos + @as(block.Pos, .{ -1, 0, 0 })),
-        .east = world.chunks.get(pos + @as(block.Pos, .{ 0, 1, 0 })),
-        .west = world.chunks.get(pos + @as(block.Pos, .{ 0, -1, 0 })),
-        .up = world.chunks.get(pos + @as(block.Pos, .{ 0, 0, 1 })),
-        .down = world.chunks.get(pos + @as(block.Pos, .{ 0, 0, -1 })),
+        .north = world.chunks.get(.pack(pos + @as(block.Pos, .{ 1, 0, 0 }))),
+        .south = world.chunks.get(.pack(pos + @as(block.Pos, .{ -1, 0, 0 }))),
+        .east = world.chunks.get(.pack(pos + @as(block.Pos, .{ 0, 1, 0 }))),
+        .west = world.chunks.get(.pack(pos + @as(block.Pos, .{ 0, -1, 0 }))),
+        .up = world.chunks.get(.pack(pos + @as(block.Pos, .{ 0, 0, 1 }))),
+        .down = world.chunks.get(.pack(pos + @as(block.Pos, .{ 0, 0, -1 }))),
     };
 
     if (chunk.allOpaqueFast()) {

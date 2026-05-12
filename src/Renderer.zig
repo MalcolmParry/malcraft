@@ -370,7 +370,7 @@ fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constant
 
     var chunk_mesh_iter = this.chunk_mesh_alloc.loaded_meshes.iterator();
     while (chunk_mesh_iter.next()) |kv| {
-        const pos: math.Vec3 = @floatFromInt(kv.key_ptr.* * Chunk.size);
+        const pos: math.Vec3 = @floatFromInt(kv.key_ptr.*.vec() * Chunk.size);
         const chunk_size_f = math.i2f(math.Vec3, Chunk.size);
         // extent
         const e_ws = chunk_size_f / math.splat3(f32, 2);
@@ -388,7 +388,7 @@ fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constant
         } else false;
 
         if (!culled)
-            this.drawChunk(render_pass, kv.key_ptr.*, kv.value_ptr.*);
+            this.drawChunk(render_pass, kv.key_ptr.*.vec(), kv.value_ptr.*);
     }
 }
 

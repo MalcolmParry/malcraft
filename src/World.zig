@@ -5,7 +5,7 @@ const block = @import("block.zig");
 const Chunk = @import("Chunk.zig");
 const World = @This();
 
-chunks: Chunk.Map = .empty,
+chunks: std.AutoHashMapUnmanaged(Chunk.PackedPos, Chunk) = .empty,
 
 pub fn deinit(world: *World, alloc: std.mem.Allocator) void {
     var iter = world.chunks.iterator();
@@ -21,24 +21,24 @@ pub fn chunkPosFromBlockPos(pos: block.Pos) Chunk.Pos {
 }
 
 pub fn chunkRelFromBlockPos(pos: block.Pos) Chunk.RelPos {
-    return @intCast(@abs(@mod(pos, Chunk.size)));
+    return @intCast(@mod(pos, Chunk.size));
 }
 
 pub fn getBlock(world: *const World, pos: block.Pos) ?block.Kind {
     const chunk_pos = chunkPosFromBlockPos(pos);
     const rel_pos = chunkRelFromBlockPos(pos);
 
-    return if (world.chunks.get(chunk_pos)) |chunk|
-        chunk.getBlock(@intCast(rel_pos))
+    return if (world.chunks.get(.pack(chunk_pos))) |chunk|
+        chunk.getBlock(rel_pos)
     else
         null;
 }
 
 pub fn setBlock(world: *World, alloc: std.mem.Allocator, pos: block.Pos, new: block.Kind) !void {
     const chunk_pos = chunkPosFromBlockPos(pos);
-    const chunk = world.chunks.getPtr(chunk_pos) orelse return error.ChunkNotPresent;
+    const chunk = world.chunks.getPtr(.pack(chunk_pos)) orelse return error.ChunkNotPresent;
     const rel_pos = chunkRelFromBlockPos(pos);
-    try chunk.setBlock(alloc, @intCast(rel_pos), new);
+    try chunk.setBlock(alloc, rel_pos, new);
 }
 
 pub const RayCastResult = union(enum) {

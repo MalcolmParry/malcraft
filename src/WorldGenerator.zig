@@ -10,8 +10,8 @@ const znoise = @import("znoise");
 
 const WorldGenerator = @This();
 const i32x2 = @Vector(2, i32);
-height_map: std.AutoHashMapUnmanaged(i32x2, *HeightMap),
-queue: Deque(Chunk.Pos),
+height_map: std.AutoHashMapUnmanaged([2]i32, *HeightMap),
+queue: Deque(Chunk.PackedPos),
 alloc: std.mem.Allocator,
 total_time: u64 = 0,
 
@@ -51,7 +51,7 @@ pub fn genMany(
         if (timer.read() >= target_gen_time_ns) break;
 
         const pos = gen.queue.popFront() orelse break;
-        const chunk = try gen.generate(pos);
+        const chunk = try gen.generate(pos.vec());
         const entry = try world.chunks.getOrPut(alloc, pos);
         entry.value_ptr.* = chunk;
 
@@ -177,23 +177,23 @@ pub fn queueChunks(gen: *WorldGenerator) !void {
 
     try gen.queue.ensureUnusedCapacity(alloc, chunk_count);
 
-    var z: i32 = 0;
+    var z: i20 = 0;
     while (z <= vertical_render_radius) : (z += 1) {
-        var y: i32 = -render_radius;
+        var y: i22 = -render_radius;
         while (y <= render_radius) : (y += 1) {
-            var x: i32 = -render_radius;
+            var x: i22 = -render_radius;
             while (x <= render_radius) : (x += 1) {
-                const pos: Chunk.Pos = .{ x, y, z };
+                const pos: Chunk.PackedPos = .{ .x = x, .y = y, .z = z };
                 gen.queue.pushBackAssumeCapacity(pos);
             }
         }
     }
 
     const queue = gen.queue.buffer[0..gen.queue.len];
-    std.mem.sort(Chunk.Pos, queue, {}, struct {
-        fn lessThanFn(_: void, left: Chunk.Pos, right: Chunk.Pos) bool {
-            const f_left: math.Vec3 = @floatFromInt(left);
-            const f_right: math.Vec3 = @floatFromInt(right);
+    std.mem.sort(Chunk.PackedPos, queue, {}, struct {
+        fn lessThanFn(_: void, left: Chunk.PackedPos, right: Chunk.PackedPos) bool {
+            const f_left: math.Vec3 = @floatFromInt(left.vec());
+            const f_right: math.Vec3 = @floatFromInt(right.vec());
             return math.lengthSqr(f_left) < math.lengthSqr(f_right);
         }
     }.lessThanFn);

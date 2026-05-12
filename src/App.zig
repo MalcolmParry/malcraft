@@ -248,13 +248,15 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: znet.Event
                     const msg = try net.server_message.ChunkData.decode(alloc, &reader);
 
                     try app.world.chunks.put(alloc, msg.pos, msg.chunk);
-                    try app.chunk_mesher.addRequest(msg.pos);
-                    try app.chunk_mesher.addRequest(msg.pos + Chunk.Pos{ 1, 0, 0 });
-                    try app.chunk_mesher.addRequest(msg.pos + Chunk.Pos{ -1, 0, 0 });
-                    try app.chunk_mesher.addRequest(msg.pos + Chunk.Pos{ 0, 1, 0 });
-                    try app.chunk_mesher.addRequest(msg.pos + Chunk.Pos{ 0, -1, 0 });
-                    try app.chunk_mesher.addRequest(msg.pos + Chunk.Pos{ 0, 0, 1 });
-                    try app.chunk_mesher.addRequest(msg.pos + Chunk.Pos{ 0, 0, -1 });
+
+                    const pos = msg.pos.vec();
+                    try app.chunk_mesher.addRequest(.pack(pos));
+                    try app.chunk_mesher.addRequest(.pack(pos + Chunk.Pos{ 1, 0, 0 }));
+                    try app.chunk_mesher.addRequest(.pack(pos + Chunk.Pos{ -1, 0, 0 }));
+                    try app.chunk_mesher.addRequest(.pack(pos + Chunk.Pos{ 0, 1, 0 }));
+                    try app.chunk_mesher.addRequest(.pack(pos + Chunk.Pos{ 0, -1, 0 }));
+                    try app.chunk_mesher.addRequest(.pack(pos + Chunk.Pos{ 0, 0, 1 }));
+                    try app.chunk_mesher.addRequest(.pack(pos + Chunk.Pos{ 0, 0, -1 }));
                 },
             }
         },

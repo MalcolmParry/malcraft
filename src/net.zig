@@ -33,7 +33,7 @@ pub const server_message = struct {
     };
 
     pub const ChunkData = struct {
-        pos: Chunk.Pos,
+        pos: Chunk.PackedPos,
         chunk: Chunk,
 
         const StorageType = enum(u8) {
@@ -43,10 +43,7 @@ pub const server_message = struct {
 
         pub fn encode(msg: ChunkData, writer: *std.Io.Writer) !void {
             try writer.writeInt(u16, @intFromEnum(Kind.chunk_data), .little);
-
-            try writer.writeInt(i32, msg.pos[0], .little);
-            try writer.writeInt(i32, msg.pos[1], .little);
-            try writer.writeInt(i32, msg.pos[2], .little);
+            try writer.writeStruct(msg.pos, .little);
 
             switch (msg.chunk.data) {
                 .single => |kind| {
@@ -66,10 +63,7 @@ pub const server_message = struct {
         }
 
         pub fn decode(alloc: std.mem.Allocator, reader: *std.Io.Reader) !ChunkData {
-            const x = try reader.takeInt(i32, .little);
-            const y = try reader.takeInt(i32, .little);
-            const z = try reader.takeInt(i32, .little);
-            const pos: Chunk.Pos = .{ x, y, z };
+            const pos = try reader.takeStruct(Chunk.PackedPos, .little);
 
             const storage_type_i = try reader.takeInt(u8, .little);
             const storage_type = std.enums.fromInt(StorageType, storage_type_i) orelse return error.BadMessage;

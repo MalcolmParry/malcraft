@@ -4,12 +4,13 @@ const math = mw.math;
 const block = @import("block.zig");
 
 const Chunk = @This();
-pub const Map = std.AutoHashMapUnmanaged(Pos, Chunk);
-pub const Pos = @Vector(3, i32);
-pub const RelPos = @Vector(3, u5);
 pub const len = 32;
 pub const size: Pos = @splat(len);
 pub const block_count = len * len * len;
+
+pub const Pos = @Vector(3, i32);
+pub const RelPos = @Vector(3, u5);
+pub const PackedPos = block.PackedPos;
 
 pub const OneToOne = struct {
     blocks: [len][len][len]block.Kind,
@@ -22,7 +23,6 @@ pub const OneToOne = struct {
 
 data: union(enum) {
     single: block.Kind,
-    /// use oneToOneIndex
     one_to_one: *OneToOne,
 },
 
@@ -49,8 +49,7 @@ pub fn setBlock(chunk: *Chunk, alloc: std.mem.Allocator, pos: RelPos, new: block
             const flat: *[block_count]block.Kind = @ptrCast(&one_to_one.blocks);
             @memset(flat, old);
 
-            const x, const y, const z = pos;
-            one_to_one.blocks[x][y][z] = new;
+            one_to_one.setBlock(pos, new);
 
             chunk.* = .{ .data = .{
                 .one_to_one = one_to_one,
