@@ -52,10 +52,7 @@ pub fn genMany(
 
         const pos = gen.queue.popFront() orelse break;
         const chunk = try gen.generate(pos.vec());
-        const entry = try world.chunks.getOrPut(alloc, pos);
-        entry.value_ptr.* = chunk;
-
-        if (!entry.found_existing and chunk.allAirFast()) continue;
+        try world.placeChunk(alloc, pos, chunk);
     }
 
     gen.total_time += timer.read();

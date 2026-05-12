@@ -21,10 +21,13 @@ pub const OneToOne = struct {
     }
 };
 
-data: union(enum) {
+pub const StorageType = std.meta.Tag(Data);
+pub const Data = union(enum) {
     single: block.Kind,
     one_to_one: *OneToOne,
-},
+};
+
+data: Data,
 
 pub fn deinit(chunk: *Chunk, alloc: std.mem.Allocator) void {
     switch (chunk.data) {

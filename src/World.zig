@@ -5,15 +5,17 @@ const block = @import("block.zig");
 const Chunk = @import("Chunk.zig");
 const World = @This();
 
-chunks: std.AutoHashMapUnmanaged(Chunk.PackedPos, Chunk) = .empty,
+single_chunks: std.AutoHashMapUnmanaged(Chunk.PackedPos, block.Kind) = .empty,
+one_to_one_chunks: std.AutoHashMapUnmanaged(Chunk.PackedPos, *Chunk.OneToOne) = .empty,
 
 pub fn deinit(world: *World, alloc: std.mem.Allocator) void {
-    var iter = world.chunks.iterator();
-    while (iter.next()) |kv| {
-        kv.value_ptr.deinit(alloc);
+    var one_to_one_iter = world.one_to_one_chunks.iterator();
+    while (one_to_one_iter.next()) |kv| {
+        alloc.destroy(kv.value_ptr.*);
     }
 
-    world.chunks.deinit(alloc);
+    world.single_chunks.deinit(alloc);
+    world.one_to_one_chunks.deinit(alloc);
 }
 
 pub fn chunkPosFromBlockPos(pos: block.Pos) Chunk.Pos {
@@ -24,11 +26,45 @@ pub fn chunkRelFromBlockPos(pos: block.Pos) Chunk.RelPos {
     return @intCast(@mod(pos, Chunk.size));
 }
 
+pub fn getChunk(world: *const World, pos: Chunk.PackedPos) ?Chunk {
+    if (world.single_chunks.get(pos)) |single| return .{ .data = .{ .single = single } };
+    if (world.one_to_one_chunks.get(pos)) |one_to_one| return .{ .data = .{ .one_to_one = one_to_one } };
+    return null;
+}
+
+/// not safe if chunk in that position already exists
+pub fn placeChunk(world: *World, alloc: std.mem.Allocator, pos: Chunk.PackedPos, chunk: Chunk) !void {
+    switch (chunk.data) {
+        .single => |single| try world.single_chunks.put(alloc, pos, single),
+        .one_to_one => |one_to_one| try world.one_to_one_chunks.put(alloc, pos, one_to_one),
+    }
+}
+
+pub fn removeChunk(world: *World, alloc: std.mem.Allocator, pos: Chunk.PackedPos) void {
+    _ = world.single_chunks.remove(pos);
+
+    const one_to_one_kv = world.one_to_one_chunks.fetchRemove(pos);
+    if (one_to_one_kv) |kv| {
+        alloc.destroy(kv.value);
+    }
+}
+
+pub fn updateExistingChunkSameAllocation(world: *World, alloc: std.mem.Allocator, pos: Chunk.PackedPos, new: Chunk) !void {
+    const old = world.getChunk(pos) orelse return error.ChunkNotPresent;
+    const new_t: Chunk.StorageType = new.data;
+    const old_t: Chunk.StorageType = old.data;
+
+    if (new_t != old_t)
+        world.removeChunk(alloc, pos);
+
+    try world.placeChunk(alloc, pos, new);
+}
+
 pub fn getBlock(world: *const World, pos: block.Pos) ?block.Kind {
     const chunk_pos = chunkPosFromBlockPos(pos);
     const rel_pos = chunkRelFromBlockPos(pos);
 
-    return if (world.chunks.get(.pack(chunk_pos))) |chunk|
+    return if (world.getChunk(.pack(chunk_pos))) |chunk|
         chunk.getBlock(rel_pos)
     else
         null;
@@ -36,9 +72,11 @@ pub fn getBlock(world: *const World, pos: block.Pos) ?block.Kind {
 
 pub fn setBlock(world: *World, alloc: std.mem.Allocator, pos: block.Pos, new: block.Kind) !void {
     const chunk_pos = chunkPosFromBlockPos(pos);
-    const chunk = world.chunks.getPtr(.pack(chunk_pos)) orelse return error.ChunkNotPresent;
+    const packed_pos: Chunk.PackedPos = .pack(chunk_pos);
+    var chunk = world.getChunk(packed_pos) orelse return error.ChunkNotPresent;
     const rel_pos = chunkRelFromBlockPos(pos);
     try chunk.setBlock(alloc, rel_pos, new);
+    try world.updateExistingChunkSameAllocation(alloc, packed_pos, chunk);
 }
 
 pub const RayCastResult = union(enum) {

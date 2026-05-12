@@ -247,7 +247,8 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: znet.Event
                 .chunk_data => {
                     const msg = try net.server_message.ChunkData.decode(alloc, &reader);
 
-                    try app.world.chunks.put(alloc, msg.pos, msg.chunk);
+                    app.world.removeChunk(alloc, msg.pos);
+                    try app.world.placeChunk(alloc, msg.pos, msg.chunk);
 
                     const pos = msg.pos.vec();
                     try app.chunk_mesher.addRequest(.pack(pos));

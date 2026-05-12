@@ -90,11 +90,29 @@ pub fn main() !void {
                 total_bytes_sent += init_packet.dataSlice().len;
                 try data.peer.send(init_packet);
 
-                var iter = world.chunks.iterator();
-                while (iter.next()) |entry| {
+                var single_iter = world.single_chunks.iterator();
+                while (single_iter.next()) |entry| {
                     _ = writer.consumeAll();
                     const pos = entry.key_ptr.*;
-                    const chunk = entry.value_ptr.*;
+                    const chunk: Chunk = .{ .data = .{ .single = entry.value_ptr.* } };
+
+                    const message: net.server_message.ChunkData = .{
+                        .pos = pos,
+                        .chunk = chunk,
+                    };
+
+                    try message.encode(&writer);
+                    const packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
+
+                    total_bytes_sent += packet.dataSlice().len;
+                    try data.peer.send(packet);
+                }
+
+                var one_to_one_iter = world.one_to_one_chunks.iterator();
+                while (one_to_one_iter.next()) |entry| {
+                    _ = writer.consumeAll();
+                    const pos = entry.key_ptr.*;
+                    const chunk: Chunk = .{ .data = .{ .one_to_one = entry.value_ptr.* } };
 
                     const message: net.server_message.ChunkData = .{
                         .pos = pos,
