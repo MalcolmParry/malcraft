@@ -23,7 +23,7 @@ pub const OneToOne = struct {
 
 pub const StorageType = std.meta.Tag(Data);
 pub const Data = union(enum) {
-    single: block.Kind,
+    uniform: block.Kind,
     one_to_one: *OneToOne,
 };
 
@@ -31,21 +31,21 @@ data: Data,
 
 pub fn deinit(chunk: *Chunk, alloc: std.mem.Allocator) void {
     switch (chunk.data) {
-        .single => {},
+        .uniform => {},
         .one_to_one => |data| alloc.destroy(data),
     }
 }
 
 pub inline fn getBlock(chunk: *const Chunk, pos: RelPos) block.Kind {
     return switch (chunk.data) {
-        .single => |single| single,
+        .uniform => |kind| kind,
         .one_to_one => |one_to_one| one_to_one.blocks[pos[0]][pos[1]][pos[2]],
     };
 }
 
 pub fn setBlock(chunk: *Chunk, alloc: std.mem.Allocator, pos: RelPos, new: block.Kind) !void {
     switch (chunk.data) {
-        .single => |old| {
+        .uniform => |old| {
             if (old == new) return;
 
             const one_to_one = try alloc.create(OneToOne);
@@ -65,7 +65,7 @@ pub fn setBlock(chunk: *Chunk, alloc: std.mem.Allocator, pos: RelPos, new: block
 /// can give false negatives
 pub inline fn allAirFast(chunk: *const Chunk) bool {
     return switch (chunk.data) {
-        .single => |single| single == .air,
+        .uniform => |kind| kind == .air,
         .one_to_one => false,
     };
 }
@@ -73,7 +73,7 @@ pub inline fn allAirFast(chunk: *const Chunk) bool {
 /// can give false negatives
 pub inline fn allOpaqueFast(chunk: *const Chunk) bool {
     return switch (chunk.data) {
-        .single => |single| single.isOpaque(),
+        .uniform => |kind| kind.isOpaque(),
         else => false,
     };
 }

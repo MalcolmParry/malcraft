@@ -3,6 +3,8 @@ const znet = @import("znet");
 const Chunk = @import("Chunk.zig");
 const block = @import("block.zig");
 
+pub const max_packet_size = 1024 * 64;
+
 pub const server_message = struct {
     pub const Kind = enum(u16) {
         init,
@@ -12,7 +14,7 @@ pub const server_message = struct {
         /// each entry:
         ///     Chunk.PackedPos
         ///     block.Kind
-        many_single_chunk_data,
+        uniform_chunk_batch,
 
         pub fn decode(reader: *std.Io.Reader) !Kind {
             const int = try reader.takeInt(u16, .little);

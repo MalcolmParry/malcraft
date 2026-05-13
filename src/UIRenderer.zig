@@ -207,7 +207,7 @@ pub fn render(ui: *UIRenderer, info: RenderInfo) !void {
             \\Yaw:   {d: >6.2}
             \\Pitch: {d: >6.2}
             \\
-            \\Mesh Buffer: {} / {}kb
+            \\Mesh Buffer: {Bi:.2} / {Bi:.2}
             \\Meshed Chunks: {}
         , .{
             median_fps,

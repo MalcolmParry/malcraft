@@ -251,21 +251,22 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: znet.Event
                     try app.world.placeChunk(alloc, msg.pos, .{ .data = .{ .one_to_one = msg.chunk } });
                     try app.chunk_mesher.addRequestWithFullCollateral(msg.pos.vec());
                 },
-                .many_single_chunk_data => {
+                .uniform_chunk_batch => {
                     var timer: std.time.Timer = try .start();
                     const count = try reader.takeInt(u16, .little);
-                    try app.world.single_chunks.ensureUnusedCapacity(alloc, count);
+                    try app.world.uniform_chunks.ensureUnusedCapacity(alloc, count);
+                    try app.chunk_mesher.queue.ensureUnusedCapacity(alloc, count * 2);
 
                     for (0..count) |_| {
                         const pos = try reader.takeStruct(Chunk.PackedPos, .little);
                         const kind_i = try reader.takeInt(u8, .little);
                         const kind = std.enums.fromInt(block.Kind, kind_i) orelse return error.BadMessage;
 
-                        try app.world.single_chunks.put(alloc, pos, kind);
+                        app.world.uniform_chunks.putAssumeCapacity(pos, kind);
                         try app.chunk_mesher.addRequestWithFullCollateral(pos.vec());
                     }
 
-                    std.log.info("processed packet: {} single chunks: {}ns", .{ count, timer.read() });
+                    std.log.info("processed packet: {} uniform chunks: {}ns", .{ count, timer.read() });
                 },
             }
         },

@@ -79,7 +79,7 @@ pub fn init(this: *@This(), info: InitInfo) !void {
     this.stage_man = try .init(.{
         .alloc = alloc,
         .device = this.device,
-        .buffer_size = 1024 * 1024 * 8,
+        .buffer_size = 1024 * 1024,
         .frames_in_flight = this.info.frames_in_flight,
     });
     errdefer this.stage_man.deinit(this.device, alloc);

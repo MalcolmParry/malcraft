@@ -5,8 +5,6 @@ const Chunk = @import("Chunk.zig");
 const World = @import("World.zig");
 const WorldGenerator = @import("WorldGenerator.zig");
 
-const max_packet_size = 2 + 12 + 1 + @sizeOf(Chunk.OneToOne);
-
 const tps = 20;
 const ms_per_tick = 50;
 const ns_per_tick = ms_per_tick * std.time.ns_per_ms;
@@ -19,6 +17,8 @@ pub fn main() !void {
     var console_input: ConsoleInput = .{};
     const stdin_thread = try std.Thread.spawn(.{}, ConsoleInput.worker, .{&console_input});
     defer stdin_thread.detach();
+    stdin_thread.setName("stdin") catch |err|
+        std.log.warn("failed to set thread name: {}", .{err});
 
     try znet.init();
     defer znet.deinit();
@@ -81,7 +81,7 @@ pub fn main() !void {
                 };
                 next_player_id += 1;
 
-                var buffer: [max_packet_size]u8 = undefined;
+                var buffer: [net.max_packet_size]u8 = undefined;
                 var writer = std.Io.Writer.fixed(&buffer);
                 try init_message.encode(&writer);
 
@@ -90,27 +90,28 @@ pub fn main() !void {
                 total_bytes_sent += init_packet.dataSlice().len;
                 try data.peer.send(init_packet);
 
-                const max_single_entries = (max_packet_size - 4) / 9;
-                var single_iter = world.single_chunks.iterator();
-                var remaining_packets = world.single_chunks.count();
+                const max_uniform_entries = (net.max_packet_size - 4) / 9;
+                var uniform_iter = world.uniform_chunks.iterator();
+                var remaining_entries = world.uniform_chunks.count();
 
-                while (remaining_packets > 0) {
+                while (remaining_entries > 0) {
                     _ = writer.consumeAll();
-                    try writer.writeInt(u16, @intFromEnum(net.server_message.Kind.many_single_chunk_data), .little);
-                    try writer.writeInt(u16, @intCast(@min(remaining_packets, max_single_entries)), .little);
+                    try writer.writeInt(u16, @intFromEnum(net.server_message.Kind.uniform_chunk_batch), .little);
+                    const entry_count = @min(remaining_entries, max_uniform_entries);
+                    try writer.writeInt(u16, @intCast(entry_count), .little);
 
-                    for (0..max_single_entries) |_| {
-                        const entry = single_iter.next() orelse break;
+                    for (0..entry_count) |_| {
+                        const entry = uniform_iter.next() orelse unreachable;
                         const pos = entry.key_ptr.*;
 
                         try writer.writeStruct(pos, .little);
                         try writer.writeInt(u8, @intFromEnum(entry.value_ptr.*), .little);
-                        remaining_packets -= 1;
                     }
 
-                    const single_packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
-                    total_bytes_sent += single_packet.dataSlice().len;
-                    try data.peer.send(single_packet);
+                    remaining_entries -= entry_count;
+                    const packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
+                    total_bytes_sent += packet.dataSlice().len;
+                    try data.peer.send(packet);
                 }
 
                 var one_to_one_iter = world.one_to_one_chunks.iterator();
@@ -150,7 +151,7 @@ pub fn main() !void {
     std.log.info("server stopped", .{});
     std.log.info("tick count: {}", .{tick_count});
     std.log.info("mean work time per tick: {}ns", .{std.math.divFloor(u64, total_work_ns, tick_count) catch 0});
-    std.log.info("total bytes sent: {Bi}", .{total_bytes_sent});
+    std.log.info("total bytes sent: {Bi:.2}", .{total_bytes_sent});
 }
 
 const ConsoleInput = struct {

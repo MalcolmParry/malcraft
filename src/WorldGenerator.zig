@@ -61,7 +61,7 @@ pub fn genMany(
 pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
     const map = try gen.getOrCreateHeightMap(.{ chunk_pos[0], chunk_pos[1] });
     if (isAllOneBlock(map, chunk_pos[2])) |only_block|
-        return .{ .data = .{ .single = only_block } };
+        return .{ .data = .{ .uniform = only_block } };
 
     const pos = chunk_pos * Chunk.size;
     const one_to_one = try gen.alloc.create(Chunk.OneToOne);
