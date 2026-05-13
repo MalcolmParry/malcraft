@@ -65,26 +65,27 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
 
     const pos = chunk_pos * Chunk.size;
     const one_to_one = try gen.alloc.create(Chunk.OneToOne);
+    one_to_one.fill(.air);
 
     for (0..Chunk.len) |ux| {
         for (0..Chunk.len) |uy| {
-            const col = &one_to_one.blocks[ux][uy];
+            const col = one_to_one.getCol(@intCast(ux), @intCast(uy));
             const h = map.map[uy][ux];
             const hr: i32 = h - pos[2];
 
             if (hr <= 0) {
-                @memset(col, .air);
+                Chunk.OneToOne.fillCol(col, 0, Chunk.len, .air);
 
                 if (hr == 0)
-                    col[0] = .grass;
+                    Chunk.OneToOne.setBlockAtIndex(col, 0, .grass);
             } else if (hr >= Chunk.len) {
-                @memset(col, .stone);
+                Chunk.OneToOne.fillCol(col, 0, Chunk.len, .stone);
             } else {
                 const hru: usize = @intCast(hr);
 
-                @memset(col[0..hru], .stone);
-                col[hru] = .grass;
-                @memset(col[hru + 1 ..], .air);
+                Chunk.OneToOne.setBlockAtIndex(col, hru, .grass);
+                Chunk.OneToOne.fillCol(col, 0, hru, .stone);
+                Chunk.OneToOne.fillCol(col, hru + 1, Chunk.len - hru - 1, .air);
             }
         }
     }

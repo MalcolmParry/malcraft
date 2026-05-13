@@ -48,11 +48,7 @@ pub const server_message = struct {
             try writer.writeInt(u16, @intFromEnum(Kind.one_to_one_chunk_data), .little);
             try writer.writeStruct(msg.pos, .little);
 
-            for (&msg.chunk.blocks) |*plane| {
-                for (plane) |*col| {
-                    try writer.writeSliceEndian(block.Kind, col, .little);
-                }
-            }
+            try writer.writeSliceEndian(u8, msg.chunk.blocks[0..], .little);
         }
 
         pub fn decode(alloc: std.mem.Allocator, reader: *std.Io.Reader) !OneToOneChunkData {
@@ -61,11 +57,7 @@ pub const server_message = struct {
             const one_to_one = try alloc.create(Chunk.OneToOne);
             errdefer alloc.destroy(one_to_one);
 
-            for (&one_to_one.blocks) |*plane| {
-                for (plane) |*col| {
-                    try reader.readSliceEndian(block.Kind, col, .little);
-                }
-            }
+            try reader.readSliceEndian(u8, one_to_one.blocks[0..], .little);
 
             return .{
                 .pos = pos,
