@@ -21,6 +21,11 @@ pub fn build(b: *Build) !void {
         .optimize = optimize,
     });
 
+    const zstd = b.dependency("zstd", .{
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+
     const game = b.addExecutable(.{
         .name = "malcraft",
         .root_module = b.createModule(.{
@@ -43,6 +48,8 @@ pub fn build(b: *Build) !void {
             },
         }),
     });
+    game.root_module.linkLibrary(zstd.artifact("zstd"));
+    game.root_module.addIncludePath(zstd.path("lib/"));
 
     const znoise = b.dependency("znoise", .{
         .target = target,
@@ -89,6 +96,8 @@ pub fn build(b: *Build) !void {
 
     server.root_module.addImport("znoise", znoise.module("root"));
     server.linkLibrary(znoise.artifact("FastNoiseLite"));
+    server.root_module.linkLibrary(zstd.artifact("zstd"));
+    server.root_module.addIncludePath(zstd.path("lib/"));
     server.root_module.addOptions("options", options);
 
     const build_server = b.option(bool, "server", "build the server instead of the client") orelse false;

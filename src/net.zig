@@ -4,17 +4,24 @@ const Chunk = @import("Chunk.zig");
 const block = @import("block.zig");
 
 pub const max_packet_size = 1024 * 64;
+pub const chunk_batch_target_size = 1024 * 32;
 
 pub const server_message = struct {
     pub const Kind = enum(u16) {
         init,
-        one_to_one_chunk_data,
 
-        /// u16 for chunk count
-        /// each entry:
-        ///     Chunk.PackedPos
-        ///     block.Kind
+        /// chunk_count: u16,
+        /// entries: [chunk_count]Entry,
+        ///     pos: Chunk.PackedPos,
+        ///     kind: block.Kind,
         uniform_chunk_batch,
+
+        /// chunk_count: u16,
+        /// entries: [chunk_count],
+        ///     pos: Chunk.PackedPos,
+        ///     compressed_size: u16,
+        ///     compressed_bytes: [compressed_size]u8,
+        compressed_chunk_batch,
 
         pub fn decode(reader: *std.Io.Reader) !Kind {
             const int = try reader.takeInt(u16, .little);
@@ -36,32 +43,6 @@ pub const server_message = struct {
 
             return .{
                 .player_id = player_id,
-            };
-        }
-    };
-
-    pub const OneToOneChunkData = struct {
-        pos: Chunk.PackedPos,
-        chunk: *Chunk.OneToOne,
-
-        pub fn encode(msg: OneToOneChunkData, writer: *std.Io.Writer) !void {
-            try writer.writeInt(u16, @intFromEnum(Kind.one_to_one_chunk_data), .little);
-            try writer.writeStruct(msg.pos, .little);
-
-            try writer.writeSliceEndian(u8, msg.chunk.blocks[0..], .little);
-        }
-
-        pub fn decode(alloc: std.mem.Allocator, reader: *std.Io.Reader) !OneToOneChunkData {
-            const pos = try reader.takeStruct(Chunk.PackedPos, .little);
-
-            const one_to_one = try alloc.create(Chunk.OneToOne);
-            errdefer alloc.destroy(one_to_one);
-
-            try reader.readSliceEndian(u8, one_to_one.blocks[0..], .little);
-
-            return .{
-                .pos = pos,
-                .chunk = one_to_one,
             };
         }
     };

@@ -11,6 +11,10 @@ const World = @import("World.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
 const App = @This();
 
+const zstd = @cImport({
+    @cInclude("zstd.h");
+});
+
 host: znet.Host,
 server: znet.Peer,
 
@@ -244,13 +248,6 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: znet.Event
 
                     std.log.info("playerid: {}", .{msg.player_id});
                 },
-                .one_to_one_chunk_data => {
-                    const msg = try net.server_message.OneToOneChunkData.decode(alloc, &reader);
-
-                    app.world.removeChunk(alloc, msg.pos);
-                    try app.world.placeChunk(alloc, msg.pos, .{ .data = .{ .one_to_one = msg.chunk } });
-                    try app.chunk_mesher.addRequestWithFullCollateral(msg.pos.vec());
-                },
                 .uniform_chunk_batch => {
                     var timer: std.time.Timer = try .start();
                     const count = try reader.takeInt(u16, .little);
@@ -267,6 +264,32 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: znet.Event
                     }
 
                     std.log.info("processed packet: {} uniform chunks: {}ns", .{ count, timer.read() });
+                },
+                .compressed_chunk_batch => {
+                    const count = try reader.takeInt(u16, .little);
+                    try app.world.one_to_one_chunks.ensureUnusedCapacity(alloc, count);
+                    try app.chunk_mesher.queue.ensureUnusedCapacity(alloc, count * 2);
+
+                    for (0..count) |_| {
+                        const pos = try reader.takeStruct(Chunk.PackedPos, .little);
+                        const compressed_size: usize = try reader.takeInt(u16, .little);
+                        if (reader.bufferedLen() < compressed_size) return error.BadMessage;
+
+                        const compressed_bytes = reader.buffered()[0..compressed_size];
+                        reader.toss(compressed_size);
+
+                        const one_to_one = try alloc.create(Chunk.OneToOne);
+                        errdefer alloc.destroy(one_to_one);
+
+                        const result = zstd.ZSTD_decompress(std.mem.asBytes(one_to_one), @sizeOf(Chunk.OneToOne), compressed_bytes.ptr, compressed_size);
+                        if (zstd.ZSTD_isError(result) != 0) return error.ZstdDecompressFailed;
+                        if (result != @sizeOf(Chunk.OneToOne)) return error.BadMessage;
+
+                        app.world.one_to_one_chunks.putAssumeCapacity(pos, one_to_one);
+                        try app.chunk_mesher.addRequestWithFullCollateral(pos.vec());
+                    }
+
+                    std.log.info("processed packet: {} 1-1 chunks: {Bi:.2}", .{ count, event.packet.dataSlice().len });
                 },
             }
         },

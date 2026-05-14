@@ -19,5 +19,9 @@
         .znet = .{
             .path = "deps/znet",
         },
+        .zstd = .{
+            .url = "git+https://github.com/allyourcodebase/zstd.git#64ae50e400740a054e6fe890808c515760474473",
+            .hash = "zstd-1.5.7-1-KEItkAMwAAD6OKY3m0OOmXG7aL-aLUfrDqbP5J5oYapU",
+        },
     },
 }
