@@ -126,7 +126,7 @@ pub fn main() !void {
                     while (true) {
                         const maybe_entry = iter.next();
 
-                        if ((maybe_entry == null and chunk_count > 0) or writer.end >= net.chunk_batch_target_size) blk: {
+                        if ((maybe_entry == null and chunk_count > 0) or writer.end >= net.chunk_batch_target_size) {
                             const end = writer.end;
                             writer.end = chunk_count_pos;
                             try writer.writeInt(u16, chunk_count, .little);

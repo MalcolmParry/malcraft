@@ -10,14 +10,16 @@ image: gpu.Image,
 view: gpu.Image.View,
 sampler: gpu.Sampler,
 
-pub const Id = enum(u1) {
+pub const Id = enum(u2) {
     stone,
     grass,
+    water,
 
     pub fn getFilePath(id: Id) []const u8 {
         return switch (id) {
             .stone => "res/textures/stone.png",
             .grass => "res/textures/grass.png",
+            .water => "res/textures/water.png",
         };
     }
 
@@ -26,6 +28,7 @@ pub const Id = enum(u1) {
             .air => unreachable,
             .stone => .stone,
             .grass => .grass,
+            .water => .water,
         };
     }
 };

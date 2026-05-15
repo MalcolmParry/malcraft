@@ -89,7 +89,7 @@ VSOutput vsMain(VSInput input) {
 
     uint w = ((lower >> 18) & 0x1f) + 1;
     uint h = ((lower >> 23) & 0x1f) + 1;
-    uint tex_id = (lower >> 29) & 0x01;
+    uint tex_id = (lower >> 29) & 0x03;
     uint flipped = (lower >> 28) & 0x01;
     uint face = (lower >> 0) & 0x07;
     int3 rel_pos = {

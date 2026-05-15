@@ -25,6 +25,7 @@ pub const Kind = enum(u2) {
     air,
     grass,
     stone,
+    water,
 
     pub fn isOpaque(this: Kind) bool {
         return switch (this) {

@@ -58,6 +58,7 @@ pub fn genMany(
     gen.total_time += timer.read();
 }
 
+const water_height = 80;
 pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
     const map = try gen.getOrCreateHeightMap(.{ chunk_pos[0], chunk_pos[1] });
     if (isAllOneBlock(map, chunk_pos[2])) |only_block|
@@ -69,24 +70,42 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
 
     for (0..Chunk.len) |ux| {
         for (0..Chunk.len) |uy| {
-            const col = one_to_one.getCol(@intCast(ux), @intCast(uy));
-            const h = map.map[uy][ux];
-            const hr: i32 = h - pos[2];
+            // const col = one_to_one.getCol(@intCast(ux), @intCast(uy));
+            const gh = map.map[uy][ux];
+            // const hr: i32 = h - pos[2];
+            // const wr: i32 = water_height - pos[2];
 
-            if (hr <= 0) {
-                Chunk.OneToOne.fillCol(col, 0, Chunk.len, .air);
+            for (0..Chunk.len) |uz| {
+                const h = pos[2] + @as(i32, @intCast(uz));
+                const block_id: block.Kind = switch (std.math.order(h, gh)) {
+                    .gt => if (h <= water_height) .water else .air,
+                    .eq => switch (std.math.order(h, water_height)) {
+                        .lt => .stone,
+                        .eq => .grass,
+                        .gt => .grass,
+                    },
+                    .lt => .stone,
+                };
 
-                if (hr == 0)
-                    Chunk.OneToOne.setBlockAtIndex(col, 0, .grass);
-            } else if (hr >= Chunk.len) {
-                Chunk.OneToOne.fillCol(col, 0, Chunk.len, .stone);
-            } else {
-                const hru: usize = @intCast(hr);
-
-                Chunk.OneToOne.setBlockAtIndex(col, hru, .grass);
-                Chunk.OneToOne.fillCol(col, 0, hru, .stone);
-                Chunk.OneToOne.fillCol(col, hru + 1, Chunk.len - hru - 1, .air);
+                const upos: @Vector(3, usize) = .{ ux, uy, uz };
+                const rel: Chunk.RelPos = @intCast(upos);
+                one_to_one.setBlock(rel, block_id);
             }
+
+            // if (hr <= 0) {
+            //     Chunk.OneToOne.fillCol(col, 0, Chunk.len, .air);
+            //
+            //     if (hr == 0)
+            //         Chunk.OneToOne.setBlockAtIndex(col, 0, .grass);
+            // } else if (hr >= Chunk.len) {
+            //     Chunk.OneToOne.fillCol(col, 0, Chunk.len, .stone);
+            // } else {
+            //     const hru: usize = @intCast(hr);
+            //
+            //     Chunk.OneToOne.setBlockAtIndex(col, hru, .grass);
+            //     Chunk.OneToOne.fillCol(col, 0, hru, .stone);
+            //     Chunk.OneToOne.fillCol(col, hru + 1, Chunk.len - hru - 1, .air);
+            // }
         }
     }
 
@@ -96,7 +115,7 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
 fn isAllOneBlock(map: *HeightMap, cs_z: i32) ?block.Kind {
     const bs_z = cs_z * Chunk.len;
 
-    if (bs_z > map.highest) return .air;
+    if (bs_z > map.highest and bs_z > water_height) return .air;
     if (bs_z + Chunk.len - 1 < map.lowest) return .stone;
     return null;
 }
