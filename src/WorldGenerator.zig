@@ -59,6 +59,8 @@ pub fn genMany(
 }
 
 const water_height = 80;
+const sand_height = 3;
+
 pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
     const map = try gen.getOrCreateHeightMap(.{ chunk_pos[0], chunk_pos[1] });
     if (isAllOneBlock(map, chunk_pos[2])) |only_block|
@@ -66,7 +68,7 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
 
     const pos = chunk_pos * Chunk.size;
     const one_to_one = try gen.alloc.create(Chunk.OneToOne);
-    one_to_one.fill(.air);
+    // one_to_one.fill(.air);
 
     for (0..Chunk.len) |ux| {
         for (0..Chunk.len) |uy| {
@@ -80,11 +82,11 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
                 const block_id: block.Kind = switch (std.math.order(h, gh)) {
                     .gt => if (h <= water_height) .water else .air,
                     .eq => switch (std.math.order(h, water_height)) {
-                        .lt => .stone,
-                        .eq => .grass,
+                        .lt => .sand,
+                        .eq => .sand,
                         .gt => .grass,
                     },
-                    .lt => .stone,
+                    .lt => if (gh <= water_height and h + sand_height > gh) .sand else .stone,
                 };
 
                 const upos: @Vector(3, usize) = .{ ux, uy, uz };
@@ -113,10 +115,11 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
 }
 
 fn isAllOneBlock(map: *HeightMap, cs_z: i32) ?block.Kind {
-    const bs_z = cs_z * Chunk.len;
+    const bottom = cs_z * Chunk.len;
+    const top = bottom + Chunk.len - 1;
 
-    if (bs_z > map.highest and bs_z > water_height) return .air;
-    if (bs_z + Chunk.len - 1 < map.lowest) return .stone;
+    if (bottom > map.highest and bottom > water_height) return .air;
+    if (top < map.lowest - sand_height) return .stone;
     return null;
 }
 

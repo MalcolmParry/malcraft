@@ -14,12 +14,14 @@ pub const Id = enum(u2) {
     stone,
     grass,
     water,
+    sand,
 
     pub fn getFilePath(id: Id) []const u8 {
         return switch (id) {
             .stone => "res/textures/stone.png",
             .grass => "res/textures/grass.png",
             .water => "res/textures/water.png",
+            .sand => "res/textures/sand.png",
         };
     }
 
@@ -29,6 +31,7 @@ pub const Id = enum(u2) {
             .stone => .stone,
             .grass => .grass,
             .water => .water,
+            .sand => .sand,
         };
     }
 };

@@ -21,11 +21,12 @@ pub const PackedPos = packed struct(u64) {
     }
 };
 
-pub const Kind = enum(u2) {
+pub const Kind = enum(u4) {
     air,
     grass,
     stone,
     water,
+    sand,
 
     pub fn isOpaque(this: Kind) bool {
         return switch (this) {
