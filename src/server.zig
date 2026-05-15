@@ -53,7 +53,7 @@ pub fn main() !void {
 
     std.log.info("world gen done", .{});
 
-    var next_player_id: u32 = 0;
+    var next_player_id: u16 = 0;
     var tick_timer = try std.time.Timer.start();
     var tick_count: u64 = 0;
     var total_work_ns: u64 = 0;
@@ -80,17 +80,14 @@ pub fn main() !void {
             .connect => |data| {
                 std.log.info("connection from {f}", .{data.peer.address()});
 
-                const init_message: net.server_message.Init = .{
-                    .player_id = next_player_id,
-                };
-                next_player_id += 1;
-
                 var buffer: [net.max_packet_size]u8 = undefined;
                 var writer = std.Io.Writer.fixed(&buffer);
-                try init_message.encode(&writer);
+
+                try net.ServerMsgId.init.encode(&writer);
+                try writer.writeInt(u16, next_player_id, .little);
+                next_player_id += 1;
 
                 const init_packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
-
                 total_bytes_sent += init_packet.dataSlice().len;
                 try data.peer.send(init_packet);
 
@@ -100,7 +97,7 @@ pub fn main() !void {
 
                 while (remaining_entries > 0) {
                     _ = writer.consumeAll();
-                    try writer.writeInt(u16, @intFromEnum(net.server_message.Kind.uniform_chunk_batch), .little);
+                    try net.ServerMsgId.uniform_chunk_batch.encode(&writer);
                     const entry_count = @min(remaining_entries, target_uniform_entries);
                     try writer.writeInt(u16, @intCast(entry_count), .little);
 
@@ -119,55 +116,49 @@ pub fn main() !void {
                 }
 
                 {
-                    const Compressed = struct {
-                        pos: Chunk.PackedPos,
-                        start: u16,
-                        len: u16,
-                    };
+                    _ = writer.consumeAll();
+                    try net.ServerMsgId.compressed_chunk_batch.encode(&writer);
+                    const chunk_count_pos = writer.end;
+                    try writer.writeInt(u16, 0, .little);
+                    var chunk_count: u16 = 0;
 
-                    var compress_buffer: [net.max_packet_size]u8 = undefined;
-                    var total_compressed_bytes: usize = 0;
-
-                    var compressed: std.ArrayList(Compressed) = try .initCapacity(alloc, net.chunk_batch_target_size / 250);
-                    defer compressed.deinit(alloc);
-
-                    var one_to_one_iter = world.one_to_one_chunks.iterator();
+                    var iter = world.one_to_one_chunks.iterator();
                     while (true) {
-                        const maybe_entry = one_to_one_iter.next();
+                        const maybe_entry = iter.next();
 
-                        if (maybe_entry == null or total_compressed_bytes >= net.chunk_batch_target_size) {
-                            defer compressed.clearRetainingCapacity();
-                            defer total_compressed_bytes = 0;
-
-                            _ = writer.consumeAll();
-                            try writer.writeInt(u16, @intFromEnum(net.server_message.Kind.compressed_chunk_batch), .little);
-                            try writer.writeInt(u16, @intCast(compressed.items.len), .little);
-
-                            for (compressed.items) |x| {
-                                try writer.writeStruct(x.pos, .little);
-                                try writer.writeInt(u16, x.len, .little);
-                                try writer.writeSliceEndian(u8, compress_buffer[x.start..][0..x.len], .little);
-                            }
+                        if ((maybe_entry == null and chunk_count > 0) or writer.end >= net.chunk_batch_target_size) blk: {
+                            const end = writer.end;
+                            writer.end = chunk_count_pos;
+                            try writer.writeInt(u16, chunk_count, .little);
+                            writer.end = end;
 
                             const packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
-                            total_bytes_sent += packet.dataSlice().len;
                             try data.peer.send(packet);
+
+                            total_bytes_sent += packet.dataSlice().len;
+                            chunk_count = 0;
+
+                            _ = writer.consumeAll();
+                            try net.ServerMsgId.compressed_chunk_batch.encode(&writer);
+                            try writer.writeInt(u16, 0, .little);
                         }
 
                         const entry = maybe_entry orelse break;
                         const pos = entry.key_ptr.*;
 
-                        const remaining_compress_buffer = compress_buffer[total_compressed_bytes..];
-                        const compressed_size = zstd.ZSTD_compress(remaining_compress_buffer.ptr, remaining_compress_buffer.len, entry.value_ptr.*, @sizeOf(Chunk.OneToOne), 1);
+                        try writer.writeStruct(pos, .little);
+                        const compressed_size_pos = writer.end;
+                        try writer.writeInt(u16, 0, .little);
+
+                        const compress_buffer = writer.unusedCapacitySlice();
+                        const compressed_size = zstd.ZSTD_compress(compress_buffer.ptr, compress_buffer.len, entry.value_ptr.*, @sizeOf(Chunk.OneToOne), 1);
                         if (zstd.ZSTD_isError(compressed_size) != 0) return error.ZstdCompressFailed;
 
-                        try compressed.append(alloc, .{
-                            .pos = pos,
-                            .start = @intCast(total_compressed_bytes),
-                            .len = @intCast(compressed_size),
-                        });
-
-                        total_compressed_bytes += compressed_size;
+                        const end = writer.end + compressed_size;
+                        writer.end = compressed_size_pos;
+                        try writer.writeInt(u16, @intCast(compressed_size), .little);
+                        writer.end = end;
+                        chunk_count += 1;
                     }
                 }
             },
@@ -181,7 +172,7 @@ pub fn main() !void {
 
         const work_ns = tick_timer.read();
         tick_count += 1;
-        total_work_ns += tick_timer.read();
+        total_work_ns += work_ns;
 
         if (work_ns > ns_per_tick) continue;
         const remaining_ns = ns_per_tick - work_ns;
@@ -192,7 +183,6 @@ pub fn main() !void {
     std.log.info("tick count: {}", .{tick_count});
     std.log.info("mean work time per tick: {}ns", .{std.math.divFloor(u64, total_work_ns, tick_count) catch 0});
     std.log.info("total bytes sent: {Bi:.2}", .{total_bytes_sent});
-    std.log.info("bytes per 1-1 chunk: {Bi:.2}", .{std.math.divFloor(usize, total_compressed_chunk_bytes, total_one_to_one_chunks) catch 0});
 }
 
 const ConsoleInput = struct {

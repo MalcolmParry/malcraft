@@ -240,13 +240,13 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: znet.Event
         .receive => |event| {
             defer event.packet.deinit();
             var reader = event.packet.reader();
-            const msg_kind = try net.server_message.Kind.decode(&reader);
+            const msg_id = try net.ServerMsgId.decode(&reader);
 
-            switch (msg_kind) {
+            switch (msg_id) {
                 .init => {
-                    const msg = try net.server_message.Init.decode(&reader);
+                    const player_id = try reader.takeInt(u16, .little);
 
-                    std.log.info("playerid: {}", .{msg.player_id});
+                    std.log.info("player_id: {}", .{player_id});
                 },
                 .uniform_chunk_batch => {
                     var timer: std.time.Timer = try .start();
@@ -263,7 +263,7 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: znet.Event
                         try app.chunk_mesher.addRequestWithFullCollateral(pos.vec());
                     }
 
-                    std.log.info("processed packet: {} uniform chunks: {}ns", .{ count, timer.read() });
+                    std.log.info("processed packet: {d: >4} uniform chunks: {d: >4}μs", .{ count, timer.read() / 1000 });
                 },
                 .compressed_chunk_batch => {
                     const count = try reader.takeInt(u16, .little);
@@ -285,11 +285,12 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: znet.Event
                         if (zstd.ZSTD_isError(result) != 0) return error.ZstdDecompressFailed;
                         if (result != @sizeOf(Chunk.OneToOne)) return error.BadMessage;
 
+                        app.world.removeChunk(alloc, pos);
                         app.world.one_to_one_chunks.putAssumeCapacity(pos, one_to_one);
                         try app.chunk_mesher.addRequestWithFullCollateral(pos.vec());
                     }
 
-                    std.log.info("processed packet: {} 1-1 chunks: {Bi:.2}", .{ count, event.packet.dataSlice().len });
+                    std.log.info("processed packet: {d: >3} 1-1 chunks: {Bi:.2}", .{ count, event.packet.dataSlice().len });
                 },
             }
         },
