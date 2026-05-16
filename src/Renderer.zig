@@ -291,6 +291,7 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
         .chunk_mesh_buffer_bytes_used = (ChunkMeshAllocator.buffer_size - this.chunk_mesh_alloc.queryBytesFree()) / 1024,
         .chunk_mesh_buffer_bytes_total = ChunkMeshAllocator.buffer_size / 1024,
         .loaded_mesh_count = this.chunk_mesh_alloc.loaded_meshes.count(),
+        .overwritten_meshes = this.chunk_mesh_alloc.overwritten_meshes,
     });
 
     per_frame.cmd_encoder.cmdMemoryBarrier(.{

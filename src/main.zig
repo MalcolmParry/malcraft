@@ -1,11 +1,13 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const App = @import("App.zig");
 const Renderer = @import("Renderer.zig");
+const GPA = @import("utils/GPA.zig");
 
 pub fn main() !void {
-    var alloc_obj = std.heap.DebugAllocator(.{}).init;
-    defer _ = alloc_obj.deinit();
-    const alloc = alloc_obj.allocator();
+    var gpa_obj: GPA = .init();
+    defer gpa_obj.deinit();
+    const alloc = gpa_obj.allocator();
 
     var app: App = undefined;
     try app.init(alloc);

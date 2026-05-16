@@ -1,9 +1,11 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const znet = @import("znet");
 const net = @import("net.zig");
 const Chunk = @import("Chunk.zig");
 const World = @import("World.zig");
 const WorldGenerator = @import("WorldGenerator.zig");
+const GPA = @import("utils/GPA.zig");
 
 const zstd = @cImport({
     @cInclude("zstd.h");
@@ -14,8 +16,8 @@ const ms_per_tick = 50;
 const ns_per_tick = ms_per_tick * std.time.ns_per_ms;
 
 pub fn main() !void {
-    var alloc_obj = std.heap.DebugAllocator(.{}).init;
-    defer _ = alloc_obj.deinit();
+    var alloc_obj: GPA = .init();
+    defer alloc_obj.deinit();
     const alloc = alloc_obj.allocator();
 
     var console_input: ConsoleInput = .{};
@@ -79,6 +81,9 @@ pub fn main() !void {
         while (try host.service(0)) |anyevent| switch (anyevent) {
             .connect => |data| {
                 std.log.info("connection from {f}", .{data.peer.address()});
+
+                var timer: std.time.Timer = try .start();
+                defer std.log.info("time taken to send world: {}μs", .{timer.read() / 1000});
 
                 var buffer: [net.max_packet_size]u8 = undefined;
                 var writer = std.Io.Writer.fixed(&buffer);
@@ -161,6 +166,11 @@ pub fn main() !void {
                         chunk_count += 1;
                     }
                 }
+
+                _ = writer.consumeAll();
+                try net.ServerMsgId.done.encode(&writer);
+                const packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
+                try data.peer.send(packet);
             },
             .disconnect => |data| {
                 std.log.info("disconnected {f}", .{data.peer.address()});

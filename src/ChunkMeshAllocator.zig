@@ -21,6 +21,7 @@ free_list: std.DoublyLinkedList,
 alloc: std.mem.Allocator,
 device: gpu.Device,
 loaded_meshes: std.AutoArrayHashMapUnmanaged(Chunk.PackedPos, ChunkMesher.GpuLoaded),
+overwritten_meshes: u64,
 
 const FreeRegion = struct {
     offset: gpu.Size,
@@ -67,6 +68,7 @@ pub fn init(this: *ChunkMeshAllocator, info: InitInfo) !void {
     this.device = info.device;
     this.loaded_meshes = .empty;
     this.upload_man = info.upload_man;
+    this.overwritten_meshes = 0;
 }
 
 pub fn deinit(this: *ChunkMeshAllocator) void {
@@ -114,7 +116,11 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, on_cpu: []const Chunk
     });
 
     const entry = this.loaded_meshes.getOrPutAssumeCapacity(pos);
-    if (entry.found_existing) try this.queueFree(entry.value_ptr.*);
+    if (entry.found_existing) {
+        try this.queueFree(entry.value_ptr.*);
+        this.overwritten_meshes += 1;
+    }
+
     entry.value_ptr.* = on_gpu;
 }
 

@@ -29,6 +29,7 @@ last_cursor: math.Vec2,
 
 world: World,
 chunk_mesher: ChunkMesher,
+chunk_recv_timer: ?std.time.Timer = null,
 
 pub fn init(app: *App, alloc: std.mem.Allocator) !void {
     try znet.init();
@@ -221,6 +222,7 @@ fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData
         if (!math.eql(moved, math.splat2(f32, 0))) {
             moved *= @splat(math.rad(0.18));
             app.camera.euler += math.shuffle(moved, &.{ .zero, .y, .x });
+            app.camera.euler[1] = std.math.clamp(app.camera.euler[1], math.rad(-90.0), math.rad(90.0));
         }
     }
 
@@ -241,6 +243,8 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: znet.Event
             defer event.packet.deinit();
             var reader = event.packet.reader();
             const msg_id = try net.ServerMsgId.decode(&reader);
+
+            if (app.chunk_recv_timer == null) app.chunk_recv_timer = try .start();
 
             switch (msg_id) {
                 .init => {
@@ -291,6 +295,9 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: znet.Event
                     }
 
                     std.log.info("processed packet: {d: >3} 1-1 chunks: {Bi:.2}", .{ count, event.packet.dataSlice().len });
+                },
+                .done => {
+                    std.log.info("chunk recv done, took {}μs", .{app.chunk_recv_timer.?.read() / 1000});
                 },
             }
         },

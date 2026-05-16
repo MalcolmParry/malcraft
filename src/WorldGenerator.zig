@@ -4,7 +4,7 @@ const mw = @import("mwengine");
 const math = mw.math;
 const block = @import("block.zig");
 const Chunk = @import("Chunk.zig");
-const Deque = @import("deque.zig").Deque;
+const Deque = @import("utils/deque.zig").Deque;
 const World = @import("World.zig");
 const znoise = @import("znoise");
 
@@ -81,11 +81,7 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
                 const h = pos[2] + @as(i32, @intCast(uz));
                 const block_id: block.Kind = switch (std.math.order(h, gh)) {
                     .gt => if (h <= water_height) .water else .air,
-                    .eq => switch (std.math.order(h, water_height)) {
-                        .lt => .sand,
-                        .eq => .sand,
-                        .gt => .grass,
-                    },
+                    .eq => if (h > water_height) .grass else .sand,
                     .lt => if (gh <= water_height and h + sand_height > gh) .sand else .stone,
                 };
 
@@ -118,7 +114,11 @@ fn isAllOneBlock(map: *HeightMap, cs_z: i32) ?block.Kind {
     const bottom = cs_z * Chunk.len;
     const top = bottom + Chunk.len - 1;
 
-    if (bottom > map.highest and bottom > water_height) return .air;
+    if (bottom > map.highest) {
+        if (bottom > water_height) return .air;
+        if (top <= water_height) return .water;
+    }
+
     if (top < map.lowest - sand_height) return .stone;
     return null;
 }
