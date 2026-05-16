@@ -37,35 +37,3 @@ pub const ServerMsgId = enum(u8) {
         return std.enums.fromInt(ServerMsgId, int) orelse error.BadMessage;
     }
 };
-
-pub fn shutdown(host: znet.Host) void {
-    defer host.deinit();
-
-    var iter = host.iterPeers();
-    while (iter.next()) |peer| {
-        peer.disconnect(0);
-    }
-
-    var timer = std.time.Timer.start() catch return;
-    while (timer.read() < std.time.ns_per_s * 3) {
-        while (host.service(100) catch return) |event| switch (event) {
-            .connect => |data| {
-                data.peer.reset();
-            },
-            .disconnect => {},
-            .receive => |data| {
-                data.packet.deinit();
-            },
-        };
-
-        var remaining: bool = false;
-        iter = host.iterPeers();
-        while (iter.next()) |peer| {
-            if (peer.state() != .disconnected) {
-                remaining = true;
-            }
-        }
-
-        if (!remaining) return;
-    }
-}

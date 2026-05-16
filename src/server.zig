@@ -1,11 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const znet = @import("znet");
-const net = @import("net.zig");
 const Chunk = @import("Chunk.zig");
 const World = @import("World.zig");
 const WorldGenerator = @import("WorldGenerator.zig");
 const GPA = @import("utils/GPA.zig");
+const protocol = @import("protocol.zig");
+const ServerMsgId = protocol.ServerMsgId;
+const NetworkManager = @import("NetworkManager.zig");
 
 const zstd = @cImport({
     @cInclude("zstd.h");
@@ -29,17 +31,18 @@ pub fn main() !void {
     try znet.init();
     defer znet.deinit();
 
-    const host = try znet.Host.init(.{
+    var net_man: NetworkManager = undefined;
+    try net_man.init(alloc, .{
         .addr = try .init(.{
             .ip = .any,
             .port = .{ .uint = 5000 },
         }),
-        .peer_limit = 32,
         .channel_limit = .{ .count = 1 },
+        .peer_limit = 32,
         .incoming_bandwidth = .unlimited,
         .outgoing_bandwidth = .unlimited,
     });
-    defer net.shutdown(host);
+    defer net_man.deinit();
 
     std.log.info("server started", .{});
 
@@ -78,31 +81,31 @@ pub fn main() !void {
             }
         }
 
-        while (try host.service(0)) |anyevent| switch (anyevent) {
-            .connect => |data| {
-                std.log.info("connection from {f}", .{data.peer.address()});
+        while (net_man.popEvent()) |event| switch (event) {
+            .connect => |peer| {
+                std.log.info("connection from {f}", .{peer.address()});
 
                 var timer: std.time.Timer = try .start();
                 defer std.log.info("time taken to send world: {}μs", .{timer.read() / 1000});
 
-                var buffer: [net.max_packet_size]u8 = undefined;
+                var buffer: [protocol.max_packet_size]u8 = undefined;
                 var writer = std.Io.Writer.fixed(&buffer);
 
-                try net.ServerMsgId.init.encode(&writer);
+                try ServerMsgId.init.encode(&writer);
                 try writer.writeInt(u16, next_player_id, .little);
                 next_player_id += 1;
 
                 const init_packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
                 total_bytes_sent += init_packet.dataSlice().len;
-                try data.peer.send(init_packet);
+                try net_man.send(peer, init_packet);
 
-                const target_uniform_entries = (net.chunk_batch_target_size - 4) / 9;
+                const target_uniform_entries = (protocol.chunk_batch_target_size - 4) / 9;
                 var uniform_iter = world.uniform_chunks.iterator();
                 var remaining_entries = world.uniform_chunks.count();
 
                 while (remaining_entries > 0) {
                     _ = writer.consumeAll();
-                    try net.ServerMsgId.uniform_chunk_batch.encode(&writer);
+                    try ServerMsgId.uniform_chunk_batch.encode(&writer);
                     const entry_count = @min(remaining_entries, target_uniform_entries);
                     try writer.writeInt(u16, @intCast(entry_count), .little);
 
@@ -117,12 +120,12 @@ pub fn main() !void {
                     remaining_entries -= entry_count;
                     const packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
                     total_bytes_sent += packet.dataSlice().len;
-                    try data.peer.send(packet);
+                    try net_man.send(peer, packet);
                 }
 
                 {
                     _ = writer.consumeAll();
-                    try net.ServerMsgId.compressed_chunk_batch.encode(&writer);
+                    try ServerMsgId.compressed_chunk_batch.encode(&writer);
                     const chunk_count_pos = writer.end;
                     try writer.writeInt(u16, 0, .little);
                     var chunk_count: u16 = 0;
@@ -131,20 +134,20 @@ pub fn main() !void {
                     while (true) {
                         const maybe_entry = iter.next();
 
-                        if ((maybe_entry == null and chunk_count > 0) or writer.end >= net.chunk_batch_target_size) {
+                        if ((maybe_entry == null and chunk_count > 0) or writer.end >= protocol.chunk_batch_target_size) {
                             const end = writer.end;
                             writer.end = chunk_count_pos;
                             try writer.writeInt(u16, chunk_count, .little);
                             writer.end = end;
 
                             const packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
-                            try data.peer.send(packet);
+                            try net_man.send(peer, packet);
 
                             total_bytes_sent += packet.dataSlice().len;
                             chunk_count = 0;
 
                             _ = writer.consumeAll();
-                            try net.ServerMsgId.compressed_chunk_batch.encode(&writer);
+                            try ServerMsgId.compressed_chunk_batch.encode(&writer);
                             try writer.writeInt(u16, 0, .little);
                         }
 
@@ -168,15 +171,15 @@ pub fn main() !void {
                 }
 
                 _ = writer.consumeAll();
-                try net.ServerMsgId.done.encode(&writer);
+                try ServerMsgId.done.encode(&writer);
                 const packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
-                try data.peer.send(packet);
+                try net_man.send(peer, packet);
             },
-            .disconnect => |data| {
-                std.log.info("disconnected {f}", .{data.peer.address()});
+            .disconnect => |peer| {
+                std.log.info("disconnected {f}", .{peer.address()});
             },
-            .receive => |data| {
-                defer data.packet.deinit();
+            .receive => |packet_peer| {
+                defer packet_peer.packet.deinit();
             },
         };
 

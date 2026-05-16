@@ -2,7 +2,9 @@ const std = @import("std");
 const mw = @import("mwengine");
 const math = mw.math;
 const znet = @import("znet");
-const net = @import("net.zig");
+const NetworkManager = @import("NetworkManager.zig");
+const protocol = @import("protocol.zig");
+const ServerMsgId = protocol.ServerMsgId;
 const Renderer = @import("Renderer.zig");
 const Camera = @import("Camera.zig");
 const block = @import("block.zig");
@@ -15,7 +17,7 @@ const zstd = @cImport({
     @cInclude("zstd.h");
 });
 
-host: znet.Host,
+net_man: NetworkManager,
 server: znet.Peer,
 
 should_close: bool = false,
@@ -35,31 +37,13 @@ pub fn init(app: *App, alloc: std.mem.Allocator) !void {
     try znet.init();
     errdefer znet.deinit();
 
-    const host = try znet.Host.init(.{
-        .addr = null,
-        .peer_limit = 1,
-        .channel_limit = .{ .count = 1 },
-        .incoming_bandwidth = .unlimited,
-        .outgoing_bandwidth = .unlimited,
-    });
-    errdefer host.deinit();
-
-    const peer = try host.connect(.{
-        .addr = try .init(.{
-            .ip = .{ .ipv4 = "localhost" },
-            .port = .{ .uint = 5000 },
-        }),
-        .channel_limit = .{ .count = 1 },
-        .data = 0,
-    });
-
     const window: *mw.Window = try .init(alloc, "malcraft", .{ 100, 100 });
     errdefer window.deinit();
     try window.setCursorMode(.disabled);
 
     app.* = .{
-        .host = host,
-        .server = peer,
+        .net_man = undefined,
+        .server = undefined,
 
         .window = window,
         .renderer = undefined,
@@ -70,6 +54,33 @@ pub fn init(app: *App, alloc: std.mem.Allocator) !void {
         .world = .{},
         .chunk_mesher = undefined,
     };
+
+    try app.net_man.init(alloc, .{
+        .addr = try .init(.{
+            .ip = .any,
+            .port = .any,
+        }),
+        .channel_limit = .{ .count = 1 },
+        .peer_limit = 1,
+        .outgoing_bandwidth = .unlimited,
+        .incoming_bandwidth = .unlimited,
+    });
+    errdefer app.net_man.deinit();
+
+    var semaphore: std.Thread.Semaphore = .{};
+    try app.net_man.pushCommand(.{ .connect = .{
+        .config = .{
+            .addr = try .init(.{
+                .ip = .{ .ipv4 = "localhost" },
+                .port = .{ .uint = 5000 },
+            }),
+            .channel_limit = .{ .count = 1 },
+            .data = 0,
+        },
+        .peer = &app.server,
+        .semaphore = &semaphore,
+    } });
+    semaphore.wait();
 
     try app.renderer.init(.{
         .alloc = alloc,
@@ -93,8 +104,7 @@ pub fn deinit(app: *App, alloc: std.mem.Allocator) void {
     app.world.deinit(alloc);
 
     app.server.disconnect(0);
-    app.host.flush();
-    app.host.deinit();
+    app.net_man.deinit();
     znet.deinit();
 }
 
@@ -109,8 +119,8 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
 
     const renderer_input = try app.handleInput(alloc, dt);
 
-    while (try app.host.service(0)) |any_event| {
-        try app.handleNetworkEvent(alloc, any_event);
+    while (app.net_man.popEvent()) |event| {
+        try app.handleNetworkEvent(alloc, event);
     }
 
     try app.renderer.render(.{
@@ -229,10 +239,10 @@ fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData
     return renderer_input;
 }
 
-fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: znet.Event) !void {
+fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkManager.Event) !void {
     switch (any_event) {
-        .connect => |event| {
-            std.log.info("connected to server at {f}", .{event.peer.address()});
+        .connect => |peer| {
+            std.log.info("connected to server at {f}", .{peer.address()});
         },
         .disconnect => |_| {
             std.log.info("disconnected from server at {f}", .{app.server.address()});
@@ -242,7 +252,7 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: znet.Event
         .receive => |event| {
             defer event.packet.deinit();
             var reader = event.packet.reader();
-            const msg_id = try net.ServerMsgId.decode(&reader);
+            const msg_id = try ServerMsgId.decode(&reader);
 
             if (app.chunk_recv_timer == null) app.chunk_recv_timer = try .start();
 
