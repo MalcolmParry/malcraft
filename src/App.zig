@@ -18,7 +18,7 @@ const zstd = @cImport({
 });
 
 net_man: NetworkManager,
-server: znet.Peer,
+server: NetworkManager.PeerData,
 
 should_close: bool = false,
 window: *mw.Window,
@@ -103,7 +103,6 @@ pub fn deinit(app: *App, alloc: std.mem.Allocator) void {
     app.chunk_mesher.deinit();
     app.world.deinit(alloc);
 
-    app.server.disconnect(0);
     app.net_man.deinit();
     znet.deinit();
 }
@@ -242,10 +241,10 @@ fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData
 fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkManager.Event) !void {
     switch (any_event) {
         .connect => |peer| {
-            std.log.info("connected to server at {f}", .{peer.address()});
+            std.log.info("connected to server at {f}", .{peer.address});
         },
         .disconnect => |_| {
-            std.log.info("disconnected from server at {f}", .{app.server.address()});
+            std.log.info("disconnected from server at {f}", .{app.server.address});
 
             return error.ServerClosed;
         },

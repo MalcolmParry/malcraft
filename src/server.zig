@@ -83,7 +83,7 @@ pub fn main() !void {
 
         while (try net_man.popEvent()) |event| switch (event) {
             .connect => |peer| {
-                std.log.info("connection from {f}", .{peer.address()});
+                std.log.info("connection from {f}", .{peer.address});
 
                 var timer: std.time.Timer = try .start();
                 defer std.log.info("time taken to send world: {}μs", .{timer.read() / 1000});
@@ -98,7 +98,7 @@ pub fn main() !void {
                 const init_channel = protocol.Channel.control;
                 const init_packet = try znet.Packet.init(writer.buffered(), init_channel.toInt(), init_channel.getFlags());
                 total_bytes_sent += init_packet.dataSlice().len;
-                try net_man.send(peer, init_packet);
+                try net_man.send(peer.ref, init_packet);
 
                 const target_uniform_entries = (protocol.chunk_batch_target_size - 4) / 9;
                 var uniform_iter = world.uniform_chunks.iterator();
@@ -122,7 +122,7 @@ pub fn main() !void {
                     const channel = protocol.Channel.chunk_transfer;
                     const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
                     total_bytes_sent += packet.dataSlice().len;
-                    try net_man.send(peer, packet);
+                    try net_man.send(peer.ref, packet);
                 }
 
                 {
@@ -144,7 +144,7 @@ pub fn main() !void {
 
                             const channel = protocol.Channel.chunk_transfer;
                             const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
-                            try net_man.send(peer, packet);
+                            try net_man.send(peer.ref, packet);
 
                             total_bytes_sent += packet.dataSlice().len;
                             chunk_count = 0;
@@ -176,10 +176,10 @@ pub fn main() !void {
                 _ = writer.consumeAll();
                 try ServerMsgId.done.encode(&writer);
                 const packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
-                try net_man.send(peer, packet);
+                try net_man.send(peer.ref, packet);
             },
             .disconnect => |peer| {
-                std.log.info("disconnected {f}", .{peer.address()});
+                std.log.info("disconnected {f}", .{peer.address});
             },
             .receive => |packet_peer| {
                 defer packet_peer.packet.deinit();
