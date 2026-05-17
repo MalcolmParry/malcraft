@@ -10,6 +10,7 @@ const cl = std.atomic.cache_line;
 
 alloc: std.mem.Allocator,
 thread: std.Thread,
+failed: std.atomic.Value(bool) = .init(false),
 running: std.atomic.Value(bool) = .init(true),
 // TODO: replace this with atomic queue
 mutex: std.Thread.Mutex = .{},
@@ -48,13 +49,17 @@ pub fn send(man: *NetworkManager, peer: znet.Peer, packet: znet.Packet) !void {
 }
 
 pub fn pushCommand(man: *NetworkManager, cmd: Command) !void {
+    if (man.failed.load(.monotonic)) return error.NetworkFailed;
+
     man.mutex.lock();
     defer man.mutex.unlock();
 
     try man.outgoing.pushBack(man.alloc, cmd);
 }
 
-pub fn popEvent(man: *NetworkManager) ?Event {
+pub fn popEvent(man: *NetworkManager) !?Event {
+    if (man.failed.load(.monotonic)) return error.NetworkFailed;
+
     man.mutex.lock();
     defer man.mutex.unlock();
 
@@ -62,6 +67,8 @@ pub fn popEvent(man: *NetworkManager) ?Event {
 }
 
 fn worker(man: *NetworkManager, host_config: znet.HostConfig) !void {
+    errdefer man.failed.store(true, .monotonic);
+
     const host = try znet.Host.init(host_config);
     defer shutdown(host);
 
@@ -94,6 +101,8 @@ fn worker(man: *NetworkManager, host_config: znet.HostConfig) !void {
                 try man.incoming.pushBack(man.alloc, .{ .disconnect = data.peer });
             },
             .receive => |data| {
+                errdefer data.packet.deinit();
+
                 try man.incoming.pushBack(man.alloc, .{
                     .receive = .{
                         .peer = data.peer,

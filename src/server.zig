@@ -37,10 +37,10 @@ pub fn main() !void {
             .ip = .any,
             .port = .{ .uint = 5000 },
         }),
-        .channel_limit = .{ .count = 1 },
+        .channel_limit = .{ .count = std.enums.values(protocol.Channel).len },
         .peer_limit = 32,
         .incoming_bandwidth = .unlimited,
-        .outgoing_bandwidth = .unlimited,
+        .outgoing_bandwidth = .{ .bps = 64 * 1024 * 1024 },
     });
     defer net_man.deinit();
 
@@ -81,7 +81,7 @@ pub fn main() !void {
             }
         }
 
-        while (net_man.popEvent()) |event| switch (event) {
+        while (try net_man.popEvent()) |event| switch (event) {
             .connect => |peer| {
                 std.log.info("connection from {f}", .{peer.address()});
 
@@ -95,7 +95,8 @@ pub fn main() !void {
                 try writer.writeInt(u16, next_player_id, .little);
                 next_player_id += 1;
 
-                const init_packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
+                const init_channel = protocol.Channel.control;
+                const init_packet = try znet.Packet.init(writer.buffered(), init_channel.toInt(), init_channel.getFlags());
                 total_bytes_sent += init_packet.dataSlice().len;
                 try net_man.send(peer, init_packet);
 
@@ -118,7 +119,8 @@ pub fn main() !void {
                     }
 
                     remaining_entries -= entry_count;
-                    const packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
+                    const channel = protocol.Channel.chunk_transfer;
+                    const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
                     total_bytes_sent += packet.dataSlice().len;
                     try net_man.send(peer, packet);
                 }
@@ -140,7 +142,8 @@ pub fn main() !void {
                             try writer.writeInt(u16, chunk_count, .little);
                             writer.end = end;
 
-                            const packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
+                            const channel = protocol.Channel.chunk_transfer;
+                            const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
                             try net_man.send(peer, packet);
 
                             total_bytes_sent += packet.dataSlice().len;

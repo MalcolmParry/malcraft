@@ -37,3 +37,20 @@ pub const ServerMsgId = enum(u8) {
         return std.enums.fromInt(ServerMsgId, int) orelse error.BadMessage;
     }
 };
+
+pub const Channel = enum(u8) {
+    control,
+    chunk_transfer,
+
+    pub fn toInt(channel: Channel) u8 {
+        return @intFromEnum(channel);
+    }
+
+    pub fn getFlags(channel: Channel) znet.Flags {
+        return switch (channel) {
+            .control,
+            .chunk_transfer,
+            => .reliable,
+        };
+    }
+};

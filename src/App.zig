@@ -74,7 +74,7 @@ pub fn init(app: *App, alloc: std.mem.Allocator) !void {
                 .ip = .{ .ipv4 = "localhost" },
                 .port = .{ .uint = 5000 },
             }),
-            .channel_limit = .{ .count = 1 },
+            .channel_limit = .{ .count = std.enums.values(protocol.Channel).len },
             .data = 0,
         },
         .peer = &app.server,
@@ -119,7 +119,7 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
 
     const renderer_input = try app.handleInput(alloc, dt);
 
-    while (app.net_man.popEvent()) |event| {
+    while (try app.net_man.popEvent()) |event| {
         try app.handleNetworkEvent(alloc, event);
     }
 

@@ -73,7 +73,7 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
     for (0..Chunk.len) |ux| {
         for (0..Chunk.len) |uy| {
             // const col = one_to_one.getCol(@intCast(ux), @intCast(uy));
-            const gh = map.map[uy][ux];
+            const gh = map.map[ux][uy];
             // const hr: i32 = h - pos[2];
             // const wr: i32 = water_height - pos[2];
 
@@ -133,8 +133,8 @@ fn getOrCreateHeightMap(gen: *WorldGenerator, pos: i32x2) !*HeightMap {
         const seed = 69422;
         var lowest: i16 = std.math.maxInt(i16);
         var highest: i16 = std.math.minInt(i16);
-        for (0..Chunk.len) |yr| {
-            for (0..Chunk.len) |xr| {
+        for (0..Chunk.len) |xr| {
+            for (0..Chunk.len) |yr| {
                 const bs_chunk_pos = pos * @as(i32x2, @splat(Chunk.len));
                 const block_pos = bs_chunk_pos + @as(i32x2, .{ @intCast(xr), @intCast(yr) });
                 const f_block_pos: math.Vec2 = @floatFromInt(block_pos);
@@ -174,7 +174,7 @@ fn getOrCreateHeightMap(gen: *WorldGenerator, pos: i32x2) !*HeightMap {
 
                 lowest = @min(lowest, height_i);
                 highest = @max(highest, height_i);
-                values.*[yr][xr] = height_i;
+                values.*[xr][yr] = height_i;
             }
         }
 
@@ -212,9 +212,10 @@ pub fn queueChunks(gen: *WorldGenerator) !void {
     const queue = gen.queue.buffer[0..gen.queue.len];
     std.mem.sort(Chunk.PackedPos, queue, {}, struct {
         fn lessThanFn(_: void, left: Chunk.PackedPos, right: Chunk.PackedPos) bool {
-            const f_left: math.Vec3 = @floatFromInt(left.vec());
-            const f_right: math.Vec3 = @floatFromInt(right.vec());
-            return math.lengthSqr(f_left) < math.lengthSqr(f_right);
+            const i64x3 = @Vector(3, i64);
+            const left_64: i64x3 = left.vec();
+            const right_64: i64x3 = right.vec();
+            return math.lengthSqr(left_64) < math.lengthSqr(right_64);
         }
     }.lessThanFn);
 }
