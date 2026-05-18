@@ -1,11 +1,11 @@
 .{
     .chunk_opaque_vertex = .{
-        .src = "src/shaders/chunk_opaque.slang",
+        .src = "src/client/shaders/chunk_opaque.slang",
         .stage = .vertex,
         .entry = "vsMain",
     },
     .chunk_opaque_pixel = .{
-        .src = "src/shaders/chunk_opaque.slang",
+        .src = "src/client/shaders/chunk_opaque.slang",
         .stage = .pixel,
         .entry = "psMain",
     },

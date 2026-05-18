@@ -3,11 +3,11 @@ const mw = @import("mwengine");
 const options = @import("options");
 const math = mw.math;
 const gpu = mw.gpu;
-const block = @import("block.zig");
-const Chunk = @import("Chunk.zig");
+const block = @import("../common/block.zig");
+const Chunk = @import("../common/Chunk.zig");
+const World = @import("../common/World.zig");
 const ChunkMeshAllocator = @import("ChunkMeshAllocator.zig");
 const TextureManager = @import("TextureManager.zig");
-const World = @import("World.zig");
 
 const ChunkMesher = @This();
 pub const max_faces = (Chunk.block_count / 2) * 6;

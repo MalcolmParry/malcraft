@@ -1,7 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const App = @import("App.zig");
-const Renderer = @import("Renderer.zig");
+const App = @import("client/App.zig");
 const GPA = @import("utils/GPA.zig");
 
 pub fn main() !void {

@@ -48,6 +48,7 @@ pub fn build(b: *Build) !void {
             },
         }),
     });
+
     game.root_module.linkLibrary(zstd.artifact("zstd"));
     game.root_module.addIncludePath(zstd.path("lib/"));
 
@@ -132,7 +133,7 @@ const ShaderStage = enum {
 };
 
 fn buildShaders(b: *Build, build_step: *Build.Step) !void {
-    const shaders = @import("src/shader_list.zon");
+    const shaders = @import("src/client/shader_list.zon");
     const base_bin_path = "res/shaders/";
 
     inline for (std.meta.fields(@TypeOf(shaders))) |field| {

@@ -3,7 +3,7 @@ const mw = @import("mwengine");
 const gpu = mw.gpu;
 const math = mw.math;
 const ChunkMesher = @import("ChunkMesher.zig");
-const Chunk = @import("Chunk.zig");
+const Chunk = @import("../common/Chunk.zig");
 const RendererInfo = @import("Renderer.zig").Info;
 
 const ChunkMeshAllocator = @This();

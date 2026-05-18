@@ -2,10 +2,10 @@ const std = @import("std");
 const options = @import("options");
 const mw = @import("mwengine");
 const math = mw.math;
-const block = @import("block.zig");
-const Chunk = @import("Chunk.zig");
-const Deque = @import("utils/deque.zig").Deque;
-const World = @import("World.zig");
+const block = @import("../common/block.zig");
+const Chunk = @import("../common/Chunk.zig");
+const Deque = @import("../utils/deque.zig").Deque;
+const World = @import("../common/World.zig");
 const znoise = @import("znoise");
 
 const WorldGenerator = @This();

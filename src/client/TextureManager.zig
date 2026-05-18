@@ -3,7 +3,7 @@ const zigimg = @import("zigimg");
 const mw = @import("mwengine");
 const gpu = mw.gpu;
 const math = mw.math;
-const block = @import("block.zig");
+const block = @import("../common/block.zig");
 const TextureManager = @This();
 
 image: gpu.Image,
