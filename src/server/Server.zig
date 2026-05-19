@@ -1,13 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const znet = @import("znet");
-const Chunk = @import("common/Chunk.zig");
-const World = @import("common/World.zig");
-const WorldGenerator = @import("server/WorldGenerator.zig");
-const GPA = @import("utils/GPA.zig");
-const protocol = @import("common/protocol.zig");
+const Chunk = @import("../common/Chunk.zig");
+const World = @import("../common/World.zig");
+const WorldGenerator = @import("../server/WorldGenerator.zig");
+const GPA = @import("../utils/GPA.zig");
+const protocol = @import("../common/protocol.zig");
 const ServerMsgId = protocol.ServerMsgId;
-const NetworkManager = @import("common/NetworkManager.zig");
+const NetworkManager = @import("../common/NetworkManager.zig");
 const Server = @This();
 
 const zstd = @cImport({
@@ -250,15 +250,3 @@ const ConsoleInput = struct {
         }
     }
 };
-
-pub fn main() !void {
-    var alloc_obj: GPA = .init();
-    defer alloc_obj.deinit();
-    const alloc = alloc_obj.allocator();
-
-    var server: Server = undefined;
-    try server.init(alloc);
-    defer server.deinit();
-
-    while (try server.tick()) {}
-}

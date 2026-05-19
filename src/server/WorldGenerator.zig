@@ -192,13 +192,13 @@ fn zeroToOne(x: f32) f32 {
 pub fn queueChunks(gen: *WorldGenerator) !void {
     const alloc = gen.alloc;
     const render_radius: i32 = @intCast(options.render_radius);
-    const vertical_render_radius: i32 = @intCast(options.vrender_radius);
-    const chunk_count = (render_radius * 2 + 1) * (render_radius * 2 + 1) * (vertical_render_radius * 2 + 1);
+    const render_height: i32 = @intCast(options.render_height);
+    const chunk_count = (render_radius * 2 + 1) * (render_radius * 2 + 1) * (render_height * 2 + 1);
 
     try gen.queue.ensureUnusedCapacity(alloc, chunk_count);
 
     var z: i20 = 0;
-    while (z <= vertical_render_radius) : (z += 1) {
+    while (z <= render_height) : (z += 1) {
         var y: i22 = -render_radius;
         while (y <= render_radius) : (y += 1) {
             var x: i22 = -render_radius;

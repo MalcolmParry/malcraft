@@ -4,14 +4,9 @@ const Build = std.Build;
 pub fn build(b: *Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const build_server = b.option(bool, "server", "build the server instead of the client") orelse false;
 
-    // game
     const mwengine = b.dependency("mwengine", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const zigimg = b.dependency("zigimg", .{
         .target = target,
         .optimize = optimize,
     });
@@ -21,13 +16,8 @@ pub fn build(b: *Build) !void {
         .optimize = optimize,
     });
 
-    const zstd = b.dependency("zstd", .{
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-
-    const game = b.addExecutable(.{
-        .name = "malcraft",
+    const exe = b.addExecutable(.{
+        .name = if (build_server) "server" else "malcraft",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -38,10 +28,6 @@ pub fn build(b: *Build) !void {
                     .module = mwengine.module("mwengine"),
                 },
                 .{
-                    .name = "zigimg",
-                    .module = zigimg.module("zigimg"),
-                },
-                .{
                     .name = "znet",
                     .module = znet.module("znet"),
                 },
@@ -49,60 +35,44 @@ pub fn build(b: *Build) !void {
         }),
     });
 
-    game.root_module.linkLibrary(zstd.artifact("zstd"));
-    game.root_module.addIncludePath(zstd.path("lib/"));
-
-    const znoise = b.dependency("znoise", .{
+    const zstd = b.dependency("zstd", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = .ReleaseFast,
     });
-    game.root_module.addImport("znoise", znoise.module("root"));
-    game.linkLibrary(znoise.artifact("FastNoiseLite"));
+    exe.root_module.linkLibrary(zstd.artifact("zstd"));
+    exe.root_module.addIncludePath(zstd.path("lib/"));
+
+    if (build_server) {
+        const znoise = b.dependency("znoise", .{
+            .target = target,
+            .optimize = optimize,
+        });
+        exe.root_module.addImport("znoise", znoise.module("root"));
+        exe.linkLibrary(znoise.artifact("FastNoiseLite"));
+    } else {
+        const zigimg = b.dependency("zigimg", .{
+            .target = target,
+            .optimize = optimize,
+        });
+        exe.root_module.addImport("zigimg", zigimg.module("zigimg"));
+    }
 
     const default_render_radius: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 64 else 3;
-    const default_vrender_radius: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 16 else 8;
+    const default_render_height: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 16 else 8;
 
     const options = b.addOptions();
+    options.addOption(bool, "build_server", build_server);
     options.addOption(bool, "gpu_validation", b.option(bool, "gpu-validation", "") orelse (optimize != .ReleaseFast));
     options.addOption(u32, "render_radius", b.option(u32, "render-radius", "") orelse default_render_radius);
-    options.addOption(u32, "vrender_radius", b.option(u32, "render-height", "") orelse default_vrender_radius);
+    options.addOption(u32, "render_height", b.option(u32, "render-height", "") orelse default_render_height);
     options.addOption(bool, "render_borders_with_nonexistant_chunks", b.option(bool, "borders", "Should render borders with nonexistant chunks (kind of broken now)") orelse true);
-    game.root_module.addOptions("options", options);
+    exe.root_module.addOptions("options", options);
 
     const res_install = b.addInstallDirectory(.{
         .source_dir = b.path("res"),
         .install_dir = .prefix,
         .install_subdir = "res",
     });
-
-    // server
-    const server = b.addExecutable(.{
-        .name = "server",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/server.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{
-                    .name = "mwengine",
-                    .module = mwengine.module("mwengine"),
-                },
-                .{
-                    .name = "znet",
-                    .module = znet.module("znet"),
-                },
-            },
-        }),
-    });
-
-    server.root_module.addImport("znoise", znoise.module("root"));
-    server.linkLibrary(znoise.artifact("FastNoiseLite"));
-    server.root_module.linkLibrary(zstd.artifact("zstd"));
-    server.root_module.addIncludePath(zstd.path("lib/"));
-    server.root_module.addOptions("options", options);
-
-    const build_server = b.option(bool, "server", "build the server instead of the client") orelse false;
-    const exe = if (build_server) server else game;
 
     const exe_install = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&exe_install.step);
@@ -121,11 +91,6 @@ pub fn build(b: *Build) !void {
     run.step.dependOn(b.getInstallStep());
     run_step.dependOn(&run.step);
 }
-
-const ShaderLanguage = enum {
-    glsl,
-    slang,
-};
 
 const ShaderStage = enum {
     vertex,
