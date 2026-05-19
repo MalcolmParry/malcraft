@@ -3,7 +3,6 @@ const options = @import("options");
 const builtin = @import("builtin");
 const App = @import("client/App.zig");
 const Server = @import("server/Server.zig");
-const GPA = @import("utils/GPA.zig");
 
 pub fn main() !void {
     var gpa_obj: GPA = .init();
@@ -26,3 +25,31 @@ pub fn main() !void {
         }
     }
 }
+
+const GPA = struct {
+    const debug = switch (builtin.mode) {
+        .Debug, .ReleaseSafe => true,
+        else => false,
+    };
+
+    debug_alloc: if (debug) std.heap.DebugAllocator(.{}) else void,
+
+    pub fn init() GPA {
+        return if (debug)
+            .{ .debug_alloc = .init }
+        else
+            .{ .debug_alloc = {} };
+    }
+
+    pub fn deinit(gpa: *GPA) void {
+        if (debug)
+            _ = gpa.debug_alloc.deinit();
+    }
+
+    pub fn allocator(gpa: *GPA) std.mem.Allocator {
+        return if (debug)
+            gpa.debug_alloc.allocator()
+        else
+            std.heap.smp_allocator;
+    }
+};

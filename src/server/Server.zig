@@ -4,7 +4,6 @@ const znet = @import("znet");
 const Chunk = @import("../common/Chunk.zig");
 const World = @import("../common/World.zig");
 const WorldGenerator = @import("../server/WorldGenerator.zig");
-const GPA = @import("../utils/GPA.zig");
 const protocol = @import("../common/protocol.zig");
 const ServerMsgId = protocol.ServerMsgId;
 const NetworkManager = @import("../common/NetworkManager.zig");
