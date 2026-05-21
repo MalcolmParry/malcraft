@@ -164,7 +164,7 @@ fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData
                         .hit => |x| x.pos + x.face.dir(),
                     };
 
-                    app.world.setBlock(alloc, pos, .stone) catch |err| switch (err) {
+                    app.world.setBlock(alloc, pos, .grass) catch |err| switch (err) {
                         error.ChunkNotPresent => break :blk,
                         else => return err,
                     };
@@ -281,25 +281,45 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
                 .compressed_chunk_batch => {
                     const count = try reader.takeInt(u16, .little);
                     try app.world.one_to_one_chunks.ensureUnusedCapacity(alloc, count);
+                    try app.world.u2_pallet_chunks.ensureUnusedCapacity(alloc, count);
                     try app.chunk_mesher.queue.ensureUnusedCapacity(alloc, count * 2);
 
                     for (0..count) |_| {
                         const pos = try reader.takeStruct(Chunk.PackedPos, .little);
+                        const storage_type_i = try reader.takeInt(u8, .little);
+                        const storage_type = std.enums.fromInt(protocol.ChunkStorageType, storage_type_i) orelse return error.BadMessage;
+
                         const compressed_size: usize = try reader.takeInt(u16, .little);
                         if (reader.bufferedLen() < compressed_size) return error.BadMessage;
 
                         const compressed_bytes = reader.buffered()[0..compressed_size];
                         reader.toss(compressed_size);
 
-                        const one_to_one = try alloc.create(Chunk.OneToOne);
-                        errdefer alloc.destroy(one_to_one);
+                        switch (storage_type) {
+                            .u2_pallet => {
+                                const chunk = try alloc.create(Chunk.U2Pallet);
+                                errdefer alloc.destroy(chunk);
 
-                        const result = zstd.ZSTD_decompress(std.mem.asBytes(one_to_one), @sizeOf(Chunk.OneToOne), compressed_bytes.ptr, compressed_size);
-                        if (zstd.ZSTD_isError(result) != 0) return error.ZstdDecompressFailed;
-                        if (result != @sizeOf(Chunk.OneToOne)) return error.BadMessage;
+                                const result = zstd.ZSTD_decompress(std.mem.asBytes(chunk), @sizeOf(Chunk.U2Pallet), compressed_bytes.ptr, compressed_size);
+                                if (zstd.ZSTD_isError(result) != 0) return error.ZstdDecompressFailed;
+                                if (result != @sizeOf(Chunk.U2Pallet)) return error.BadMessage;
 
-                        app.world.removeChunk(alloc, pos);
-                        app.world.one_to_one_chunks.putAssumeCapacity(pos, one_to_one);
+                                app.world.removeChunk(alloc, pos);
+                                app.world.u2_pallet_chunks.putAssumeCapacity(pos, chunk);
+                            },
+                            .u4 => {
+                                const one_to_one = try alloc.create(Chunk.OneToOne);
+                                errdefer alloc.destroy(one_to_one);
+
+                                const result = zstd.ZSTD_decompress(std.mem.asBytes(one_to_one), @sizeOf(Chunk.OneToOne), compressed_bytes.ptr, compressed_size);
+                                if (zstd.ZSTD_isError(result) != 0) return error.ZstdDecompressFailed;
+                                if (result != @sizeOf(Chunk.OneToOne)) return error.BadMessage;
+
+                                app.world.removeChunk(alloc, pos);
+                                app.world.one_to_one_chunks.putAssumeCapacity(pos, one_to_one);
+                            },
+                        }
+
                         try app.chunk_mesher.addRequestWithFullCollateral(pos.vec());
                     }
 

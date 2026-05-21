@@ -28,12 +28,15 @@ pub const OneToOne = struct {
         return @as(usize, pos[0]) * len * len + @as(usize, pos[1]) * len + @as(usize, pos[2]);
     }
 
-    pub inline fn getBlock(one_to_one: *const OneToOne, pos: RelPos) block.Kind {
-        const i = index(pos);
+    pub inline fn getBlockAtIndex(data: []const u8, i: usize) block.Kind {
         const byte = i / 2;
         const bit: u3 = @intCast((i % 2) * 4);
-        const kind_i: u4 = @truncate(one_to_one.blocks[byte] >> bit);
+        const kind_i: u4 = @truncate(data[byte] >> bit);
         return @enumFromInt(kind_i);
+    }
+
+    pub inline fn getBlock(one_to_one: *const OneToOne, pos: RelPos) block.Kind {
+        return getBlockAtIndex(one_to_one.blocks[0..], index(pos));
     }
 
     pub inline fn setBlockAtIndex(block_data: []u8, i: usize, new: block.Kind) void {
@@ -62,9 +65,54 @@ pub const OneToOne = struct {
     }
 };
 
+pub const U2Pallet = struct {
+    pallet_bitmask: std.StaticBitSet(4),
+    pallet: [4]block.Kind,
+    blocks: [block_count / 4]u8,
+
+    const plane_stride = len * len / 4;
+    const col_stride = len / 4;
+
+    comptime {
+        std.debug.assert(len % 4 == 0);
+    }
+
+    pub inline fn index(pos: RelPos) usize {
+        return @as(usize, pos[0]) * len * len + @as(usize, pos[1]) * len + @as(usize, pos[2]);
+    }
+
+    pub inline fn getBlockAtIndex(data: []const u8, i: usize) u2 {
+        const byte = i / 4;
+        const bit: u3 = @intCast((i % 4) * 2);
+        return @truncate(data[byte] >> bit);
+    }
+
+    pub inline fn getBlock(data: *const U2Pallet, pos: RelPos) u2 {
+        return getBlockAtIndex(data.blocks[0..], index(pos));
+    }
+
+    pub inline fn setBlockAtIndex(block_data: []u8, i: usize, new: u2) void {
+        const byte = i / 4;
+        const bit: u3 = @intCast((i % 4) * 2);
+
+        const clear_mask = ~(@as(u8, 0b11) << bit);
+        const set_mask = @as(u8, new) << bit;
+
+        var data = block_data[byte];
+        data &= clear_mask;
+        data |= set_mask;
+        block_data[byte] = data;
+    }
+
+    pub inline fn setBlock(data: *U2Pallet, pos: RelPos, new: u2) void {
+        setBlockAtIndex(data.blocks[0..], index(pos), new);
+    }
+};
+
 pub const StorageType = std.meta.Tag(Data);
 pub const Data = union(enum) {
     uniform: block.Kind,
+    u2_pallet: *U2Pallet,
     one_to_one: *OneToOne,
 };
 
@@ -73,6 +121,7 @@ data: Data,
 pub fn deinit(chunk: *Chunk, alloc: std.mem.Allocator) void {
     switch (chunk.data) {
         .uniform => {},
+        .u2_pallet => |data| alloc.destroy(data),
         .one_to_one => |data| alloc.destroy(data),
     }
 }
@@ -80,6 +129,10 @@ pub fn deinit(chunk: *Chunk, alloc: std.mem.Allocator) void {
 pub inline fn getBlock(chunk: *const Chunk, pos: RelPos) block.Kind {
     return switch (chunk.data) {
         .uniform => |kind| kind,
+        .u2_pallet => |data| {
+            const pallet_val = data.getBlock(pos);
+            return data.pallet[pallet_val];
+        },
         .one_to_one => |one_to_one| one_to_one.getBlock(pos),
     };
 }
@@ -97,6 +150,42 @@ pub fn setBlock(chunk: *Chunk, alloc: std.mem.Allocator, pos: RelPos, new: block
                 .one_to_one = one_to_one,
             } };
         },
+        .u2_pallet => |data| {
+            var maybe_pallet_val: ?u2 = null;
+            for (data.pallet, 0..) |kind, i| {
+                if (!data.pallet_bitmask.isSet(i)) continue;
+                if (new == kind) {
+                    maybe_pallet_val = @intCast(i);
+                    break;
+                }
+            }
+
+            if (maybe_pallet_val) |pallet_val| {
+                data.setBlock(pos, pallet_val);
+            } else {
+                var inv = data.pallet_bitmask;
+                inv.toggleAll();
+                const maybe_free_pos = inv.findFirstSet();
+
+                if (maybe_free_pos) |free_pos| {
+                    data.pallet_bitmask.set(free_pos);
+                    data.pallet[@intCast(free_pos)] = new;
+                    data.setBlock(pos, @intCast(free_pos));
+                } else {
+                    const one_to_one = try alloc.create(OneToOne);
+                    defer alloc.destroy(data);
+
+                    for (0..block_count) |i| {
+                        const val = U2Pallet.getBlockAtIndex(data.blocks[0..], i);
+                        const kind = data.pallet[val];
+                        OneToOne.setBlockAtIndex(one_to_one.blocks[0..], i, kind);
+                    }
+
+                    one_to_one.setBlock(pos, new);
+                    chunk.* = .{ .data = .{ .one_to_one = one_to_one } };
+                }
+            }
+        },
         .one_to_one => |one_to_one| one_to_one.setBlock(pos, new),
     }
 }
@@ -105,6 +194,7 @@ pub fn setBlock(chunk: *Chunk, alloc: std.mem.Allocator, pos: RelPos, new: block
 pub inline fn allAirFast(chunk: *const Chunk) bool {
     return switch (chunk.data) {
         .uniform => |kind| kind == .air,
+        .u2_pallet => false,
         .one_to_one => false,
     };
 }
@@ -113,6 +203,7 @@ pub inline fn allAirFast(chunk: *const Chunk) bool {
 pub inline fn allOpaqueFast(chunk: *const Chunk) bool {
     return switch (chunk.data) {
         .uniform => |kind| kind.isOpaque(),
+        .u2_pallet => false,
         else => false,
     };
 }

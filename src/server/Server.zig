@@ -106,7 +106,20 @@ pub fn tick(server: *Server) !bool {
         }
     }
 
-    while (try server.net_man.popEvent()) |event| switch (event) {
+    while (try server.net_man.popEvent()) |event| try server.processNetEvent(event);
+
+    const work_ns = server.tick_timer.read();
+    server.tick_count += 1;
+    server.total_work_ns += work_ns;
+
+    if (work_ns > ns_per_tick) return true;
+    const remaining_ns = ns_per_tick - work_ns;
+    std.Thread.sleep(remaining_ns);
+    return true;
+}
+
+pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
+    switch (event) {
         .connect => |peer| {
             std.log.info("connection from {f}", .{peer.address});
 
@@ -157,6 +170,55 @@ pub fn tick(server: *Server) !bool {
                 try writer.writeInt(u16, 0, .little);
                 var chunk_count: u16 = 0;
 
+                var iter = server.world.u2_pallet_chunks.iterator();
+                while (true) {
+                    const maybe_entry = iter.next();
+
+                    if ((maybe_entry == null and chunk_count > 0) or writer.end >= protocol.chunk_batch_target_size) {
+                        const end = writer.end;
+                        writer.end = chunk_count_pos;
+                        try writer.writeInt(u16, chunk_count, .little);
+                        writer.end = end;
+
+                        const channel = protocol.Channel.chunk_transfer;
+                        const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
+                        try server.net_man.send(peer.ref, packet);
+
+                        server.total_bytes_sent += packet.dataSlice().len;
+                        chunk_count = 0;
+
+                        _ = writer.consumeAll();
+                        try ServerMsgId.compressed_chunk_batch.encode(&writer);
+                        try writer.writeInt(u16, 0, .little);
+                    }
+
+                    const entry = maybe_entry orelse break;
+                    const pos = entry.key_ptr.*;
+
+                    try writer.writeStruct(pos, .little);
+                    try writer.writeInt(u8, @intFromEnum(protocol.ChunkStorageType.u2_pallet), .little);
+                    const compressed_size_pos = writer.end;
+                    try writer.writeInt(u16, 0, .little);
+
+                    const compress_buffer = writer.unusedCapacitySlice();
+                    const compressed_size = zstd.ZSTD_compress(compress_buffer.ptr, compress_buffer.len, entry.value_ptr.*, @sizeOf(Chunk.U2Pallet), 1);
+                    if (zstd.ZSTD_isError(compressed_size) != 0) return error.ZstdCompressFailed;
+
+                    const end = writer.end + compressed_size;
+                    writer.end = compressed_size_pos;
+                    try writer.writeInt(u16, @intCast(compressed_size), .little);
+                    writer.end = end;
+                    chunk_count += 1;
+                }
+            }
+
+            {
+                _ = writer.consumeAll();
+                try ServerMsgId.compressed_chunk_batch.encode(&writer);
+                const chunk_count_pos = writer.end;
+                try writer.writeInt(u16, 0, .little);
+                var chunk_count: u16 = 0;
+
                 var iter = server.world.one_to_one_chunks.iterator();
                 while (true) {
                     const maybe_entry = iter.next();
@@ -183,6 +245,7 @@ pub fn tick(server: *Server) !bool {
                     const pos = entry.key_ptr.*;
 
                     try writer.writeStruct(pos, .little);
+                    try writer.writeInt(u8, @intFromEnum(protocol.ChunkStorageType.u4), .little);
                     const compressed_size_pos = writer.end;
                     try writer.writeInt(u16, 0, .little);
 
@@ -209,16 +272,7 @@ pub fn tick(server: *Server) !bool {
         .receive => |packet_peer| {
             defer packet_peer.packet.deinit();
         },
-    };
-
-    const work_ns = server.tick_timer.read();
-    server.tick_count += 1;
-    server.total_work_ns += work_ns;
-
-    if (work_ns > ns_per_tick) return true;
-    const remaining_ns = ns_per_tick - work_ns;
-    std.Thread.sleep(remaining_ns);
-    return true;
+    }
 }
 
 const ConsoleInput = struct {

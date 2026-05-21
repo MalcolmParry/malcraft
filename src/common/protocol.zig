@@ -23,6 +23,7 @@ pub const ServerMsgId = enum(u8) {
     /// chunk_count: u16,
     /// entries: [chunk_count],
     ///     pos: Chunk.PackedPos,
+    ///     storage_type: ChunkStorageType,
     ///     compressed_size: u16,
     ///     compressed_bytes: [compressed_size]u8,
     compressed_chunk_batch,
@@ -36,6 +37,11 @@ pub const ServerMsgId = enum(u8) {
         const int = try reader.takeInt(u8, .little);
         return std.enums.fromInt(ServerMsgId, int) orelse error.BadMessage;
     }
+};
+
+pub const ChunkStorageType = enum(u8) {
+    u2_pallet,
+    u4,
 };
 
 pub const Channel = enum(u8) {

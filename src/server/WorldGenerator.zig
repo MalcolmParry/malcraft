@@ -68,14 +68,11 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
 
     const pos = chunk_pos * Chunk.size;
     const one_to_one = try gen.alloc.create(Chunk.OneToOne);
-    // one_to_one.fill(.air);
+    var block_exists: [block.Kind.count]bool = @splat(false);
 
     for (0..Chunk.len) |ux| {
         for (0..Chunk.len) |uy| {
-            // const col = one_to_one.getCol(@intCast(ux), @intCast(uy));
             const gh = map.map[ux][uy];
-            // const hr: i32 = h - pos[2];
-            // const wr: i32 = water_height - pos[2];
 
             for (0..Chunk.len) |uz| {
                 const h = pos[2] + @as(i32, @intCast(uz));
@@ -88,26 +85,56 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
                 const upos: @Vector(3, usize) = .{ ux, uy, uz };
                 const rel: Chunk.RelPos = @intCast(upos);
                 one_to_one.setBlock(rel, block_id);
+                block_exists[@intFromEnum(block_id)] = true;
             }
-
-            // if (hr <= 0) {
-            //     Chunk.OneToOne.fillCol(col, 0, Chunk.len, .air);
-            //
-            //     if (hr == 0)
-            //         Chunk.OneToOne.setBlockAtIndex(col, 0, .grass);
-            // } else if (hr >= Chunk.len) {
-            //     Chunk.OneToOne.fillCol(col, 0, Chunk.len, .stone);
-            // } else {
-            //     const hru: usize = @intCast(hr);
-            //
-            //     Chunk.OneToOne.setBlockAtIndex(col, hru, .grass);
-            //     Chunk.OneToOne.fillCol(col, 0, hru, .stone);
-            //     Chunk.OneToOne.fillCol(col, hru + 1, Chunk.len - hru - 1, .air);
-            // }
         }
     }
 
-    return .{ .data = .{ .one_to_one = one_to_one } };
+    var unique_block_count: u16 = 0;
+    for (block_exists) |exists| {
+        unique_block_count += @intFromBool(exists);
+    }
+
+    std.debug.assert(unique_block_count > 0);
+    switch (unique_block_count) {
+        1 => {
+            defer gen.alloc.destroy(one_to_one);
+
+            return .{ .data = .{ .uniform = one_to_one.getBlock(@splat(0)) } };
+        },
+        2...4 => {
+            defer gen.alloc.destroy(one_to_one);
+
+            var pallet_to_kind: [4]block.Kind = undefined;
+            var kind_to_pallet: [block.Kind.count]u2 = undefined;
+            var pallet_index: u8 = 0;
+            var pallet_bitmask: std.StaticBitSet(4) = .initEmpty();
+            for (block_exists, 0..) |exists, kind_i| {
+                if (exists) {
+                    pallet_to_kind[pallet_index] = @enumFromInt(kind_i);
+                    kind_to_pallet[kind_i] = @intCast(pallet_index);
+                    pallet_bitmask.set(pallet_index);
+                    pallet_index += 1;
+                }
+            }
+
+            const pallet = try gen.alloc.create(Chunk.U2Pallet);
+            errdefer gen.alloc.destroy(pallet);
+            pallet.pallet_bitmask = pallet_bitmask;
+            pallet.pallet = pallet_to_kind;
+
+            for (0..Chunk.block_count) |i| {
+                const kind = Chunk.OneToOne.getBlockAtIndex(one_to_one.blocks[0..], i);
+                const pallet_val = kind_to_pallet[@intFromEnum(kind)];
+                Chunk.U2Pallet.setBlockAtIndex(pallet.blocks[0..], i, pallet_val);
+            }
+
+            return .{ .data = .{ .u2_pallet = pallet } };
+        },
+        else => {
+            return .{ .data = .{ .one_to_one = one_to_one } };
+        },
+    }
 }
 
 fn isAllOneBlock(map: *HeightMap, cs_z: i32) ?block.Kind {

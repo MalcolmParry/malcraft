@@ -28,6 +28,7 @@ pub const Kind = enum(u4) {
     water,
     sand,
 
+    pub const count = std.enums.values(Kind).len;
     pub fn isOpaque(this: Kind) bool {
         return switch (this) {
             .air => false,
