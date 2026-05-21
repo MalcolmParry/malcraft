@@ -68,7 +68,7 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
 
     const pos = chunk_pos * Chunk.size;
     const one_to_one = try gen.alloc.create(Chunk.OneToOne);
-    var block_exists: [block.Kind.count]bool = @splat(false);
+    var block_exists: [block.Kind.named_count]bool = @splat(false);
 
     for (0..Chunk.len) |ux| {
         for (0..Chunk.len) |uy| {
@@ -95,9 +95,11 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
         unique_block_count += @intFromBool(exists);
     }
 
-    std.debug.assert(unique_block_count > 0);
     switch (unique_block_count) {
+        0 => unreachable,
         1 => {
+            @branchHint(.cold);
+            std.log.warn("slow path taken for uniform chunk gen at: {}, lowest: {}, highest: {}", .{ pos, map.lowest, map.highest });
             defer gen.alloc.destroy(one_to_one);
 
             return .{ .data = .{ .uniform = one_to_one.getBlock(@splat(0)) } };
@@ -106,7 +108,7 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
             defer gen.alloc.destroy(one_to_one);
 
             var pallet_to_kind: [4]block.Kind = undefined;
-            var kind_to_pallet: [block.Kind.count]u2 = undefined;
+            var kind_to_pallet: [block.Kind.named_count]u2 = undefined;
             var pallet_index: u8 = 0;
             var pallet_bitmask: std.StaticBitSet(4) = .initEmpty();
             for (block_exists, 0..) |exists, kind_i| {
@@ -146,7 +148,8 @@ fn isAllOneBlock(map: *HeightMap, cs_z: i32) ?block.Kind {
         if (top <= water_height) return .water;
     }
 
-    if (top < map.lowest - sand_height) return .stone;
+    if (map.lowest > water_height and top < map.lowest) return .stone;
+    if (top <= map.lowest - sand_height) return .stone;
     return null;
 }
 

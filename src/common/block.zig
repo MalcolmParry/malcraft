@@ -27,8 +27,11 @@ pub const Kind = enum(u4) {
     stone,
     water,
     sand,
+    _,
 
-    pub const count = std.enums.values(Kind).len;
+    pub const named_count = std.enums.values(Kind).len;
+    pub const max_count = std.math.maxInt(@typeInfo(Kind).@"enum".tag_type);
+
     pub fn isOpaque(this: Kind) bool {
         return switch (this) {
             .air => false,
