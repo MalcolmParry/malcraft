@@ -6,7 +6,7 @@ const Chunk = @import("Chunk.zig");
 const World = @This();
 
 uniform_chunks: std.AutoHashMapUnmanaged(Chunk.PackedPos, block.Kind) = .empty,
-u2_pallet_chunks: std.AutoHashMapUnmanaged(Chunk.PackedPos, *Chunk.U2Pallet) = .empty,
+u2_palette_chunks: std.AutoHashMapUnmanaged(Chunk.PackedPos, *Chunk.U2Palette) = .empty,
 one_to_one_chunks: std.AutoHashMapUnmanaged(Chunk.PackedPos, *Chunk.OneToOne) = .empty,
 
 pub fn deinit(world: *World, alloc: std.mem.Allocator) void {
@@ -15,13 +15,13 @@ pub fn deinit(world: *World, alloc: std.mem.Allocator) void {
         alloc.destroy(kv.value_ptr.*);
     }
 
-    var u2_pallet_iter = world.u2_pallet_chunks.iterator();
-    while (u2_pallet_iter.next()) |kv| {
+    var u2_palette_iter = world.u2_palette_chunks.iterator();
+    while (u2_palette_iter.next()) |kv| {
         alloc.destroy(kv.value_ptr.*);
     }
 
     world.uniform_chunks.deinit(alloc);
-    world.u2_pallet_chunks.deinit(alloc);
+    world.u2_palette_chunks.deinit(alloc);
     world.one_to_one_chunks.deinit(alloc);
 }
 
@@ -35,7 +35,7 @@ pub fn chunkRelFromBlockPos(pos: block.Pos) Chunk.RelPos {
 
 pub fn getChunk(world: *const World, pos: Chunk.PackedPos) ?Chunk {
     if (world.uniform_chunks.get(pos)) |kind| return .{ .data = .{ .uniform = kind } };
-    if (world.u2_pallet_chunks.get(pos)) |pallet| return .{ .data = .{ .u2_pallet = pallet } };
+    if (world.u2_palette_chunks.get(pos)) |palette| return .{ .data = .{ .u2_palette = palette } };
     if (world.one_to_one_chunks.get(pos)) |one_to_one| return .{ .data = .{ .one_to_one = one_to_one } };
     return null;
 }
@@ -44,7 +44,7 @@ pub fn getChunk(world: *const World, pos: Chunk.PackedPos) ?Chunk {
 pub fn placeChunk(world: *World, alloc: std.mem.Allocator, pos: Chunk.PackedPos, chunk: Chunk) !void {
     switch (chunk.data) {
         .uniform => |kind| try world.uniform_chunks.put(alloc, pos, kind),
-        .u2_pallet => |pallet| try world.u2_pallet_chunks.put(alloc, pos, pallet),
+        .u2_palette => |palette| try world.u2_palette_chunks.put(alloc, pos, palette),
         .one_to_one => |one_to_one| try world.one_to_one_chunks.put(alloc, pos, one_to_one),
     }
 }
@@ -52,8 +52,8 @@ pub fn placeChunk(world: *World, alloc: std.mem.Allocator, pos: Chunk.PackedPos,
 pub fn removeChunk(world: *World, alloc: std.mem.Allocator, pos: Chunk.PackedPos) void {
     _ = world.uniform_chunks.remove(pos);
 
-    const u2_pallet_kv = world.u2_pallet_chunks.fetchRemove(pos);
-    if (u2_pallet_kv) |kv| {
+    const u2_palette_kv = world.u2_palette_chunks.fetchRemove(pos);
+    if (u2_palette_kv) |kv| {
         alloc.destroy(kv.value);
     }
 
@@ -66,7 +66,7 @@ pub fn removeChunk(world: *World, alloc: std.mem.Allocator, pos: Chunk.PackedPos
 /// caller takes ownership
 pub fn fetchRemoveChunk(world: *World, pos: Chunk.PackedPos) ?Chunk {
     if (world.uniform_chunks.fetchRemove(pos)) |kv| return .{ .data = .{ .uniform = kv.value } };
-    if (world.u2_pallet_chunks.fetchRemove(pos)) |kv| return .{ .data = .{ .u2_pallet = kv.value } };
+    if (world.u2_palette_chunks.fetchRemove(pos)) |kv| return .{ .data = .{ .u2_palette = kv.value } };
     if (world.one_to_one_chunks.fetchRemove(pos)) |kv| return .{ .data = .{ .one_to_one = kv.value } };
     return null;
 }

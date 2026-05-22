@@ -281,7 +281,7 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
                 .compressed_chunk_batch => {
                     const count = try reader.takeInt(u16, .little);
                     try app.world.one_to_one_chunks.ensureUnusedCapacity(alloc, count);
-                    try app.world.u2_pallet_chunks.ensureUnusedCapacity(alloc, count);
+                    try app.world.u2_palette_chunks.ensureUnusedCapacity(alloc, count);
                     try app.chunk_mesher.queue.ensureUnusedCapacity(alloc, count * 2);
 
                     for (0..count) |_| {
@@ -296,16 +296,16 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
                         reader.toss(compressed_size);
 
                         switch (storage_type) {
-                            .u2_pallet => {
-                                const chunk = try alloc.create(Chunk.U2Pallet);
+                            .u2_palette => {
+                                const chunk = try alloc.create(Chunk.U2Palette);
                                 errdefer alloc.destroy(chunk);
 
-                                const result = zstd.ZSTD_decompress(std.mem.asBytes(chunk), @sizeOf(Chunk.U2Pallet), compressed_bytes.ptr, compressed_size);
+                                const result = zstd.ZSTD_decompress(std.mem.asBytes(chunk), @sizeOf(Chunk.U2Palette), compressed_bytes.ptr, compressed_size);
                                 if (zstd.ZSTD_isError(result) != 0) return error.ZstdDecompressFailed;
-                                if (result != @sizeOf(Chunk.U2Pallet)) return error.BadMessage;
+                                if (result != @sizeOf(Chunk.U2Palette)) return error.BadMessage;
 
                                 app.world.removeChunk(alloc, pos);
-                                app.world.u2_pallet_chunks.putAssumeCapacity(pos, chunk);
+                                app.world.u2_palette_chunks.putAssumeCapacity(pos, chunk);
                             },
                             .u4 => {
                                 const one_to_one = try alloc.create(Chunk.OneToOne);

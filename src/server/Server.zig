@@ -170,7 +170,7 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
                 try writer.writeInt(u16, 0, .little);
                 var chunk_count: u16 = 0;
 
-                var iter = server.world.u2_pallet_chunks.iterator();
+                var iter = server.world.u2_palette_chunks.iterator();
                 while (true) {
                     const maybe_entry = iter.next();
 
@@ -196,12 +196,12 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
                     const pos = entry.key_ptr.*;
 
                     try writer.writeStruct(pos, .little);
-                    try writer.writeInt(u8, @intFromEnum(protocol.ChunkStorageType.u2_pallet), .little);
+                    try writer.writeInt(u8, @intFromEnum(protocol.ChunkStorageType.u2_palette), .little);
                     const compressed_size_pos = writer.end;
                     try writer.writeInt(u16, 0, .little);
 
                     const compress_buffer = writer.unusedCapacitySlice();
-                    const compressed_size = zstd.ZSTD_compress(compress_buffer.ptr, compress_buffer.len, entry.value_ptr.*, @sizeOf(Chunk.U2Pallet), 1);
+                    const compressed_size = zstd.ZSTD_compress(compress_buffer.ptr, compress_buffer.len, entry.value_ptr.*, @sizeOf(Chunk.U2Palette), 1);
                     if (zstd.ZSTD_isError(compressed_size) != 0) return error.ZstdCompressFailed;
 
                     const end = writer.end + compressed_size;

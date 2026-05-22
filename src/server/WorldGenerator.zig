@@ -107,31 +107,31 @@ pub fn generate(gen: *WorldGenerator, chunk_pos: Chunk.Pos) !Chunk {
         2...4 => {
             defer gen.alloc.destroy(one_to_one);
 
-            var pallet_to_kind: [4]block.Kind = undefined;
-            var kind_to_pallet: [block.Kind.named_count]u2 = undefined;
-            var pallet_index: u8 = 0;
-            var pallet_bitmask: std.StaticBitSet(4) = .initEmpty();
+            var palette_to_kind: [4]block.Kind = undefined;
+            var kind_to_palette: [block.Kind.named_count]u2 = undefined;
+            var palette_index: u8 = 0;
+            var palette_bitmask: std.StaticBitSet(4) = .initEmpty();
             for (block_exists, 0..) |exists, kind_i| {
                 if (exists) {
-                    pallet_to_kind[pallet_index] = @enumFromInt(kind_i);
-                    kind_to_pallet[kind_i] = @intCast(pallet_index);
-                    pallet_bitmask.set(pallet_index);
-                    pallet_index += 1;
+                    palette_to_kind[palette_index] = @enumFromInt(kind_i);
+                    kind_to_palette[kind_i] = @intCast(palette_index);
+                    palette_bitmask.set(palette_index);
+                    palette_index += 1;
                 }
             }
 
-            const pallet = try gen.alloc.create(Chunk.U2Pallet);
-            errdefer gen.alloc.destroy(pallet);
-            pallet.pallet_bitmask = pallet_bitmask;
-            pallet.pallet = pallet_to_kind;
+            const palette = try gen.alloc.create(Chunk.U2Palette);
+            errdefer gen.alloc.destroy(palette);
+            palette.palette_bitmask = palette_bitmask;
+            palette.palette = palette_to_kind;
 
             for (0..Chunk.block_count) |i| {
                 const kind = Chunk.OneToOne.getBlockAtIndex(one_to_one.blocks[0..], i);
-                const pallet_val = kind_to_pallet[@intFromEnum(kind)];
-                Chunk.U2Pallet.setBlockAtIndex(pallet.blocks[0..], i, pallet_val);
+                const palette_val = kind_to_palette[@intFromEnum(kind)];
+                Chunk.U2Palette.setBlockAtIndex(palette.blocks[0..], i, palette_val);
             }
 
-            return .{ .data = .{ .u2_pallet = pallet } };
+            return .{ .data = .{ .u2_palette = palette } };
         },
         else => {
             return .{ .data = .{ .one_to_one = one_to_one } };

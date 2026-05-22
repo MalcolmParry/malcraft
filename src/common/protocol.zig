@@ -40,7 +40,7 @@ pub const ServerMsgId = enum(u8) {
 };
 
 pub const ChunkStorageType = enum(u8) {
-    u2_pallet,
+    u2_palette,
     u4,
 };
 
