@@ -17,6 +17,7 @@ running: std.atomic.Value(bool) = .init(true),
 mutex: std.Thread.Mutex = .{},
 outgoing: Deque(Command),
 incoming: Deque(Event),
+bytes_sent: usize = 0,
 
 pub fn init(man: *NetworkManager, alloc: std.mem.Allocator, host_config: znet.HostConfig) !void {
     man.* = .{
@@ -43,6 +44,8 @@ pub fn deinit(man: *NetworkManager) void {
 }
 
 pub fn send(man: *NetworkManager, peer: PeerRef, packet: znet.Packet) !void {
+    man.bytes_sent += packet.dataSlice().len;
+
     try man.pushCommand(.{ .send = .{
         .peer = peer,
         .packet = packet,

@@ -30,7 +30,6 @@ world_gen: WorldGenerator,
 tick_timer: std.time.Timer,
 tick_count: u64 = 0,
 total_work_ns: u64 = 0,
-total_bytes_sent: usize = 0,
 players: SparseSet(Player) = .empty,
 
 pub fn init(server: *Server, alloc: std.mem.Allocator) !void {
@@ -81,7 +80,7 @@ pub fn deinit(server: *Server) void {
     std.log.info("server stopped", .{});
     std.log.info("tick count: {}", .{server.tick_count});
     std.log.info("mean work time per tick: {}ns", .{std.math.divFloor(u64, server.total_work_ns, server.tick_count) catch 0});
-    std.log.info("total bytes sent: {Bi:.2}", .{server.total_bytes_sent});
+    std.log.info("total bytes sent: {Bi:.2}", .{server.net_man.bytes_sent});
 
     server.world_gen.deinit();
     server.world.deinit(alloc);
@@ -144,7 +143,6 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
 
             const init_channel = protocol.Channel.control;
             const init_packet = try znet.Packet.init(small_writer.buffered(), init_channel.toInt(), init_channel.getFlags());
-            server.total_bytes_sent += init_packet.dataSlice().len;
             try server.net_man.send(peer.ref, init_packet);
 
             var uniform_buffer: [protocol.max_packet_size]u8 = undefined;
@@ -170,12 +168,10 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
             var one_to_one_iter = server.world.one_to_one_chunks.iterator();
             while (one_to_one_iter.next()) |kv| try send_state.send(kv.key_ptr.*, .{ .data = .{ .one_to_one = kv.value_ptr.* } });
             try send_state.flush();
-            server.total_bytes_sent += send_state.bytes_sent;
 
             small_writer.end = 0;
             try ServerMsgId.done.encode(&small_writer);
             const packet = try znet.Packet.init(small_writer.buffered(), 0, .reliable);
-            server.total_bytes_sent += packet.dataSlice().len;
             try server.net_man.send(peer.ref, packet);
         },
         .disconnect => |peer| {
