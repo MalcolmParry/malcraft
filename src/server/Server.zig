@@ -30,6 +30,7 @@ tick_count: u64 = 0,
 total_work_ns: u64 = 0,
 total_bytes_sent: usize = 0,
 next_player_id: u16 = 0,
+player_slots: std.ArrayList(PlayerSlot) = .empty,
 
 pub fn init(server: *Server, alloc: std.mem.Allocator) !void {
     server.* = .{
@@ -83,6 +84,7 @@ pub fn deinit(server: *Server) void {
 
     server.world_gen.deinit();
     server.world.deinit(alloc);
+    server.player_slots.deinit(alloc);
     server.net_man.deinit();
     znet.deinit();
     server.stdin_thread.detach();
@@ -274,6 +276,11 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
         },
     }
 }
+
+const PlayerSlot = struct {
+    /// region is 4x4x4 chunks
+    regions_to_send: std.ArrayList(Chunk.PackedPos) = .empty,
+};
 
 const ConsoleInput = struct {
     mutex: std.Thread.Mutex = .{},

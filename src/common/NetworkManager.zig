@@ -4,6 +4,7 @@ const math = mw.math;
 const znet = @import("znet");
 const protocol = @import("protocol.zig");
 const Deque = @import("../utils/deque.zig").Deque;
+const SparseSet = @import("../utils/sparse_set.zig").SparseSet;
 const ServerMsgId = protocol.ServerMsgId;
 const NetworkManager = @This();
 const cl = std.atomic.cache_line;
@@ -66,20 +67,14 @@ pub fn popEvent(man: *NetworkManager) !?Event {
     return man.incoming.popFront();
 }
 
-const PeerSlot = struct {
-    peer: znet.Peer,
-    gen: u16,
-    used: bool,
-};
-
 fn worker(man: *NetworkManager, host_config: znet.HostConfig) !void {
     errdefer man.failed.store(true, .monotonic);
 
     const host = try znet.Host.init(host_config);
     defer shutdown(host);
 
-    var peer_slots: std.ArrayList(PeerSlot) = .empty;
-    defer peer_slots.deinit(man.alloc);
+    var peers: SparseSet(znet.Peer) = .empty;
+    defer peers.deinit(man.alloc);
 
     while (man.running.load(.monotonic)) {
         {
@@ -89,14 +84,25 @@ fn worker(man: *NetworkManager, host_config: znet.HostConfig) !void {
             while (man.outgoing.popFront()) |cmd| switch (cmd) {
                 .connect => |data| {
                     const peer = try host.connect(data.config);
-                    data.peer.* = try allocPeer(man.alloc, &peer_slots, peer);
+                    const ref = try peers.append(man.alloc, peer);
+                    peer.ptr.data = &peers.sparse_to_dense.items[ref.slot];
+                    data.peer.* = .{
+                        .ref = ref,
+                        .address = peer.address(),
+                    };
                     data.semaphore.post();
                 },
-                .disconnect => |ref| if (ref.gen == peer_slots.items[ref.slot].gen) {
-                    peer_slots.items[ref.slot].peer.disconnect(0);
+                .disconnect => |ref| blk: {
+                    const peer = peers.get(ref) orelse break :blk;
+                    peer.disconnect(0);
                 },
-                .send => |data| if (data.peer.gen == peer_slots.items[data.peer.slot].gen) {
-                    try peer_slots.items[data.peer.slot].peer.send(data.packet);
+                .send => |data| {
+                    if (peers.get(data.peer)) |peer| {
+                        errdefer data.packet.deinit();
+                        try peer.send(data.packet);
+                    } else {
+                        data.packet.deinit();
+                    }
                 },
             };
         }
@@ -107,20 +113,15 @@ fn worker(man: *NetworkManager, host_config: znet.HostConfig) !void {
 
         switch (event) {
             .connect => |data| {
-                const x: PeerData = if (data.peer.ptr.data == null)
-                    try allocPeer(man.alloc, &peer_slots, data.peer)
-                else
-                    .{
-                        .ref = refFromPeer(peer_slots.items, data.peer),
-                        .address = data.peer.address(),
-                    };
-
                 try man.incoming.pushBack(man.alloc, .{
-                    .connect = x,
+                    .connect = .{
+                        .ref = try refFromPeer(man.alloc, &peers, data.peer),
+                        .address = data.peer.address(),
+                    },
                 });
             },
             .disconnect => |data| {
-                const ref = refFromPeer(peer_slots.items, data.peer);
+                const ref = try refFromPeer(man.alloc, &peers, data.peer);
                 try man.incoming.pushBack(man.alloc, .{
                     .disconnect = .{
                         .ref = ref,
@@ -128,15 +129,15 @@ fn worker(man: *NetworkManager, host_config: znet.HostConfig) !void {
                     },
                 });
 
-                peer_slots.items[ref.slot].used = false;
                 data.peer.ptr.data = null;
+                peers.swapRemove(ref) catch unreachable;
             },
             .receive => |data| {
                 errdefer data.packet.deinit();
 
                 try man.incoming.pushBack(man.alloc, .{
                     .receive = .{
-                        .peer = refFromPeer(peer_slots.items, data.peer),
+                        .peer = try refFromPeer(man.alloc, &peers, data.peer),
                         .packet = data.packet,
                     },
                 });
@@ -145,48 +146,19 @@ fn worker(man: *NetworkManager, host_config: znet.HostConfig) !void {
     }
 }
 
-fn allocPeer(alloc: std.mem.Allocator, slots: *std.ArrayList(PeerSlot), peer: znet.Peer) !PeerData {
-    var maybe_id: ?u16 = null;
-    for (slots.items, 0..) |slot, i| {
-        if (!slot.used) {
-            maybe_id = @intCast(i);
-            break;
-        }
+pub fn refFromPeer(alloc: std.mem.Allocator, peers: *SparseSet(znet.Peer), peer: znet.Peer) !PeerRef {
+    if (peer.ptr.data) |usr_data| {
+        const sparse: *const SparseSet(znet.Peer).Sparse = @ptrCast(@alignCast(usr_data));
+
+        return .{
+            .slot = peers.dense_to_sparse.items[sparse.dense_slot],
+            .gen = sparse.gen,
+        };
+    } else {
+        const ref = try peers.append(alloc, peer);
+        peer.ptr.data = &peers.sparse_to_dense.items[ref.slot];
+        return ref;
     }
-
-    if (maybe_id == null) {
-        maybe_id = @intCast(slots.items.len);
-        try slots.append(alloc, .{
-            .peer = undefined,
-            .used = false,
-            .gen = 0,
-        });
-    }
-
-    const id = maybe_id.?;
-    peer.ptr.data = @ptrFromInt(id + 1);
-    slots.items[id] = .{
-        .peer = peer,
-        .gen = slots.items[id].gen +% 1,
-        .used = true,
-    };
-
-    return .{
-        .ref = .{
-            .slot = id,
-            .gen = slots.items[id].gen,
-        },
-        .address = peer.address(),
-    };
-}
-
-fn refFromPeer(slots: []const PeerSlot, peer: znet.Peer) PeerRef {
-    const id: u16 = @intCast(@intFromPtr(peer.ptr.data) - 1);
-
-    return .{
-        .slot = id,
-        .gen = slots[id].gen,
-    };
 }
 
 pub fn shutdown(host: znet.Host) void {
@@ -244,11 +216,7 @@ pub const Command = union(enum) {
     send: PacketWithPeer,
 };
 
-pub const PeerRef = struct {
-    slot: u16,
-    gen: u16,
-};
-
+pub const PeerRef = SparseSet(znet.Peer).Ref;
 pub const PeerData = struct {
     ref: PeerRef,
     address: znet.Address,
