@@ -64,6 +64,28 @@ pub fn SparseSet(Value: type) type {
             };
         }
 
+        pub fn insertAtRef(set: *This, alloc: std.mem.Allocator, ref: Ref, value: Value) !void {
+            if (ref.slot >= set.sparse_to_dense.items.len) {
+                const old_len = set.sparse_to_dense.items.len;
+                try set.sparse_to_dense.resize(alloc, ref.slot + 1);
+                @memset(set.sparse_to_dense.items[old_len..], .{
+                    .dense_slot = 0,
+                    .gen = 0,
+                    .exists = false,
+                });
+            }
+
+            const sparse = &set.sparse_to_dense.items[ref.slot];
+            if (sparse.exists) return error.AlreadyExists;
+
+            sparse.exists = true;
+            sparse.gen = ref.gen;
+
+            try set.dense.append(alloc, value);
+            try set.dense_to_sparse.append(alloc, ref.slot);
+            sparse.dense_slot = @intCast(set.dense.items.len - 1);
+        }
+
         pub fn swapRemove(set: *This, ref: Ref) error{OutdatedRef}!void {
             const sparse = &set.sparse_to_dense.items[ref.slot];
             if (!sparse.exists or sparse.gen != ref.gen) return error.OutdatedRef;

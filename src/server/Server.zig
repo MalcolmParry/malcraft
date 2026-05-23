@@ -1,6 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const znet = @import("znet");
+const SparseSet = @import("../utils/sparse_set.zig").SparseSet;
+const block = @import("../common/block.zig");
 const Chunk = @import("../common/Chunk.zig");
 const World = @import("../common/World.zig");
 const WorldGenerator = @import("../server/WorldGenerator.zig");
@@ -29,8 +31,7 @@ tick_timer: std.time.Timer,
 tick_count: u64 = 0,
 total_work_ns: u64 = 0,
 total_bytes_sent: usize = 0,
-next_player_id: u16 = 0,
-player_slots: std.ArrayList(PlayerSlot) = .empty,
+players: SparseSet(Player) = .empty,
 
 pub fn init(server: *Server, alloc: std.mem.Allocator) !void {
     server.* = .{
@@ -84,7 +85,7 @@ pub fn deinit(server: *Server) void {
 
     server.world_gen.deinit();
     server.world.deinit(alloc);
-    server.player_slots.deinit(alloc);
+    server.players.deinit(alloc);
     server.net_man.deinit();
     znet.deinit();
     server.stdin_thread.detach();
@@ -125,151 +126,65 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
         .connect => |peer| {
             std.log.info("connection from {f}", .{peer.address});
 
+            try server.players.insertAtRef(server.alloc, .{
+                .slot = peer.ref.slot,
+                .gen = peer.ref.gen,
+            }, .{
+                .peer = peer.ref,
+            });
+
             var timer: std.time.Timer = try .start();
             defer std.log.info("time taken to send world: {}μs", .{timer.read() / 1000});
 
-            var buffer: [protocol.max_packet_size]u8 = undefined;
-            var writer = std.Io.Writer.fixed(&buffer);
+            var small_buffer: [64]u8 = undefined;
+            var small_writer = std.Io.Writer.fixed(&small_buffer);
 
-            try ServerMsgId.init.encode(&writer);
-            try writer.writeInt(u16, server.next_player_id, .little);
-            server.next_player_id += 1;
+            try ServerMsgId.init.encode(&small_writer);
+            try small_writer.writeInt(u16, @intCast(peer.ref.slot), .little);
 
             const init_channel = protocol.Channel.control;
-            const init_packet = try znet.Packet.init(writer.buffered(), init_channel.toInt(), init_channel.getFlags());
+            const init_packet = try znet.Packet.init(small_writer.buffered(), init_channel.toInt(), init_channel.getFlags());
             server.total_bytes_sent += init_packet.dataSlice().len;
             try server.net_man.send(peer.ref, init_packet);
 
-            const target_uniform_entries = (protocol.chunk_batch_target_size - 4) / 9;
+            var uniform_buffer: [protocol.max_packet_size]u8 = undefined;
+            var uniform_writer = std.Io.Writer.fixed(&uniform_buffer);
+
+            var compressed_buffer: [protocol.max_packet_size]u8 = undefined;
+            var compressed_writer = std.Io.Writer.fixed(&compressed_buffer);
+
+            var send_state: ChunkSendState = .{
+                .net_man = &server.net_man,
+                .peer = peer.ref,
+                .uniform_writer = &uniform_writer,
+                .compressed_writer = &compressed_writer,
+            };
+            try send_state.init();
+
             var uniform_iter = server.world.uniform_chunks.iterator();
-            var remaining_entries = server.world.uniform_chunks.count();
+            while (uniform_iter.next()) |kv| try send_state.sendUniform(kv.key_ptr.*, kv.value_ptr.*);
 
-            while (remaining_entries > 0) {
-                _ = writer.consumeAll();
-                try ServerMsgId.uniform_chunk_batch.encode(&writer);
-                const entry_count = @min(remaining_entries, target_uniform_entries);
-                try writer.writeInt(u16, @intCast(entry_count), .little);
+            var u2_palette_iter = server.world.u2_palette_chunks.iterator();
+            while (u2_palette_iter.next()) |kv| try send_state.send(kv.key_ptr.*, .{ .data = .{ .u2_palette = kv.value_ptr.* } });
 
-                for (0..entry_count) |_| {
-                    const entry = uniform_iter.next() orelse unreachable;
-                    const pos = entry.key_ptr.*;
+            var one_to_one_iter = server.world.one_to_one_chunks.iterator();
+            while (one_to_one_iter.next()) |kv| try send_state.send(kv.key_ptr.*, .{ .data = .{ .one_to_one = kv.value_ptr.* } });
+            try send_state.flush();
+            server.total_bytes_sent += send_state.bytes_sent;
 
-                    try writer.writeStruct(pos, .little);
-                    try writer.writeInt(u8, @intFromEnum(entry.value_ptr.*), .little);
-                }
-
-                remaining_entries -= entry_count;
-                const channel = protocol.Channel.chunk_transfer;
-                const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
-                server.total_bytes_sent += packet.dataSlice().len;
-                try server.net_man.send(peer.ref, packet);
-            }
-
-            {
-                _ = writer.consumeAll();
-                try ServerMsgId.compressed_chunk_batch.encode(&writer);
-                const chunk_count_pos = writer.end;
-                try writer.writeInt(u16, 0, .little);
-                var chunk_count: u16 = 0;
-
-                var iter = server.world.u2_palette_chunks.iterator();
-                while (true) {
-                    const maybe_entry = iter.next();
-
-                    if ((maybe_entry == null and chunk_count > 0) or writer.end >= protocol.chunk_batch_target_size) {
-                        const end = writer.end;
-                        writer.end = chunk_count_pos;
-                        try writer.writeInt(u16, chunk_count, .little);
-                        writer.end = end;
-
-                        const channel = protocol.Channel.chunk_transfer;
-                        const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
-                        try server.net_man.send(peer.ref, packet);
-
-                        server.total_bytes_sent += packet.dataSlice().len;
-                        chunk_count = 0;
-
-                        _ = writer.consumeAll();
-                        try ServerMsgId.compressed_chunk_batch.encode(&writer);
-                        try writer.writeInt(u16, 0, .little);
-                    }
-
-                    const entry = maybe_entry orelse break;
-                    const pos = entry.key_ptr.*;
-
-                    try writer.writeStruct(pos, .little);
-                    try writer.writeInt(u8, @intFromEnum(protocol.ChunkStorageType.u2_palette), .little);
-                    const compressed_size_pos = writer.end;
-                    try writer.writeInt(u16, 0, .little);
-
-                    const compress_buffer = writer.unusedCapacitySlice();
-                    const compressed_size = zstd.ZSTD_compress(compress_buffer.ptr, compress_buffer.len, entry.value_ptr.*, @sizeOf(Chunk.U2Palette), 1);
-                    if (zstd.ZSTD_isError(compressed_size) != 0) return error.ZstdCompressFailed;
-
-                    const end = writer.end + compressed_size;
-                    writer.end = compressed_size_pos;
-                    try writer.writeInt(u16, @intCast(compressed_size), .little);
-                    writer.end = end;
-                    chunk_count += 1;
-                }
-            }
-
-            {
-                _ = writer.consumeAll();
-                try ServerMsgId.compressed_chunk_batch.encode(&writer);
-                const chunk_count_pos = writer.end;
-                try writer.writeInt(u16, 0, .little);
-                var chunk_count: u16 = 0;
-
-                var iter = server.world.one_to_one_chunks.iterator();
-                while (true) {
-                    const maybe_entry = iter.next();
-
-                    if ((maybe_entry == null and chunk_count > 0) or writer.end >= protocol.chunk_batch_target_size) {
-                        const end = writer.end;
-                        writer.end = chunk_count_pos;
-                        try writer.writeInt(u16, chunk_count, .little);
-                        writer.end = end;
-
-                        const channel = protocol.Channel.chunk_transfer;
-                        const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
-                        try server.net_man.send(peer.ref, packet);
-
-                        server.total_bytes_sent += packet.dataSlice().len;
-                        chunk_count = 0;
-
-                        _ = writer.consumeAll();
-                        try ServerMsgId.compressed_chunk_batch.encode(&writer);
-                        try writer.writeInt(u16, 0, .little);
-                    }
-
-                    const entry = maybe_entry orelse break;
-                    const pos = entry.key_ptr.*;
-
-                    try writer.writeStruct(pos, .little);
-                    try writer.writeInt(u8, @intFromEnum(protocol.ChunkStorageType.u4), .little);
-                    const compressed_size_pos = writer.end;
-                    try writer.writeInt(u16, 0, .little);
-
-                    const compress_buffer = writer.unusedCapacitySlice();
-                    const compressed_size = zstd.ZSTD_compress(compress_buffer.ptr, compress_buffer.len, entry.value_ptr.*, @sizeOf(Chunk.OneToOne), 1);
-                    if (zstd.ZSTD_isError(compressed_size) != 0) return error.ZstdCompressFailed;
-
-                    const end = writer.end + compressed_size;
-                    writer.end = compressed_size_pos;
-                    try writer.writeInt(u16, @intCast(compressed_size), .little);
-                    writer.end = end;
-                    chunk_count += 1;
-                }
-            }
-
-            _ = writer.consumeAll();
-            try ServerMsgId.done.encode(&writer);
-            const packet = try znet.Packet.init(writer.buffered(), 0, .reliable);
+            small_writer.end = 0;
+            try ServerMsgId.done.encode(&small_writer);
+            const packet = try znet.Packet.init(small_writer.buffered(), 0, .reliable);
+            server.total_bytes_sent += packet.dataSlice().len;
             try server.net_man.send(peer.ref, packet);
         },
         .disconnect => |peer| {
             std.log.info("disconnected {f}", .{peer.address});
+
+            try server.players.swapRemove(.{
+                .slot = peer.ref.slot,
+                .gen = peer.ref.gen,
+            });
         },
         .receive => |packet_peer| {
             defer packet_peer.packet.deinit();
@@ -277,9 +192,154 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
     }
 }
 
-const PlayerSlot = struct {
+const Player = struct {
+    peer: NetworkManager.PeerRef,
     /// region is 4x4x4 chunks
     regions_to_send: std.ArrayList(Chunk.PackedPos) = .empty,
+
+    const Ref = SparseSet(Player).Ref;
+};
+
+const ChunkSendState = struct {
+    net_man: *NetworkManager,
+    peer: NetworkManager.PeerRef,
+    bytes_sent: usize = 0,
+
+    uniform_writer: *std.Io.Writer,
+    uniform_chunk_count_pos: usize = 0,
+    uniform_chunk_count: u16 = 0,
+
+    compressed_writer: *std.Io.Writer,
+    compressed_chunk_count_pos: usize = 0,
+    compressed_chunk_count: u16 = 0,
+
+    pub fn init(state: *ChunkSendState) !void {
+        try state.initUniform();
+        try state.initCompressed();
+    }
+
+    pub fn flush(state: *ChunkSendState) !void {
+        try state.flushUniform();
+        try state.flushCompressed();
+    }
+
+    pub fn send(state: *ChunkSendState, pos: Chunk.PackedPos, chunk: Chunk) !void {
+        switch (chunk.data) {
+            .uniform => |kind| try state.sendUniform(pos, kind),
+            .u2_palette,
+            .one_to_one,
+            => try state.sendCompressed(pos, chunk),
+        }
+    }
+
+    pub fn totalBytesToSend(state: *const ChunkSendState) usize {
+        return state.bytes_sent + state.uniform_writer.end + state.compressed_writer.end;
+    }
+
+    pub fn initUniform(state: *ChunkSendState) !void {
+        const writer = state.uniform_writer;
+        writer.end = 0;
+
+        try ServerMsgId.uniform_chunk_batch.encode(state.uniform_writer);
+        state.uniform_chunk_count_pos = writer.end;
+        try writer.writeInt(u16, 0, .little);
+        state.uniform_chunk_count = 0;
+    }
+
+    pub fn flushUniform(state: *ChunkSendState) !void {
+        if (state.uniform_chunk_count == 0) return;
+
+        const writer = state.uniform_writer;
+        const end = writer.end;
+        writer.end = state.uniform_chunk_count_pos;
+        try writer.writeInt(u16, state.uniform_chunk_count, .little);
+        writer.end = end;
+
+        const channel = protocol.Channel.chunk_transfer;
+        const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
+        state.bytes_sent += packet.dataSlice().len;
+        try state.net_man.send(state.peer, packet);
+    }
+
+    pub fn sendUniform(state: *ChunkSendState, pos: Chunk.PackedPos, kind: block.Kind) !void {
+        const writer = state.uniform_writer;
+        if (writer.end >= protocol.chunk_batch_target_size) {
+            try state.flushUniform();
+            try state.initUniform();
+        }
+
+        try writer.writeStruct(pos, .little);
+        try writer.writeInt(u8, @intFromEnum(kind), .little);
+        state.uniform_chunk_count += 1;
+    }
+
+    pub fn initCompressed(state: *ChunkSendState) !void {
+        const writer = state.compressed_writer;
+        writer.end = 0;
+
+        try ServerMsgId.compressed_chunk_batch.encode(writer);
+        state.compressed_chunk_count_pos = writer.end;
+        try writer.writeInt(u16, 0, .little);
+        state.compressed_chunk_count = 0;
+    }
+
+    pub fn flushCompressed(state: *ChunkSendState) !void {
+        if (state.compressed_chunk_count == 0) return;
+
+        const writer = state.compressed_writer;
+        const end = writer.end;
+        writer.end = state.compressed_chunk_count_pos;
+        try writer.writeInt(u16, state.compressed_chunk_count, .little);
+        writer.end = end;
+
+        const channel = protocol.Channel.chunk_transfer;
+        const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
+        state.bytes_sent += packet.dataSlice().len;
+        try state.net_man.send(state.peer, packet);
+    }
+
+    pub fn sendCompressed(state: *ChunkSendState, pos: Chunk.PackedPos, chunk: Chunk) !void {
+        const writer = state.compressed_writer;
+        if (writer.end >= protocol.chunk_batch_target_size) {
+            try state.flushCompressed();
+            try state.initCompressed();
+        }
+
+        try writer.writeStruct(pos, .little);
+        switch (chunk.data) {
+            .uniform => unreachable,
+            .u2_palette => |data| {
+                try writer.writeInt(u8, @intFromEnum(protocol.ChunkStorageType.u2_palette), .little);
+                const compressed_size_pos = writer.end;
+                try writer.writeInt(u16, 0, .little);
+
+                const compress_buffer = writer.unusedCapacitySlice();
+                const compressed_size = zstd.ZSTD_compress(compress_buffer.ptr, compress_buffer.len, data, @sizeOf(Chunk.U2Palette), 1);
+                if (zstd.ZSTD_isError(compressed_size) != 0) return error.ZstdCompressFailed;
+
+                const end = writer.end + compressed_size;
+                writer.end = compressed_size_pos;
+                try writer.writeInt(u16, @intCast(compressed_size), .little);
+                writer.end = end;
+                state.compressed_chunk_count += 1;
+            },
+            .one_to_one => |data| {
+                try writer.writeInt(u8, @intFromEnum(protocol.ChunkStorageType.u4), .little);
+                const compressed_size_pos = writer.end;
+                try writer.writeInt(u16, 0, .little);
+
+                const compress_buffer = writer.unusedCapacitySlice();
+                const compressed_size = zstd.ZSTD_compress(compress_buffer.ptr, compress_buffer.len, data, @sizeOf(Chunk.OneToOne), 1);
+                if (zstd.ZSTD_isError(compressed_size) != 0) return error.ZstdCompressFailed;
+
+                const end = writer.end + compressed_size;
+                writer.end = compressed_size_pos;
+                try writer.writeInt(u16, @intCast(compressed_size), .little);
+                writer.end = end;
+                state.compressed_chunk_count += 1;
+            },
+        }
+    }
 };
 
 const ConsoleInput = struct {
