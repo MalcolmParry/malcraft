@@ -4,7 +4,7 @@ const math = mw.math;
 const znet = @import("znet");
 const protocol = @import("protocol.zig");
 const Deque = @import("../utils/deque.zig").Deque;
-const SparseSet = @import("../utils/sparse_set.zig").SparseSet;
+const GenerationalSparseSet = @import("../utils/generational_sparse_set.zig").GenerationalSparseSet;
 const ServerMsgId = protocol.ServerMsgId;
 const NetworkManager = @This();
 const cl = std.atomic.cache_line;
@@ -76,7 +76,7 @@ fn worker(man: *NetworkManager, host_config: znet.HostConfig) !void {
     const host = try znet.Host.init(host_config);
     defer shutdown(host);
 
-    var peers: SparseSet(znet.Peer) = .empty;
+    var peers: PeerSet = .empty;
     defer peers.deinit(man.alloc);
 
     while (man.running.load(.monotonic)) {
@@ -149,9 +149,9 @@ fn worker(man: *NetworkManager, host_config: znet.HostConfig) !void {
     }
 }
 
-pub fn refFromPeer(alloc: std.mem.Allocator, peers: *SparseSet(znet.Peer), peer: znet.Peer) !PeerRef {
+pub fn refFromPeer(alloc: std.mem.Allocator, peers: *PeerSet, peer: znet.Peer) !PeerRef {
     if (peer.ptr.data) |usr_data| {
-        const sparse: *const SparseSet(znet.Peer).Sparse = @ptrCast(@alignCast(usr_data));
+        const sparse: *const PeerSet.Sparse = @ptrCast(@alignCast(usr_data));
 
         return .{
             .slot = peers.dense_to_sparse.items[sparse.dense_slot],
@@ -219,7 +219,8 @@ pub const Command = union(enum) {
     send: PacketWithPeer,
 };
 
-pub const PeerRef = SparseSet(znet.Peer).Ref;
+pub const PeerSet = GenerationalSparseSet(znet.Peer);
+pub const PeerRef = PeerSet.Ref;
 pub const PeerData = struct {
     ref: PeerRef,
     address: znet.Address,

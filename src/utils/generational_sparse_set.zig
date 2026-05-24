@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn SparseSet(Value: type) type {
+pub fn GenerationalSparseSet(Value: type) type {
     return struct {
         const This = @This();
         pub const DenseIndex = u32;

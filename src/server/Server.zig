@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const znet = @import("znet");
-const SparseSet = @import("../utils/sparse_set.zig").SparseSet;
+const GenerationalSparseSet = @import("../utils/generational_sparse_set.zig").GenerationalSparseSet;
 const block = @import("../common/block.zig");
 const Chunk = @import("../common/Chunk.zig");
 const World = @import("../common/World.zig");
@@ -30,7 +30,7 @@ world_gen: WorldGenerator,
 tick_timer: std.time.Timer,
 tick_count: u64 = 0,
 total_work_ns: u64 = 0,
-players: SparseSet(Player) = .empty,
+players: Player.Set = .empty,
 
 pub fn init(server: *Server, alloc: std.mem.Allocator) !void {
     server.* = .{
@@ -193,7 +193,8 @@ const Player = struct {
     /// region is 4x4x4 chunks
     regions_to_send: std.ArrayList(Chunk.PackedPos) = .empty,
 
-    const Ref = SparseSet(Player).Ref;
+    const Set = GenerationalSparseSet(Player);
+    const Ref = Set.Ref;
 };
 
 const ChunkSendState = struct {
