@@ -27,7 +27,6 @@ pub const ServerMsgId = enum(u8) {
     ///     compressed_size: u16,
     ///     compressed_bytes: [compressed_size]u8,
     compressed_chunk_batch,
-    done,
 
     pub fn encode(id: ServerMsgId, writer: *std.Io.Writer) !void {
         try writer.writeInt(u8, @intFromEnum(id), .little);

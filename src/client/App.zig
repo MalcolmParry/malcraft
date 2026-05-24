@@ -31,7 +31,6 @@ last_cursor: math.Vec2,
 
 world: World,
 chunk_mesher: ChunkMesher,
-chunk_recv_timer: ?std.time.Timer = null,
 
 pub fn init(app: *App, alloc: std.mem.Allocator) !void {
     try znet.init();
@@ -253,8 +252,6 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
             var reader = event.packet.reader();
             const msg_id = try ServerMsgId.decode(&reader);
 
-            if (app.chunk_recv_timer == null) app.chunk_recv_timer = try .start();
-
             switch (msg_id) {
                 .init => {
                     const player_id = try reader.takeInt(u16, .little);
@@ -323,10 +320,7 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
                         try app.chunk_mesher.addRequestWithFullCollateral(pos.vec());
                     }
 
-                    std.log.info("processed packet: {d: >3} 1-1 chunks: {Bi:.2}", .{ count, event.packet.dataSlice().len });
-                },
-                .done => {
-                    std.log.info("chunk recv done, took {}μs", .{app.chunk_recv_timer.?.read() / 1000});
+                    std.log.info("processed packet: {d: >3} compressed chunks: {Bi:.2}", .{ count, event.packet.dataSlice().len });
                 },
             }
         },
