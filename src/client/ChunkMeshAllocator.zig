@@ -235,3 +235,14 @@ pub fn queryBytesFree(mesh_alloc: *ChunkMeshAllocator) usize {
 
     return bytes_free;
 }
+
+pub fn queryLargestFreeBlock(mesh_alloc: *ChunkMeshAllocator) usize {
+    var largest: usize = 0;
+    var maybe_node = mesh_alloc.free_list.first;
+    while (maybe_node) |node| : (maybe_node = node.next) {
+        const free_region: *FreeRegion = @fieldParentPtr("node", node);
+        largest = @max(largest, free_region.size);
+    }
+
+    return largest;
+}

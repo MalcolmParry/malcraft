@@ -29,7 +29,7 @@ pub const Id = enum(u3) {
 
     pub fn fromBlockId(id: block.Kind) Id {
         return switch (id) {
-            .air => unreachable,
+            .air => .missing,
             .stone => .stone,
             .grass => .grass,
             .water => .water,

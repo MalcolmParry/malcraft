@@ -106,6 +106,7 @@ pub const RenderInfo = struct {
     dt_ns: u64,
     chunk_mesh_buffer_bytes_used: usize,
     chunk_mesh_buffer_bytes_total: usize,
+    chunk_mesh_buffer_largest_free_block: usize,
     loaded_mesh_count: usize,
     overwritten_meshes: u64,
 };
@@ -208,7 +209,7 @@ pub fn render(ui: *UIRenderer, info: RenderInfo) !void {
             \\Yaw:   {d: >6.2}
             \\Pitch: {d: >6.2}
             \\
-            \\Mesh Buffer: {Bi:.2} / {Bi:.2}
+            \\Mesh Buffer: {Bi:.2} / {Bi:.2} (Largest free block {Bi:.2})
             \\Meshed Chunks: {}
             \\Overwritten Meshes: {}
         , .{
@@ -223,6 +224,7 @@ pub fn render(ui: *UIRenderer, info: RenderInfo) !void {
             math.deg(cam_euler[1]),
             info.chunk_mesh_buffer_bytes_used,
             info.chunk_mesh_buffer_bytes_total,
+            info.chunk_mesh_buffer_largest_free_block,
             info.loaded_mesh_count,
             info.overwritten_meshes,
         });

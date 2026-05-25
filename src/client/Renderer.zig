@@ -288,8 +288,9 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
         .dt_ns = data.dt_ns,
         .show_crosshair = data.show_crosshair,
         .camera = data.camera,
-        .chunk_mesh_buffer_bytes_used = (ChunkMeshAllocator.buffer_size - this.chunk_mesh_alloc.queryBytesFree()) / 1024,
-        .chunk_mesh_buffer_bytes_total = ChunkMeshAllocator.buffer_size / 1024,
+        .chunk_mesh_buffer_bytes_used = ChunkMeshAllocator.buffer_size - this.chunk_mesh_alloc.queryBytesFree(),
+        .chunk_mesh_buffer_bytes_total = ChunkMeshAllocator.buffer_size,
+        .chunk_mesh_buffer_largest_free_block = this.chunk_mesh_alloc.queryLargestFreeBlock(),
         .loaded_mesh_count = this.chunk_mesh_alloc.loaded_meshes.count(),
         .overwritten_meshes = this.chunk_mesh_alloc.overwritten_meshes,
     });

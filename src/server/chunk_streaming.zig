@@ -16,14 +16,15 @@ const zstd = @cImport({
 });
 
 const chunk_transfer_limit = 256 * 1024;
+const region_len = 4;
 
 pub const Cursor = struct {
     /// region is 4x4x4 chunks
     regions_to_send: Deque(Chunk.PackedPos) = .empty,
 
     pub fn init(cursor: *Cursor, alloc: std.mem.Allocator) !void {
-        const radius_regions: i32 = @intCast(options.render_radius / 4);
-        const height_regions: i32 = @intCast(options.render_height / 4);
+        const radius_regions: i32 = @intCast(options.render_radius / region_len);
+        const height_regions: i32 = @intCast(options.render_height / region_len);
         const region_count = (radius_regions * 2 + 1) * (radius_regions * 2 + 1) * (height_regions * 2 + 1);
         try cursor.regions_to_send.ensureUnusedCapacity(alloc, region_count);
 
@@ -77,10 +78,10 @@ pub fn sendChunks(net_man: *NetworkManager, world: *const World, peer: NetworkMa
     while (cursor.regions_to_send.popFront()) |packed_region_pos| {
         const region_pos = packed_region_pos.vec();
 
-        for (0..4) |ux| {
-            for (0..4) |uy| {
-                for (0..4) |uz| {
-                    const chunk_pos = (region_pos * @as(Chunk.Pos, @splat(4))) + @as(Chunk.Pos, .{
+        for (0..region_len) |ux| {
+            for (0..region_len) |uy| {
+                for (0..region_len) |uz| {
+                    const chunk_pos = (region_pos * @as(Chunk.Pos, @splat(region_len))) + @as(Chunk.Pos, .{
                         @intCast(ux),
                         @intCast(uy),
                         @intCast(uz),
