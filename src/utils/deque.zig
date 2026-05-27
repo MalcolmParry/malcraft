@@ -203,6 +203,11 @@ pub fn Deque(comptime T: type) type {
             return deque.buffer[deque.bufferIndex(index)];
         }
 
+        pub fn atPtr(deque: *const Self, index: usize) *T {
+            assert(index < deque.len);
+            return &deque.buffer[deque.bufferIndex(index)];
+        }
+
         /// Remove and return the first item in the deque or null if empty.
         pub fn popFront(deque: *Self) ?T {
             if (deque.len == 0) return null;

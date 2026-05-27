@@ -16,11 +16,16 @@ const zstd = @cImport({
 });
 
 const chunk_transfer_limit = 256 * 1024;
-const region_len = 4;
+pub const region_len = 4;
 
 pub const Cursor = struct {
     /// region is 4x4x4 chunks
     regions_to_send: Deque(Chunk.PackedPos) = .empty,
+    regions_to_gen: Deque(Chunk.PackedPos) = .empty,
+    chunks_to_gen: Deque(Chunk.PackedPos) = .empty,
+
+    render_radius: u32 = options.render_radius,
+    render_height: u32 = options.render_height,
 
     pub fn init(cursor: *Cursor, alloc: std.mem.Allocator) !void {
         const radius_regions: i32 = @intCast(options.render_radius / region_len);
@@ -40,22 +45,45 @@ pub const Cursor = struct {
             }
         }
 
-        std.mem.sort(Chunk.PackedPos, cursor.regions_to_send.buffer[0..cursor.regions_to_send.len], {}, struct {
-            fn lessThanFn(_: void, left: Chunk.PackedPos, right: Chunk.PackedPos) bool {
+        const SortContext = struct {
+            queue: *Deque(Chunk.PackedPos),
+
+            pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
                 const i64x3 = @Vector(3, i64);
-                const left_64: i64x3 = left.vec();
-                const right_64: i64x3 = right.vec();
+                const left_64: i64x3 = ctx.queue.at(a).vec();
+                const right_64: i64x3 = ctx.queue.at(b).vec();
                 return math.lengthSqr(left_64) < math.lengthSqr(right_64);
             }
-        }.lessThanFn);
+
+            pub fn swap(ctx: @This(), a: usize, b: usize) void {
+                return std.mem.swap(Chunk.PackedPos, ctx.queue.atPtr(a), ctx.queue.atPtr(b));
+            }
+        };
+
+        std.sort.heapContext(0, cursor.regions_to_send.len, SortContext{
+            .queue = &cursor.regions_to_send,
+        });
     }
 
     pub fn deinit(cursor: *Cursor, alloc: std.mem.Allocator) void {
         cursor.regions_to_send.deinit(alloc);
+        cursor.regions_to_gen.deinit(alloc);
+        cursor.chunks_to_gen.deinit(alloc);
+    }
+
+    pub fn chunkInRange(cursor: *const Cursor, pos: Chunk.Pos) bool {
+        if (@abs(pos[0]) > cursor.render_radius) return false;
+        if (@abs(pos[1]) > cursor.render_radius) return false;
+        if (@abs(pos[2]) > cursor.render_height) return false;
+        return true;
+    }
+
+    pub fn regionInRange(cursor: *const Cursor, pos: Chunk.Pos) bool {
+        return cursor.chunkInRange(pos * @as(Chunk.Pos, @splat(region_len)));
     }
 };
 
-pub fn sendChunks(net_man: *NetworkManager, world: *const World, peer: NetworkManager.PeerRef, cursor: *Cursor) !void {
+pub fn sendChunks(alloc: std.mem.Allocator, net_man: *NetworkManager, world: *const World, peer: NetworkManager.PeerRef, cursor: *Cursor) !void {
     if (cursor.regions_to_send.len == 0) return;
 
     var timer: std.time.Timer = try .start();
@@ -75,8 +103,32 @@ pub fn sendChunks(net_man: *NetworkManager, world: *const World, peer: NetworkMa
     try send_state.init();
 
     var regions_sent: usize = 0;
-    while (cursor.regions_to_send.popFront()) |packed_region_pos| {
-        const region_pos = packed_region_pos.vec();
+    while (cursor.regions_to_send.popFront()) |region_pos_p| {
+        const region_pos = region_pos_p.vec();
+        if (!cursor.regionInRange(region_pos)) continue;
+
+        var exists: bool = false;
+        for (0..region_len) |ux| blk: {
+            for (0..region_len) |uy| {
+                for (0..region_len) |uz| {
+                    const chunk_pos = (region_pos * @as(Chunk.Pos, @splat(region_len))) + @as(Chunk.Pos, .{
+                        @intCast(ux),
+                        @intCast(uy),
+                        @intCast(uz),
+                    });
+
+                    if (world.containsChunk(.pack(chunk_pos))) {
+                        exists = true;
+                        break :blk;
+                    }
+                }
+            }
+        }
+
+        if (!exists) {
+            try cursor.regions_to_gen.pushBack(alloc, region_pos_p);
+            continue;
+        }
 
         for (0..region_len) |ux| {
             for (0..region_len) |uy| {
@@ -88,7 +140,11 @@ pub fn sendChunks(net_man: *NetworkManager, world: *const World, peer: NetworkMa
                     });
 
                     const packed_chunk_pos: Chunk.PackedPos = .pack(chunk_pos);
-                    const chunk = world.getChunk(packed_chunk_pos).?;
+                    const chunk = world.getChunk(packed_chunk_pos) orelse {
+                        try cursor.chunks_to_gen.pushBack(alloc, packed_chunk_pos);
+                        continue;
+                    };
+
                     try send_state.send(packed_chunk_pos, chunk);
                 }
             }

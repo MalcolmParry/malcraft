@@ -10,11 +10,11 @@ const protocol = @import("../common/protocol.zig");
 const ServerMsgId = protocol.ServerMsgId;
 const NetworkManager = @import("../common/NetworkManager.zig");
 const chunk_streaming = @import("chunk_streaming.zig");
+const Player = @import("Player.zig");
 const Server = @This();
 
 const tps = 20;
-const ms_per_tick = 50;
-const ns_per_tick = ms_per_tick * std.time.ns_per_ms;
+const ns_per_tick: comptime_int = (1.0 / @as(comptime_float, tps)) * std.time.ns_per_s;
 
 alloc: std.mem.Allocator,
 stdin_thread: std.Thread,
@@ -24,7 +24,6 @@ net_man: NetworkManager,
 world: World = .{},
 world_gen: WorldGenerator,
 
-tick_timer: std.time.Timer,
 tick_count: u64 = 0,
 total_work_ns: u64 = 0,
 players: Player.Set = .empty,
@@ -37,7 +36,6 @@ pub fn init(server: *Server, alloc: std.mem.Allocator) !void {
         .net_man = undefined,
 
         .world_gen = undefined,
-        .tick_timer = try .start(),
     };
     errdefer server.world.deinit(alloc);
 
@@ -64,11 +62,6 @@ pub fn init(server: *Server, alloc: std.mem.Allocator) !void {
 
     server.world_gen = try .init(alloc);
     errdefer server.world_gen.deinit();
-    try server.world_gen.queueChunks();
-    while (server.world_gen.queue.len != 0)
-        try server.world_gen.genMany(alloc, &server.world);
-
-    std.log.info("world gen done", .{});
 }
 
 pub fn deinit(server: *Server) void {
@@ -90,7 +83,7 @@ pub fn deinit(server: *Server) void {
 }
 
 pub fn tick(server: *Server) !bool {
-    _ = server.tick_timer.lap();
+    var tick_timer: std.time.Timer = try .start();
 
     no_cmd: {
         server.console_input.mutex.lock();
@@ -110,15 +103,25 @@ pub fn tick(server: *Server) !bool {
     while (try server.net_man.popEvent()) |event| try server.processNetEvent(event);
 
     for (server.players.dense.items) |*player| {
-        try chunk_streaming.sendChunks(&server.net_man, &server.world, player.peer, &player.chunk_cursor);
+        try chunk_streaming.sendChunks(server.alloc, &server.net_man, &server.world, player.peer, &player.chunk_cursor);
     }
 
-    const work_ns = server.tick_timer.read();
+    blk: {
+        const headroom_ns = 500_000;
+        const prev_work_ns = tick_timer.read();
+        if (prev_work_ns + headroom_ns >= ns_per_tick) break :blk;
+
+        const budget_ns = ns_per_tick - prev_work_ns - headroom_ns;
+        try server.world_gen.genMany(server.alloc, &server.world, server.players.dense.items, budget_ns);
+    }
+
+    const work_ns = tick_timer.read();
     server.tick_count += 1;
     server.total_work_ns += work_ns;
 
     if (work_ns > ns_per_tick) return true;
     const remaining_ns = ns_per_tick - work_ns;
+
     std.Thread.sleep(remaining_ns);
     return true;
 }
@@ -166,18 +169,6 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
         },
     }
 }
-
-const Player = struct {
-    peer: NetworkManager.PeerRef,
-    chunk_cursor: chunk_streaming.Cursor = .{},
-
-    const Set = GenerationalSparseSet(Player);
-    const Ref = Set.Ref;
-
-    pub fn deinit(player: *Player, alloc: std.mem.Allocator) void {
-        player.chunk_cursor.deinit(alloc);
-    }
-};
 
 const ConsoleInput = struct {
     mutex: std.Thread.Mutex = .{},

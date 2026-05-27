@@ -6,12 +6,15 @@ const block = @import("../common/block.zig");
 const Chunk = @import("../common/Chunk.zig");
 const Deque = @import("../utils/deque.zig").Deque;
 const World = @import("../common/World.zig");
+const Player = @import("Player.zig");
+const chunk_streaming = @import("chunk_streaming.zig");
 const znoise = @import("znoise");
 
 const WorldGenerator = @This();
 const i32x2 = @Vector(2, i32);
+const region_len = chunk_streaming.region_len;
+
 height_map: std.AutoHashMapUnmanaged([2]i32, *HeightMap),
-queue: Deque(Chunk.PackedPos),
 alloc: std.mem.Allocator,
 total_time: u64 = 0,
 
@@ -26,7 +29,6 @@ const HeightMap = struct {
 pub fn init(alloc: std.mem.Allocator) !WorldGenerator {
     return .{
         .height_map = .empty,
-        .queue = .empty,
         .alloc = alloc,
     };
 }
@@ -35,24 +37,63 @@ pub fn deinit(gen: *WorldGenerator) void {
     var iter = gen.height_map.iterator();
     while (iter.next()) |kv| gen.alloc.destroy(kv.value_ptr.*);
     gen.height_map.deinit(gen.alloc);
-    gen.queue.deinit(gen.alloc);
     std.log.info("world gen time: {}μs", .{gen.total_time / std.time.ns_per_us});
 }
 
-const target_gen_time_ns = 8_000_000;
 pub fn genMany(
     gen: *WorldGenerator,
     alloc: std.mem.Allocator,
     world: *World,
+    players: []Player,
+    target_time_ns: u64,
 ) !void {
+    if (players.len == 0) return;
     var timer: std.time.Timer = try .start();
+    var player_index: usize = 0;
+    var empty_queue_count: usize = 0;
 
     while (true) {
-        if (timer.read() >= target_gen_time_ns) break;
+        if (timer.read() >= target_time_ns) break;
+        if (empty_queue_count == players.len) break;
+        if (player_index == 0) empty_queue_count = 0;
 
-        const pos = gen.queue.popFront() orelse break;
-        const chunk = try gen.generate(pos.vec());
-        try world.placeChunk(alloc, pos, chunk);
+        const player = &players[player_index];
+        if (player.chunk_cursor.chunks_to_gen.popFront()) |pos| {
+            if (!player.chunk_cursor.chunkInRange(pos.vec())) continue;
+            if (world.containsChunk(pos)) continue;
+
+            const chunk = try gen.generate(pos.vec());
+            try world.placeChunk(alloc, pos, chunk);
+
+            // TODO: add chunks to send
+        } else if (player.chunk_cursor.regions_to_gen.popFront()) |region_pos| {
+            if (!player.chunk_cursor.regionInRange(region_pos.vec())) continue;
+            const base_chunk_pos = region_pos.vec() * @as(Chunk.Pos, @splat(region_len));
+
+            for (0..region_len) |x| {
+                for (0..region_len) |y| {
+                    for (0..region_len) |z| {
+                        const rel: Chunk.Pos = .{
+                            @intCast(x),
+                            @intCast(y),
+                            @intCast(z),
+                        };
+
+                        const chunk_pos = base_chunk_pos + rel;
+                        if (!player.chunk_cursor.chunkInRange(chunk_pos)) continue;
+                        if (world.containsChunk(.pack(chunk_pos))) continue;
+                        const chunk = try gen.generate(chunk_pos);
+                        try world.placeChunk(alloc, .pack(chunk_pos), chunk);
+                    }
+                }
+            }
+
+            try player.chunk_cursor.regions_to_send.pushBack(alloc, region_pos);
+        } else {
+            empty_queue_count += 1;
+        }
+
+        player_index = (player_index + 1) % players.len;
     }
 
     gen.total_time += timer.read();
@@ -217,35 +258,4 @@ fn getOrCreateHeightMap(gen: *WorldGenerator, pos: i32x2) !*HeightMap {
 
 fn zeroToOne(x: f32) f32 {
     return (x + 1) / 2;
-}
-
-pub fn queueChunks(gen: *WorldGenerator) !void {
-    const alloc = gen.alloc;
-    const render_radius: i32 = @intCast(options.render_radius);
-    const render_height: i32 = @intCast(options.render_height);
-    const chunk_count = (render_radius * 2 + 1) * (render_radius * 2 + 1) * (render_height * 2 + 1);
-
-    try gen.queue.ensureUnusedCapacity(alloc, chunk_count);
-
-    var z: i20 = 0;
-    while (z <= render_height) : (z += 1) {
-        var y: i22 = -render_radius;
-        while (y <= render_radius) : (y += 1) {
-            var x: i22 = -render_radius;
-            while (x <= render_radius) : (x += 1) {
-                const pos: Chunk.PackedPos = .{ .x = x, .y = y, .z = z };
-                gen.queue.pushBackAssumeCapacity(pos);
-            }
-        }
-    }
-
-    const queue = gen.queue.buffer[0..gen.queue.len];
-    std.mem.sort(Chunk.PackedPos, queue, {}, struct {
-        fn lessThanFn(_: void, left: Chunk.PackedPos, right: Chunk.PackedPos) bool {
-            const i64x3 = @Vector(3, i64);
-            const left_64: i64x3 = left.vec();
-            const right_64: i64x3 = right.vec();
-            return math.lengthSqr(left_64) < math.lengthSqr(right_64);
-        }
-    }.lessThanFn);
 }

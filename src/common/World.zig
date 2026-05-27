@@ -33,6 +33,13 @@ pub fn chunkRelFromBlockPos(pos: block.Pos) Chunk.RelPos {
     return @intCast(@mod(pos, Chunk.size));
 }
 
+pub fn containsChunk(world: *const World, pos: Chunk.PackedPos) bool {
+    if (world.uniform_chunks.contains(pos)) return true;
+    if (world.u2_palette_chunks.contains(pos)) return true;
+    if (world.one_to_one_chunks.contains(pos)) return true;
+    return false;
+}
+
 pub fn getChunk(world: *const World, pos: Chunk.PackedPos) ?Chunk {
     if (world.uniform_chunks.get(pos)) |kind| return .{ .data = .{ .uniform = kind } };
     if (world.u2_palette_chunks.get(pos)) |palette| return .{ .data = .{ .u2_palette = palette } };
