@@ -18,19 +18,22 @@ pub const GpuLoaded = struct {
 };
 
 pub const GreedyQuad = packed struct(u64) {
-    face: block.Face,
-    x: u5,
-    y: u5,
-    z: u5,
-    /// width  - 1 so range is 1-32
-    w: u5,
-    /// height - 1 so range is 1-32
-    h: u5,
-    flip: u1,
-    tex_id: TextureManager.Id,
-    // 32 bit boundary
-    ao_corners: AoCorners,
-    unused2: u24 = undefined,
+    x: packed struct(u32) {
+        face: block.Face,
+        x: u5,
+        y: u5,
+        z: u5,
+        /// width  - 1 so range is 1-32
+        w: u5,
+        /// height - 1 so range is 1-32
+        h: u5,
+        flip: u1,
+        tex_id: TextureManager.Id,
+    },
+    y: packed struct(u32) {
+        ao_corners: AoCorners,
+        unused2: u24 = undefined,
+    },
 };
 
 comptime {
@@ -540,15 +543,19 @@ fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, da
             };
 
             quads.appendAssumeCapacity(.{
-                .face = face,
-                .x = pos[0],
-                .y = pos[1],
-                .z = pos[2],
-                .w = @intCast(swapped_w - 1),
-                .h = @intCast(swapped_h - 1),
-                .flip = @intFromBool(data.flip),
-                .ao_corners = data.ao,
-                .tex_id = data.tex_id,
+                .x = .{
+                    .face = face,
+                    .x = pos[0],
+                    .y = pos[1],
+                    .z = pos[2],
+                    .w = @intCast(swapped_w - 1),
+                    .h = @intCast(swapped_h - 1),
+                    .flip = @intFromBool(data.flip),
+                    .tex_id = data.tex_id,
+                },
+                .y = .{
+                    .ao_corners = data.ao,
+                },
             });
 
             y_usize += h;
