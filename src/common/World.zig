@@ -110,16 +110,17 @@ pub fn rayCast(world: *const World, origin: math.Vec3, dir: math.Vec3) RayCastRe
     if (@reduce(.And, dir == @as(math.Vec3, @splat(0)))) return .no_hit;
 
     const pos_f = @floor(origin);
-    var pos: block.Pos = @intFromFloat(pos_f);
+    var pos: [3]i32 = @as(block.Pos, @trunc(pos_f));
 
-    const step_f = std.math.sign(dir);
-    const step: block.Pos = @intFromFloat(step_f);
+    const step_vec = std.math.sign(dir);
+    const step: [3]i2 = step_vec;
 
     const inv_dir = @as(math.Vec3, @splat(1.0)) / dir;
-    const delta = @abs(inv_dir);
+    const delta_vec = @abs(inv_dir);
+    const delta: [3]f32 = delta_vec;
 
     const half: math.Vec3 = @splat(0.5);
-    var side_dist = ((step_f * (pos_f - origin)) + (step_f * half) + half) * delta;
+    var side_dist: [3]f32 = ((step_vec * (pos_f - origin)) + (step_vec * half) + half) * delta_vec;
 
     if (world.getBlock(pos)) |b| {
         if (b.isOpaque()) return .inside;

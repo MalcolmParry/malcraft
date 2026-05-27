@@ -83,10 +83,10 @@ pub const Cursor = struct {
     }
 };
 
-pub fn sendChunks(alloc: std.mem.Allocator, net_man: *NetworkManager, world: *const World, peer: NetworkManager.PeerRef, cursor: *Cursor) !void {
+pub fn sendChunks(alloc: std.mem.Allocator, io: std.Io, net_man: *NetworkManager, world: *const World, peer: NetworkManager.PeerRef, cursor: *Cursor) !void {
     if (cursor.regions_to_send.len == 0) return;
 
-    var timer: std.time.Timer = try .start();
+    const start: std.Io.Timestamp = .now(io, .awake);
 
     var uniform_buffer: [protocol.max_packet_size]u8 = undefined;
     var uniform_writer = std.Io.Writer.fixed(&uniform_buffer);
@@ -156,7 +156,7 @@ pub fn sendChunks(alloc: std.mem.Allocator, net_man: *NetworkManager, world: *co
     }
 
     try send_state.flush();
-    std.log.info("{}μs to send {} regions ({} chunks)", .{ timer.read() / 1000, regions_sent, regions_sent * 4 * 4 * 4 });
+    std.log.info("{}μs to send {} regions ({} chunks)", .{ start.untilNow(io, .awake).toMicroseconds(), regions_sent, regions_sent * 4 * 4 * 4 });
 }
 
 const SendState = struct {

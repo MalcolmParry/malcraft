@@ -17,6 +17,7 @@ const tps = 20;
 const ns_per_tick: comptime_int = (1.0 / @as(comptime_float, tps)) * std.time.ns_per_s;
 
 alloc: std.mem.Allocator,
+io: std.Io,
 stdin_thread: std.Thread,
 console_input: ConsoleInput,
 net_man: NetworkManager,
@@ -28,9 +29,10 @@ tick_count: u64 = 0,
 total_work_ns: u64 = 0,
 players: Player.Set = .empty,
 
-pub fn init(server: *Server, alloc: std.mem.Allocator) !void {
+pub fn init(server: *Server, alloc: std.mem.Allocator, io: std.Io) !void {
     server.* = .{
         .alloc = alloc,
+        .io = io,
         .stdin_thread = undefined,
         .console_input = .{},
         .net_man = undefined,
@@ -39,15 +41,15 @@ pub fn init(server: *Server, alloc: std.mem.Allocator) !void {
     };
     errdefer server.world.deinit(alloc);
 
-    server.stdin_thread = try .spawn(.{}, ConsoleInput.worker, .{&server.console_input});
+    server.stdin_thread = try .spawn(.{}, ConsoleInput.worker, .{ io, &server.console_input });
     errdefer server.stdin_thread.detach();
-    server.stdin_thread.setName("stdin") catch |err|
+    server.stdin_thread.setName(io, "stdin") catch |err|
         std.log.warn("failed to set thread name: {}", .{err});
 
     try znet.init();
     errdefer znet.deinit();
 
-    try server.net_man.init(alloc, .{
+    try server.net_man.init(alloc, io, .{
         .addr = try .init(.{
             .ip = .any,
             .port = .{ .uint = 5000 },
@@ -83,11 +85,12 @@ pub fn deinit(server: *Server) void {
 }
 
 pub fn tick(server: *Server) !bool {
-    var tick_timer: std.time.Timer = try .start();
+    const io = server.io;
+    const tick_start: std.Io.Timestamp = .now(io, .awake);
 
     no_cmd: {
-        server.console_input.mutex.lock();
-        defer server.console_input.mutex.unlock();
+        server.console_input.mutex.lockUncancelable(io);
+        defer server.console_input.mutex.unlock(io);
 
         if (server.console_input.len == 0) break :no_cmd;
         const cmd = server.console_input.buffer[0..server.console_input.len];
@@ -103,26 +106,26 @@ pub fn tick(server: *Server) !bool {
     while (try server.net_man.popEvent()) |event| try server.processNetEvent(event);
 
     for (server.players.dense.items) |*player| {
-        try chunk_streaming.sendChunks(server.alloc, &server.net_man, &server.world, player.peer, &player.chunk_cursor);
+        try chunk_streaming.sendChunks(server.alloc, io, &server.net_man, &server.world, player.peer, &player.chunk_cursor);
     }
 
     blk: {
         const headroom_ns = 500_000;
-        const prev_work_ns = tick_timer.read();
+        const prev_work_ns: u64 = @intCast(tick_start.untilNow(io, .awake).toNanoseconds());
         if (prev_work_ns + headroom_ns >= ns_per_tick) break :blk;
 
         const budget_ns = ns_per_tick - prev_work_ns - headroom_ns;
-        try server.world_gen.genMany(server.alloc, &server.world, server.players.dense.items, budget_ns);
+        try server.world_gen.genMany(server.alloc, io, &server.world, server.players.dense.items, budget_ns);
     }
 
-    const work_ns = tick_timer.read();
+    const work_ns: u64 = @intCast(tick_start.untilNow(io, .awake).toNanoseconds());
     server.tick_count += 1;
     server.total_work_ns += work_ns;
 
     if (work_ns > ns_per_tick) return true;
     const remaining_ns = ns_per_tick - work_ns;
 
-    std.Thread.sleep(remaining_ns);
+    try io.sleep(.fromNanoseconds(remaining_ns), .awake);
     return true;
 }
 
@@ -171,14 +174,14 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
 }
 
 const ConsoleInput = struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = .init,
     buffer: [1024]u8 = undefined,
     len: usize = 0,
 
-    fn worker(state: *ConsoleInput) !void {
+    fn worker(io: std.Io, state: *ConsoleInput) !void {
         var stdin_buffer: [1024]u8 = undefined;
-        const stdin_file = std.fs.File.stdin();
-        var stdin_reader = stdin_file.reader(&stdin_buffer);
+        const stdin_file = std.Io.File.stdin();
+        var stdin_reader = stdin_file.reader(io, &stdin_buffer);
         const stdin = &stdin_reader.interface;
 
         while (true) {
@@ -189,8 +192,8 @@ const ConsoleInput = struct {
 
             stdin.toss(1);
 
-            state.mutex.lock();
-            defer state.mutex.unlock();
+            state.mutex.lockUncancelable(io);
+            defer state.mutex.unlock(io);
 
             const n = @min(line.len, state.buffer.len);
             @memcpy(state.buffer[0..n], line[0..n]);

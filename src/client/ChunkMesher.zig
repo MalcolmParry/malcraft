@@ -60,6 +60,7 @@ meshing_time_ns: u64,
 
 pub const InitInfo = struct {
     alloc: std.mem.Allocator,
+    io: std.Io,
     mesh_alloc: *ChunkMeshAllocator,
     world: *const World,
 };
@@ -77,6 +78,7 @@ pub fn init(this: *ChunkMesher, info: InitInfo) !void {
 
     this.thread_info = .{
         .thread_count = thread_count,
+        .io = info.io,
         .world = info.world,
         .jobs = &.{},
     };
@@ -115,23 +117,26 @@ pub fn addRequestWithCollateral(mesher: *ChunkMesher, pos: block.Pos) !void {
     const rel = World.chunkRelFromBlockPos(pos);
     try mesher.addRequest(.pack(chunk_pos));
 
-    const zero_mask = rel == @as(Chunk.Pos, @splat(0));
-    const max_mask = rel == @as(Chunk.Pos, @splat(Chunk.len - 1));
+    const zero_mask_vec = rel == @as(Chunk.Pos, @splat(0));
+    const max_mask_vec = rel == @as(Chunk.Pos, @splat(Chunk.len - 1));
 
-    if (@reduce(.Or, zero_mask)) {
+    const zero_mask: [3]bool = zero_mask_vec;
+    const max_mask: [3]bool = max_mask_vec;
+
+    if (@reduce(.Or, zero_mask_vec)) {
         for (0..3) |axis| {
             if (zero_mask[axis]) {
-                var new = chunk_pos;
+                var new: [3]i32 = chunk_pos;
                 new[axis] -= 1;
                 try mesher.addRequest(.pack(new));
             }
         }
     }
 
-    if (@reduce(.Or, max_mask)) {
+    if (@reduce(.Or, max_mask_vec)) {
         for (0..3) |axis| {
             if (max_mask[axis]) {
-                var new = chunk_pos;
+                var new: [3]i32 = chunk_pos;
                 new[axis] += 1;
                 try mesher.addRequest(.pack(new));
             }
@@ -152,8 +157,9 @@ pub fn addRequestWithFullCollateral(mesher: *ChunkMesher, pos: Chunk.Pos) !void 
 const target_mesh_time_ns = 4_000_000;
 const max_chunks_meshed = 1024;
 pub fn meshMany(this: *ChunkMesher) !void {
-    var timer: std.time.Timer = try .start();
-    defer this.meshing_time_ns += timer.read();
+    const io = this.thread_info.io;
+    const start: std.Io.Timestamp = .now(io, .awake);
+    defer this.meshing_time_ns += @intCast(start.untilNow(io, .awake).toNanoseconds());
 
     _ = this.arena.reset(.retain_capacity);
     const arena = this.arena.allocator();
@@ -211,6 +217,7 @@ const MeshThreadInfo = struct {
     index: std.atomic.Value(u32) align(cl) = .init(0),
     completed: std.atomic.Value(u32) align(cl) = .init(0),
     thread_count: u32 align(cl),
+    io: std.Io,
     world: *const World,
     jobs: []Job,
 
@@ -218,7 +225,7 @@ const MeshThreadInfo = struct {
         while (true) {
             const cur = this.done.load(.acquire);
             if (cur >= this.thread_count) break;
-            std.Thread.Futex.wait(&this.done, cur);
+            this.io.futexWaitUncancelable(u32, &this.done.raw, cur);
         }
     }
 
@@ -226,12 +233,12 @@ const MeshThreadInfo = struct {
         this.done.store(0, .monotonic);
         this.completed.store(0, .monotonic);
         _ = this.phase.fetchAdd(1, .release);
-        std.Thread.Futex.wake(&this.phase, this.thread_count);
+        this.io.futexWake(u32, &this.phase.raw, this.thread_count);
     }
 
     fn shutdown(this: *MeshThreadInfo) void {
         this.stop.store(true, .monotonic);
-        std.Thread.Futex.wake(&this.phase, this.thread_count);
+        this.io.futexWake(u32, &this.phase.raw, this.thread_count);
     }
 };
 
@@ -253,6 +260,7 @@ const MeshingState = struct {
 fn worker(info: *MeshThreadInfo) void {
     const mesher: *ChunkMesher = @fieldParentPtr("thread_info", info);
     const alloc = mesher.alloc;
+    const io = info.io;
 
     var arena_obj: std.heap.ArenaAllocator = .init(alloc);
     defer arena_obj.deinit();
@@ -262,11 +270,10 @@ fn worker(info: *MeshThreadInfo) void {
     state.init(alloc) catch @panic("");
     defer state.deinit(alloc);
 
-    var timer = std.time.Timer.start() catch @panic("");
     var seen_phase = info.phase.load(.acquire);
     while (true) {
         _ = info.done.fetchAdd(1, .release);
-        std.Thread.Futex.wake(&info.done, 1);
+        io.futexWake(u32, &info.done.raw, 1);
 
         while (true) {
             if (info.stop.load(.monotonic)) return;
@@ -277,14 +284,14 @@ fn worker(info: *MeshThreadInfo) void {
                 break;
             }
 
-            std.Thread.Futex.wait(&info.phase, seen_phase);
+            io.futexWaitUncancelable(u32, &info.phase.raw, seen_phase);
         }
 
-        timer.reset();
+        var start: std.Io.Timestamp = .now(io, .awake);
         var completed: u32 = 0;
         _ = arena_obj.reset(.retain_capacity);
         while (true) {
-            if (timer.read() > target_mesh_time_ns) break;
+            if (start.untilNow(io, .awake).toNanoseconds() > target_mesh_time_ns) break;
             const i = info.index.fetchAdd(1, .monotonic);
             if (i >= info.jobs.len) break;
             const job = &info.jobs[i];

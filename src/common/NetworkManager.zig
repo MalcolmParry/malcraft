@@ -10,18 +10,20 @@ const NetworkManager = @This();
 const cl = std.atomic.cache_line;
 
 alloc: std.mem.Allocator,
+io: std.Io,
 thread: std.Thread,
 failed: std.atomic.Value(bool) = .init(false),
 running: std.atomic.Value(bool) = .init(true),
 // TODO: replace this with atomic queue
-mutex: std.Thread.Mutex = .{},
+mutex: std.Io.Mutex = .init,
 outgoing: Deque(Command),
 incoming: Deque(Event),
 bytes_sent: usize = 0,
 
-pub fn init(man: *NetworkManager, alloc: std.mem.Allocator, host_config: znet.HostConfig) !void {
+pub fn init(man: *NetworkManager, alloc: std.mem.Allocator, io: std.Io, host_config: znet.HostConfig) !void {
     man.* = .{
         .alloc = alloc,
+        .io = io,
         .thread = undefined,
         .outgoing = undefined,
         .incoming = undefined,
@@ -55,8 +57,8 @@ pub fn send(man: *NetworkManager, peer: PeerRef, packet: znet.Packet) !void {
 pub fn pushCommand(man: *NetworkManager, cmd: Command) !void {
     if (man.failed.load(.monotonic)) return error.NetworkFailed;
 
-    man.mutex.lock();
-    defer man.mutex.unlock();
+    man.mutex.lockUncancelable(man.io);
+    defer man.mutex.unlock(man.io);
 
     try man.outgoing.pushBack(man.alloc, cmd);
 }
@@ -64,8 +66,8 @@ pub fn pushCommand(man: *NetworkManager, cmd: Command) !void {
 pub fn popEvent(man: *NetworkManager) !?Event {
     if (man.failed.load(.monotonic)) return error.NetworkFailed;
 
-    man.mutex.lock();
-    defer man.mutex.unlock();
+    man.mutex.lockUncancelable(man.io);
+    defer man.mutex.unlock(man.io);
 
     return man.incoming.popFront();
 }
@@ -74,15 +76,15 @@ fn worker(man: *NetworkManager, host_config: znet.HostConfig) !void {
     errdefer man.failed.store(true, .monotonic);
 
     const host = try znet.Host.init(host_config);
-    defer shutdown(host);
+    defer shutdown(host, man.io);
 
     var peers: PeerSet = .empty;
     defer peers.deinit(man.alloc);
 
     while (man.running.load(.monotonic)) {
         {
-            man.mutex.lock();
-            defer man.mutex.unlock();
+            man.mutex.lockUncancelable(man.io);
+            defer man.mutex.unlock(man.io);
 
             while (man.outgoing.popFront()) |cmd| switch (cmd) {
                 .connect => |data| {
@@ -93,7 +95,7 @@ fn worker(man: *NetworkManager, host_config: znet.HostConfig) !void {
                         .ref = ref,
                         .address = peer.address(),
                     };
-                    data.semaphore.post();
+                    data.semaphore.post(man.io);
                 },
                 .disconnect => |ref| blk: {
                     const peer = peers.get(ref) orelse break :blk;
@@ -111,8 +113,8 @@ fn worker(man: *NetworkManager, host_config: znet.HostConfig) !void {
         }
 
         const event = try host.service(1) orelse continue;
-        man.mutex.lock();
-        defer man.mutex.unlock();
+        man.mutex.lockUncancelable(man.io);
+        defer man.mutex.unlock(man.io);
 
         switch (event) {
             .connect => |data| {
@@ -164,7 +166,7 @@ pub fn refFromPeer(alloc: std.mem.Allocator, peers: *PeerSet, peer: znet.Peer) !
     }
 }
 
-pub fn shutdown(host: znet.Host) void {
+pub fn shutdown(host: znet.Host, io: std.Io) void {
     defer host.deinit();
 
     var iter = host.iterPeers();
@@ -172,8 +174,8 @@ pub fn shutdown(host: znet.Host) void {
         peer.disconnect(0);
     }
 
-    var timer = std.time.Timer.start() catch return;
-    while (timer.read() < std.time.ns_per_s * 3) {
+    const start: std.Io.Timestamp = .now(io, .awake);
+    while (start.untilNow(io, .awake).toNanoseconds() < std.time.ns_per_s * 3) {
         while (host.service(100) catch return) |event| switch (event) {
             .connect => |data| {
                 data.peer.reset();
@@ -211,7 +213,7 @@ pub const Command = union(enum) {
     pub const Connect = struct {
         config: znet.ConnectConfig,
         peer: *PeerData,
-        semaphore: *std.Thread.Semaphore,
+        semaphore: *std.Io.Semaphore,
     };
 
     connect: Connect,

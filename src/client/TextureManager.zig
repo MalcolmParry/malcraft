@@ -39,7 +39,7 @@ pub const Id = enum(u3) {
     }
 };
 
-pub fn init(alloc: std.mem.Allocator, device: gpu.Device, stage_man: *gpu.StagingManager) !TextureManager {
+pub fn init(alloc: std.mem.Allocator, io: std.Io, device: gpu.Device, stage_man: *gpu.StagingManager) !TextureManager {
     const Pixel = [4]u8;
 
     const mip_levels = 5;
@@ -90,7 +90,7 @@ pub fn init(alloc: std.mem.Allocator, device: gpu.Device, stage_man: *gpu.Stagin
         const path = id.getFilePath();
 
         var read_buffer: [zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
-        var image_cpu = try zigimg.Image.fromFilePath(alloc, path, &read_buffer);
+        var image_cpu = try zigimg.Image.fromFilePath(alloc, io, path, &read_buffer);
         defer image_cpu.deinit(alloc);
 
         var cropped = try image_cpu.crop(alloc, .{ .width = size[0], .height = size[1] });

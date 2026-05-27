@@ -17,6 +17,8 @@ const zstd = @cImport({
     @cInclude("zstd.h");
 });
 
+alloc: std.mem.Allocator,
+io: std.Io,
 net_man: NetworkManager,
 server: NetworkManager.PeerData,
 
@@ -24,7 +26,7 @@ should_close: bool = false,
 window: *mw.Window,
 renderer: Renderer,
 
-frame_timer: std.time.Timer,
+last_frame_start: std.Io.Timestamp,
 camera: Camera = .default,
 mouse_lock: bool = true,
 last_cursor: math.Vec2,
@@ -32,7 +34,7 @@ last_cursor: math.Vec2,
 world: World,
 chunk_mesher: ChunkMesher,
 
-pub fn init(app: *App, alloc: std.mem.Allocator) !void {
+pub fn init(app: *App, alloc: std.mem.Allocator, io: std.Io) !void {
     try znet.init();
     errdefer znet.deinit();
 
@@ -41,20 +43,22 @@ pub fn init(app: *App, alloc: std.mem.Allocator) !void {
     try window.setCursorMode(.disabled);
 
     app.* = .{
+        .alloc = alloc,
+        .io = io,
         .net_man = undefined,
         .server = undefined,
 
         .window = window,
         .renderer = undefined,
 
-        .frame_timer = try .start(),
+        .last_frame_start = .now(io, .awake),
         .last_cursor = window.getCursorPos(),
 
         .world = .{},
         .chunk_mesher = undefined,
     };
 
-    try app.net_man.init(alloc, .{
+    try app.net_man.init(alloc, io, .{
         .addr = try .init(.{
             .ip = .any,
             .port = .any,
@@ -66,7 +70,7 @@ pub fn init(app: *App, alloc: std.mem.Allocator) !void {
     });
     errdefer app.net_man.deinit();
 
-    var semaphore: std.Thread.Semaphore = .{};
+    var semaphore: std.Io.Semaphore = .{};
     try app.net_man.pushCommand(.{ .connect = .{
         .config = .{
             .addr = try .init(.{
@@ -79,24 +83,29 @@ pub fn init(app: *App, alloc: std.mem.Allocator) !void {
         .peer = &app.server,
         .semaphore = &semaphore,
     } });
-    semaphore.wait();
+    semaphore.waitUncancelable(io);
 
     try app.renderer.init(.{
         .alloc = alloc,
+        .io = io,
         .window = app.window,
     });
     errdefer app.renderer.deinit(alloc);
 
     try app.chunk_mesher.init(.{
         .alloc = alloc,
+        .io = io,
         .world = &app.world,
         .mesh_alloc = &app.renderer.chunk_mesh_alloc,
     });
     errdefer app.chunk_mesher.deinit();
 }
 
-pub fn deinit(app: *App, alloc: std.mem.Allocator) void {
+pub fn deinit(app: *App) void {
+    const alloc = app.alloc;
+    // std.log.info("hic", .{});
     app.renderer.deinit(alloc);
+    // std.log.info("an hic?", .{});
     app.window.deinit();
 
     app.chunk_mesher.deinit();
@@ -106,19 +115,26 @@ pub fn deinit(app: *App, alloc: std.mem.Allocator) void {
     znet.deinit();
 }
 
-pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
-    const dt_ns = app.frame_timer.lap();
-    const dt = @as(f32, @floatFromInt(dt_ns)) / std.time.ns_per_s;
+pub fn tick(app: *App) !void {
+    const alloc = app.alloc;
+    const io = app.io;
+
+    const now: std.Io.Timestamp = .now(io, .awake);
+    const dt = app.last_frame_start.durationTo(now);
+    app.last_frame_start = now;
+
+    const dt_ns: u64 = @intCast(dt.toNanoseconds());
+    const dt_s = @as(f32, @floatFromInt(dt_ns)) / std.time.ns_per_s;
 
     try app.chunk_mesher.meshMany();
 
     app.window.update();
     if (app.window.shouldClose()) app.should_close = true;
 
-    const renderer_input = try app.handleInput(alloc, dt);
+    const renderer_input = try app.handleInput(alloc, dt_s);
 
     while (try app.net_man.popEvent()) |event| {
-        try app.handleNetworkEvent(alloc, event);
+        try app.handleNetworkEvent(event);
     }
 
     try app.renderer.render(.{
@@ -134,7 +150,7 @@ fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData
     var break_block: bool = false;
     var renderer_input: Renderer.FrameData.Input = .{};
     while (app.window.popEvent()) |event| switch (event) {
-        .resize => |_| app.renderer.dirty_swapchain = true,
+        .resize => app.renderer.dirty_swapchain = true,
         .key_down => |key| {
             switch (key) {
                 .escape => app.should_close = true,
@@ -237,12 +253,15 @@ fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData
     return renderer_input;
 }
 
-fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkManager.Event) !void {
+fn handleNetworkEvent(app: *App, any_event: NetworkManager.Event) !void {
+    const alloc = app.alloc;
+    const io = app.io;
+
     switch (any_event) {
         .connect => |peer| {
             std.log.info("connected to server at {f}", .{peer.address});
         },
-        .disconnect => |_| {
+        .disconnect => {
             std.log.info("disconnected from server at {f}", .{app.server.address});
 
             return error.ServerClosed;
@@ -259,8 +278,10 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
                     std.log.info("player_id: {}", .{player_id});
                 },
                 .uniform_chunk_batch => {
-                    var timer: std.time.Timer = try .start();
+                    const start: std.Io.Timestamp = .now(io, .awake);
                     const count = try reader.takeInt(u16, .little);
+                    defer std.log.info("processed packet: {d: >4} uniform chunks: {d: >4}μs", .{ count, start.untilNow(io, .awake).toMicroseconds() });
+
                     try app.world.uniform_chunks.ensureUnusedCapacity(alloc, count);
                     try app.chunk_mesher.queue.ensureUnusedCapacity(alloc, count * 2);
 
@@ -272,8 +293,6 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
                         app.world.uniform_chunks.putAssumeCapacity(pos, kind);
                         try app.chunk_mesher.addRequestWithFullCollateral(pos.vec());
                     }
-
-                    std.log.info("processed packet: {d: >4} uniform chunks: {d: >4}μs", .{ count, timer.read() / 1000 });
                 },
                 .compressed_chunk_batch => {
                     const count = try reader.takeInt(u16, .little);

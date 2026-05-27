@@ -48,7 +48,7 @@ pub fn build(b: *Build) !void {
             .optimize = optimize,
         });
         exe.root_module.addImport("znoise", znoise.module("root"));
-        exe.linkLibrary(znoise.artifact("FastNoiseLite"));
+        exe.root_module.linkLibrary(znoise.artifact("FastNoiseLite"));
     } else {
         const zigimg = b.dependency("zigimg", .{
             .target = target,

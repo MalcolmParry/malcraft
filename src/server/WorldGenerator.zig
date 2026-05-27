@@ -43,17 +43,18 @@ pub fn deinit(gen: *WorldGenerator) void {
 pub fn genMany(
     gen: *WorldGenerator,
     alloc: std.mem.Allocator,
+    io: std.Io,
     world: *World,
     players: []Player,
     target_time_ns: u64,
 ) !void {
     if (players.len == 0) return;
-    var timer: std.time.Timer = try .start();
+    const start: std.Io.Timestamp = .now(io, .awake);
     var player_index: usize = 0;
     var empty_queue_count: usize = 0;
 
     while (true) {
-        if (timer.read() >= target_time_ns) break;
+        if (start.untilNow(io, .awake).toNanoseconds() >= target_time_ns) break;
         if (empty_queue_count == players.len) break;
         if (player_index == 0) empty_queue_count = 0;
 
@@ -96,7 +97,7 @@ pub fn genMany(
         player_index = (player_index + 1) % players.len;
     }
 
-    gen.total_time += timer.read();
+    gen.total_time += @intCast(start.untilNow(io, .awake).toNanoseconds());
 }
 
 const water_height = 80;

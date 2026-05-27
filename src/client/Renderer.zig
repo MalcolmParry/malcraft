@@ -50,11 +50,13 @@ pub const FrameData = struct {
 
 pub const InitInfo = struct {
     alloc: std.mem.Allocator,
+    io: std.Io,
     window: *mw.Window,
 };
 
 pub fn init(this: *@This(), info: InitInfo) !void {
     const alloc = info.alloc;
+    const io = info.io;
 
     this.instance = try .init(options.gpu_validation, alloc);
     errdefer this.instance.deinit(alloc);
@@ -90,7 +92,7 @@ pub fn init(this: *@This(), info: InitInfo) !void {
     };
     errdefer this.upload_man.deinit();
 
-    this.shader_man = try .init(this.device, alloc);
+    this.shader_man = try .init(this.device, alloc, io);
     errdefer this.shader_man.deinit(this.device, alloc);
 
     this.images_initialized = try alloc.alloc(bool, this.info.frames_in_flight);
@@ -143,7 +145,7 @@ pub fn init(this: *@This(), info: InitInfo) !void {
     });
     errdefer this.ui.deinit(this.device);
 
-    this.texture_man = try .init(alloc, this.device, &this.stage_man);
+    this.texture_man = try .init(alloc, io, this.device, &this.stage_man);
     errdefer this.texture_man.deinit(alloc, this.device);
 
     try this.chunk_resource_set.update(this.device, &.{
@@ -271,7 +273,7 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
     });
 
     const push_constants: PerFramePushConstants = .{
-        .vp = math.matrixToArray(data.camera.vp(aspect_ratio), .row_major),
+        .vp = math.matrixToArray(data.camera.vp(aspect_ratio)),
     };
 
     this.drawChunks(render_pass, push_constants, aspect_ratio, data.camera);
@@ -589,7 +591,7 @@ const ChunkPushConstants = struct {
 };
 
 const PerFramePushConstants = struct {
-    vp: [16]f32,
+    vp: [4][4]f32,
 };
 
 pub const Info = struct {

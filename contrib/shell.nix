@@ -2,9 +2,19 @@
   pkgs ? import <nixpkgs> { },
 }:
 
+let
+  nixpkgs-26-05 = fetchTarball {
+    url = "https://github.com/NixOS/nixpkgs/archive/nixos-26.05.tar.gz";
+  };
+
+  pkgs-26-05 = import nixpkgs-26-05 {
+    inherit (pkgs) system;
+  };
+
+in
 pkgs.mkShell {
   packages = [
-    pkgs.zig_0_15
+    pkgs-26-05.zig_0_16
     pkgs.libx11
     pkgs.vulkan-loader
     pkgs.vulkan-validation-layers
