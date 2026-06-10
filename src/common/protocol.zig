@@ -38,6 +38,24 @@ pub const ServerMsgId = enum(u8) {
     }
 };
 
+/// server -> client message
+/// everything is little endian
+/// every message starts with:
+///     id: u8,
+pub const ClientMsgId = enum(u8) {
+    /// chunk_pos: Chunk.PackedPos,
+    update_chunk_cursor,
+
+    pub fn encode(id: ClientMsgId, writer: *std.Io.Writer) !void {
+        try writer.writeInt(u8, @intFromEnum(id), .little);
+    }
+
+    pub fn decode(reader: *std.Io.Reader) !ClientMsgId {
+        const int = try reader.takeInt(u8, .little);
+        return std.enums.fromInt(ClientMsgId, int) orelse error.BadMessage;
+    }
+};
+
 pub const ChunkStorageType = enum(u8) {
     u2_palette,
     u4,

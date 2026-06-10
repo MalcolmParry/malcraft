@@ -8,6 +8,7 @@ const World = @import("../common/World.zig");
 const WorldGenerator = @import("../server/WorldGenerator.zig");
 const protocol = @import("../common/protocol.zig");
 const ServerMsgId = protocol.ServerMsgId;
+const ClientMsgId = protocol.ClientMsgId;
 const NetworkManager = @import("../common/NetworkManager.zig");
 const chunk_streaming = @import("chunk_streaming.zig");
 const Player = @import("Player.zig");
@@ -166,6 +167,27 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
         },
         .receive => |packet_peer| {
             defer packet_peer.packet.deinit();
+            var reader = packet_peer.packet.reader();
+            const msg_id = try ClientMsgId.decode(&reader);
+
+            const peer = packet_peer.peer;
+            const player_ref: Player.Ref = .{
+                .slot = peer.slot,
+                .gen = peer.gen,
+            };
+            const player = server.players.getPtr(player_ref) orelse @panic("message received after disconnect");
+
+            switch (msg_id) {
+                .update_chunk_cursor => {
+                    const new_pos = try reader.takeStruct(Chunk.PackedPos, .little);
+                    const region_pos = new_pos.vec() / @as(Chunk.Pos, @splat(chunk_streaming.region_len));
+                    if (@reduce(.And, region_pos == player.chunk_cursor.pos.vec())) return;
+
+                    player.chunk_cursor.pos = .pack(region_pos);
+                    try player.chunk_cursor.init(server.alloc);
+                    std.log.info("chunk pos changed: {}", .{new_pos.vec()});
+                },
+            }
         },
     }
 }

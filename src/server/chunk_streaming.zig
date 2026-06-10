@@ -24,6 +24,7 @@ pub const Cursor = struct {
     regions_to_gen: Deque(Chunk.PackedPos) = .empty,
     chunks_to_gen: Deque(Chunk.PackedPos) = .empty,
 
+    pos: Chunk.PackedPos = .pack(@splat(0)),
     render_radius: u32 = options.render_radius,
     render_height: u32 = options.render_height,
 
@@ -33,14 +34,14 @@ pub const Cursor = struct {
         const region_count = (radius_regions * 2 + 1) * (radius_regions * 2 + 1) * (height_regions * 2 + 1);
         try cursor.regions_to_send.ensureUnusedCapacity(alloc, region_count);
 
-        var z: i20 = 0;
+        var z: i32 = 0;
         while (z <= height_regions) : (z += 1) {
-            var y: i22 = -radius_regions;
+            var y: i32 = -radius_regions;
             while (y <= radius_regions) : (y += 1) {
-                var x: i22 = -radius_regions;
+                var x: i32 = -radius_regions;
                 while (x <= radius_regions) : (x += 1) {
-                    const pos: Chunk.PackedPos = .{ .x = x, .y = y, .z = z };
-                    cursor.regions_to_send.pushBackAssumeCapacity(pos);
+                    const pos = @as(Chunk.Pos, .{ x, y, z }) + cursor.pos.vec();
+                    cursor.regions_to_send.pushBackAssumeCapacity(.pack(pos));
                 }
             }
         }
@@ -72,9 +73,10 @@ pub const Cursor = struct {
     }
 
     pub fn chunkInRange(cursor: *const Cursor, pos: Chunk.Pos) bool {
-        if (@abs(pos[0]) > cursor.render_radius) return false;
-        if (@abs(pos[1]) > cursor.render_radius) return false;
-        if (@abs(pos[2]) > cursor.render_height) return false;
+        const rel = pos - cursor.pos.vec() * @as(Chunk.Pos, @splat(region_len));
+        if (@abs(rel[0]) > cursor.render_radius) return false;
+        if (@abs(rel[1]) > cursor.render_radius) return false;
+        if (@abs(rel[2]) > cursor.render_height) return false;
         return true;
     }
 

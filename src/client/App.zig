@@ -26,6 +26,7 @@ renderer: Renderer,
 
 frame_timer: std.time.Timer,
 camera: Camera = .default,
+last_chunk_pos: Chunk.Pos = @splat(0),
 mouse_lock: bool = true,
 last_cursor: math.Vec2,
 
@@ -116,6 +117,20 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
     if (app.window.shouldClose()) app.should_close = true;
 
     const renderer_input = try app.handleInput(alloc, dt);
+
+    const chunk_pos = @as(Chunk.Pos, @intFromFloat(app.camera.pos)) / Chunk.size;
+    if (@reduce(.Or, app.last_chunk_pos != chunk_pos)) {
+        defer app.last_chunk_pos = chunk_pos;
+
+        var buffer: [128]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&buffer);
+        try writer.writeInt(u8, @intFromEnum(protocol.ClientMsgId.update_chunk_cursor), .little);
+        try writer.writeStruct(Chunk.PackedPos.pack(chunk_pos), .little);
+
+        const channel: protocol.Channel = .control;
+        const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
+        try app.net_man.send(app.server.ref, packet);
+    }
 
     while (try app.net_man.popEvent()) |event| {
         try app.handleNetworkEvent(alloc, event);
