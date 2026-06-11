@@ -28,6 +28,7 @@ frame_timer: std.time.Timer,
 camera: Camera = .default,
 last_chunk_pos: Chunk.Pos = @splat(0),
 mouse_lock: bool = true,
+generate_chunks: bool = true,
 last_cursor: math.Vec2,
 
 world: World,
@@ -119,7 +120,7 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
     const renderer_input = try app.handleInput(alloc, dt);
 
     const chunk_pos = @as(Chunk.Pos, @intFromFloat(app.camera.pos)) / Chunk.size;
-    if (@reduce(.Or, app.last_chunk_pos != chunk_pos)) {
+    if (@reduce(.Or, app.last_chunk_pos != chunk_pos) and app.generate_chunks) {
         defer app.last_chunk_pos = chunk_pos;
 
         var buffer: [128]u8 = undefined;
@@ -142,6 +143,7 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
         .input = renderer_input,
         .viewport = app.window.getFramebufferSize(),
         .show_crosshair = app.mouse_lock,
+        .generating_chunks = app.generate_chunks,
     }, alloc);
 }
 
@@ -154,6 +156,7 @@ fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData
             switch (key) {
                 .escape => app.should_close = true,
                 .f => renderer_input.wireframe = true,
+                .g => app.generate_chunks = !app.generate_chunks,
                 .o => app.camera = .default,
                 .left_alt => {
                     app.mouse_lock = !app.mouse_lock;

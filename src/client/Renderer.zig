@@ -46,6 +46,7 @@ pub const FrameData = struct {
     input: Input = .{},
 
     show_crosshair: bool,
+    generating_chunks: bool,
 };
 
 pub const InitInfo = struct {
@@ -293,6 +294,7 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
         .chunk_mesh_buffer_largest_free_block = this.chunk_mesh_alloc.queryLargestFreeBlock(),
         .loaded_mesh_count = this.chunk_mesh_alloc.loaded_meshes.count(),
         .overwritten_meshes = this.chunk_mesh_alloc.overwritten_meshes,
+        .generating_chunks = data.generating_chunks,
     });
 
     per_frame.cmd_encoder.cmdMemoryBarrier(.{

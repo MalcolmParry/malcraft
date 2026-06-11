@@ -109,6 +109,7 @@ pub const RenderInfo = struct {
     chunk_mesh_buffer_largest_free_block: usize,
     loaded_mesh_count: usize,
     overwritten_meshes: u64,
+    generating_chunks: bool,
 };
 
 pub fn render(ui: *UIRenderer, info: RenderInfo) !void {
@@ -212,6 +213,7 @@ pub fn render(ui: *UIRenderer, info: RenderInfo) !void {
             \\Mesh Buffer: {Bi:.2} / {Bi:.2} (Largest free block {Bi:.2})
             \\Meshed Chunks: {}
             \\Overwritten Meshes: {}
+            \\Generating Chunks: {}
         , .{
             median_fps,
             median_s * std.time.ms_per_s,
@@ -227,6 +229,7 @@ pub fn render(ui: *UIRenderer, info: RenderInfo) !void {
             info.chunk_mesh_buffer_largest_free_block,
             info.loaded_mesh_count,
             info.overwritten_meshes,
+            info.generating_chunks,
         });
         defer info.alloc.free(text);
 

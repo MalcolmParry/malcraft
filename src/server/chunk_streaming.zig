@@ -34,7 +34,7 @@ pub const Cursor = struct {
         const region_count = (radius_regions * 2 + 1) * (radius_regions * 2 + 1) * (height_regions * 2 + 1);
         try cursor.regions_to_send.ensureUnusedCapacity(alloc, region_count);
 
-        var z: i32 = 0;
+        var z: i32 = -height_regions;
         while (z <= height_regions) : (z += 1) {
             var y: i32 = -radius_regions;
             while (y <= radius_regions) : (y += 1) {
