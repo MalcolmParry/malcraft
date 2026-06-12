@@ -5,6 +5,7 @@
 pkgs.mkShell {
   packages = [
     pkgs.zig_0_15
+    pkgs.zls_0_15
     pkgs.libx11
     pkgs.vulkan-loader
     pkgs.vulkan-validation-layers

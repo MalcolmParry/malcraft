@@ -22,6 +22,7 @@ pub const Cursor = struct {
     /// region is 4x4x4 chunks
     regions_to_send: Deque(Chunk.PackedPos) = .empty,
     regions_to_gen: Deque(Chunk.PackedPos) = .empty,
+    chunks_to_send: Deque(Chunk.PackedPos) = .empty,
     chunks_to_gen: Deque(Chunk.PackedPos) = .empty,
 
     pos: Chunk.PackedPos = .pack(@splat(0)),
@@ -69,6 +70,7 @@ pub const Cursor = struct {
     pub fn deinit(cursor: *Cursor, alloc: std.mem.Allocator) void {
         cursor.regions_to_send.deinit(alloc);
         cursor.regions_to_gen.deinit(alloc);
+        cursor.chunks_to_send.deinit(alloc);
         cursor.chunks_to_gen.deinit(alloc);
     }
 
@@ -104,8 +106,22 @@ pub fn sendChunks(alloc: std.mem.Allocator, net_man: *NetworkManager, world: *co
     };
     try send_state.init();
 
-    var regions_sent: usize = 0;
-    while (cursor.regions_to_send.popFront()) |region_pos_p| {
+    var chunks_sent: usize = 0;
+    while (send_state.totalBytesToSend() < chunk_transfer_limit) {
+        const pos_p = cursor.chunks_to_send.popFront() orelse break;
+        if (!cursor.chunkInRange(pos_p.vec())) continue;
+
+        const chunk = world.getChunk(pos_p) orelse {
+            try cursor.chunks_to_gen.pushBack(alloc, pos_p);
+            continue;
+        };
+
+        try send_state.send(pos_p, chunk);
+        chunks_sent += 1;
+    }
+
+    while (send_state.totalBytesToSend() < chunk_transfer_limit) {
+        const region_pos_p = cursor.regions_to_send.popFront() orelse break;
         const region_pos = region_pos_p.vec();
         if (!cursor.regionInRange(region_pos)) continue;
 
@@ -148,17 +164,14 @@ pub fn sendChunks(alloc: std.mem.Allocator, net_man: *NetworkManager, world: *co
                     };
 
                     try send_state.send(packed_chunk_pos, chunk);
+                    chunks_sent += 1;
                 }
             }
         }
-
-        regions_sent += 1;
-        if (send_state.totalBytesToSend() >= chunk_transfer_limit)
-            break;
     }
 
     try send_state.flush();
-    std.log.info("{}μs to send {} regions ({} chunks)", .{ timer.read() / 1000, regions_sent, regions_sent * 4 * 4 * 4 });
+    std.log.info("{}μs to send {} chunks in {Bi:.0}", .{ timer.read() / 1000, chunks_sent, send_state.totalBytesToSend() });
 }
 
 const SendState = struct {

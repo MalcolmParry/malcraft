@@ -259,6 +259,18 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
     switch (any_event) {
         .connect => |peer| {
             std.log.info("connected to server at {f}", .{peer.address});
+
+            const chunk_pos = @as(Chunk.Pos, @intFromFloat(app.camera.pos)) / Chunk.size;
+            app.last_chunk_pos = chunk_pos;
+
+            var buffer: [128]u8 = undefined;
+            var writer = std.Io.Writer.fixed(&buffer);
+            try writer.writeInt(u8, @intFromEnum(protocol.ClientMsgId.update_chunk_cursor), .little);
+            try writer.writeStruct(Chunk.PackedPos.pack(chunk_pos), .little);
+
+            const channel: protocol.Channel = .control;
+            const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
+            try app.net_man.send(app.server.ref, packet);
         },
         .disconnect => |_| {
             std.log.info("disconnected from server at {f}", .{app.server.address});

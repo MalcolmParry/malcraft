@@ -65,7 +65,7 @@ pub fn genMany(
             const chunk = try gen.generate(pos.vec());
             try world.placeChunk(alloc, pos, chunk);
 
-            // TODO: add chunks to send
+            try player.chunk_cursor.chunks_to_send.pushBack(alloc, pos);
         } else if (player.chunk_cursor.regions_to_gen.popFront()) |region_pos| {
             if (!player.chunk_cursor.regionInRange(region_pos.vec())) continue;
             const base_chunk_pos = region_pos.vec() * @as(Chunk.Pos, @splat(region_len));
