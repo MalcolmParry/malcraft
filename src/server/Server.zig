@@ -183,8 +183,7 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
                     const region_pos = new_pos.vec() / @as(Chunk.Pos, @splat(chunk_streaming.region_len));
                     if (@reduce(.And, region_pos == player.chunk_cursor.pos.vec())) return;
 
-                    player.chunk_cursor.pos = .pack(region_pos);
-                    try player.chunk_cursor.init(server.alloc);
+                    try player.chunk_cursor.updatePos(server.alloc, region_pos);
                     std.log.info("chunk pos changed: {}", .{new_pos.vec()});
                 },
             }

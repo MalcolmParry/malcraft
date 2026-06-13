@@ -18,6 +18,64 @@ const zstd = @cImport({
 const chunk_transfer_limit = 256 * 1024;
 pub const region_len = 4;
 
+const Aabb = struct {
+    /// inclusive bound
+    min: [3]i32,
+    /// exclusive bound
+    max: [3]i32,
+
+    fn isValid(a: Aabb) bool {
+        return @reduce(.And, @as(Chunk.Pos, a.max) > @as(Chunk.Pos, a.min));
+    }
+
+    fn subtract(a: Aabb, b: Aabb, buffer: *[6]Aabb) []Aabb {
+        const amin: Chunk.Pos = a.min;
+        const bmin: Chunk.Pos = b.min;
+        const amax: Chunk.Pos = a.max;
+        const bmax: Chunk.Pos = b.max;
+
+        const i: Aabb = .{
+            .min = @max(amin, bmin),
+            .max = @min(amax, bmax),
+        };
+
+        if (!i.isValid()) {
+            buffer.*[0] = a;
+            return buffer.*[0..1];
+        }
+
+        const boxes: [6]Aabb = .{
+            .{ .min = .{ a.min[0], a.min[1], a.min[2] }, .max = .{ i.min[0], a.max[1], a.max[2] } },
+            .{ .min = .{ i.max[0], a.min[1], a.min[2] }, .max = .{ a.max[0], a.max[1], a.max[2] } },
+
+            .{ .min = .{ i.min[0], a.min[1], a.min[2] }, .max = .{ i.max[0], i.min[1], a.max[2] } },
+            .{ .min = .{ i.min[0], i.max[1], a.min[2] }, .max = .{ i.max[0], a.max[1], a.max[2] } },
+
+            .{ .min = .{ i.min[0], i.min[1], a.min[2] }, .max = .{ i.max[0], i.max[1], i.min[2] } },
+            .{ .min = .{ i.min[0], i.min[1], i.max[2] }, .max = .{ i.max[0], i.max[1], a.max[2] } },
+        };
+
+        var n: usize = 0;
+        for (boxes) |box| {
+            if (box.isValid()) {
+                buffer.*[n] = box;
+                n += 1;
+            }
+        }
+
+        return buffer.*[0..n];
+    }
+
+    fn volume(a: Aabb) u32 {
+        std.debug.assert(a.isValid());
+
+        const min: Chunk.Pos = a.min;
+        const max: Chunk.Pos = a.max;
+        const size = max - min;
+        return @intCast(@reduce(.Mul, size));
+    }
+};
+
 pub const Cursor = struct {
     /// region is 4x4x4 chunks
     regions_to_send: Deque(Chunk.PackedPos) = .empty,
@@ -26,26 +84,11 @@ pub const Cursor = struct {
     chunks_to_gen: Deque(Chunk.PackedPos) = .empty,
 
     pos: Chunk.PackedPos = .pack(@splat(0)),
-    render_radius: u32 = options.render_radius,
-    render_height: u32 = options.render_height,
+    render_radius: u32 = @max(options.render_radius / region_len, 1),
+    render_height: u32 = @max(options.render_height / region_len, 1),
 
     pub fn init(cursor: *Cursor, alloc: std.mem.Allocator) !void {
-        const radius_regions: i32 = @intCast(options.render_radius / region_len);
-        const height_regions: i32 = @intCast(options.render_height / region_len);
-        const region_count = (radius_regions * 2 + 1) * (radius_regions * 2 + 1) * (height_regions * 2 + 1);
-        try cursor.regions_to_send.ensureUnusedCapacity(alloc, region_count);
-
-        var z: i32 = -height_regions;
-        while (z <= height_regions) : (z += 1) {
-            var y: i32 = -radius_regions;
-            while (y <= radius_regions) : (y += 1) {
-                var x: i32 = -radius_regions;
-                while (x <= radius_regions) : (x += 1) {
-                    const pos = @as(Chunk.Pos, .{ x, y, z }) + cursor.pos.vec();
-                    cursor.regions_to_send.pushBackAssumeCapacity(.pack(pos));
-                }
-            }
-        }
+        try cursor.queueSendAabb(alloc, cursor.loadedAabb());
 
         const SortContext = struct {
             queue: *Deque(Chunk.PackedPos),
@@ -74,16 +117,57 @@ pub const Cursor = struct {
         cursor.chunks_to_gen.deinit(alloc);
     }
 
+    pub fn updatePos(cursor: *Cursor, alloc: std.mem.Allocator, new: Chunk.Pos) !void {
+        if (@reduce(.And, cursor.pos.vec() == new)) return;
+
+        const old_box = cursor.loadedAabb();
+        cursor.pos = .pack(new);
+        const new_box = cursor.loadedAabb();
+
+        var buffer: [6]Aabb = undefined;
+        const to_load_regions = new_box.subtract(old_box, &buffer);
+
+        for (to_load_regions) |region| {
+            try cursor.queueSendAabb(alloc, region);
+        }
+    }
+
     pub fn chunkInRange(cursor: *const Cursor, pos: Chunk.Pos) bool {
-        const rel = pos - cursor.pos.vec() * @as(Chunk.Pos, @splat(region_len));
+        const region_pos = pos / @as(Chunk.Pos, @splat(region_len));
+        return cursor.regionInRange(region_pos);
+    }
+
+    pub fn regionInRange(cursor: *const Cursor, pos: Chunk.Pos) bool {
+        const rel = pos - cursor.pos.vec();
         if (@abs(rel[0]) > cursor.render_radius) return false;
         if (@abs(rel[1]) > cursor.render_radius) return false;
         if (@abs(rel[2]) > cursor.render_height) return false;
         return true;
     }
 
-    pub fn regionInRange(cursor: *const Cursor, pos: Chunk.Pos) bool {
-        return cursor.chunkInRange(pos * @as(Chunk.Pos, @splat(region_len)));
+    pub fn loadedAabb(cursor: *const Cursor) Aabb {
+        const bounds: Chunk.Pos = .{ @intCast(cursor.render_radius), @intCast(cursor.render_radius), @intCast(cursor.render_height) };
+
+        return .{
+            .min = cursor.pos.vec() - bounds,
+            .max = cursor.pos.vec() + bounds,
+        };
+    }
+
+    pub fn queueSendAabb(cursor: *Cursor, alloc: std.mem.Allocator, aabb: Aabb) !void {
+        try cursor.regions_to_send.ensureUnusedCapacity(alloc, aabb.volume());
+
+        var x = aabb.min[0];
+        while (x < aabb.max[0]) : (x += 1) {
+            var y = aabb.min[1];
+            while (y < aabb.max[1]) : (y += 1) {
+                var z = aabb.min[2];
+                while (z < aabb.max[2]) : (z += 1) {
+                    const pos: Chunk.Pos = .{ x, y, z };
+                    cursor.regions_to_send.pushBackAssumeCapacity(.pack(pos));
+                }
+            }
+        }
     }
 };
 
