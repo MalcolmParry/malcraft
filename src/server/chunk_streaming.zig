@@ -4,8 +4,10 @@ const options = @import("options");
 const mw = @import("mwengine");
 const math = mw.math;
 const Deque = @import("../utils/deque.zig").Deque;
+const Aabb = @import("../utils/Aabb.zig");
 const block = @import("../common/block.zig");
 const Chunk = @import("../common/Chunk.zig");
+const region = @import("../common/region.zig");
 const World = @import("../common/World.zig");
 const protocol = @import("../common/protocol.zig");
 const ServerMsgId = protocol.ServerMsgId;
@@ -16,76 +18,17 @@ const zstd = @cImport({
 });
 
 const chunk_transfer_limit = 256 * 1024;
-pub const region_len = 4;
-
-const Aabb = struct {
-    /// inclusive bound
-    min: [3]i32,
-    /// exclusive bound
-    max: [3]i32,
-
-    fn isValid(a: Aabb) bool {
-        return @reduce(.And, @as(Chunk.Pos, a.max) > @as(Chunk.Pos, a.min));
-    }
-
-    fn subtract(a: Aabb, b: Aabb, buffer: *[6]Aabb) []Aabb {
-        const amin: Chunk.Pos = a.min;
-        const bmin: Chunk.Pos = b.min;
-        const amax: Chunk.Pos = a.max;
-        const bmax: Chunk.Pos = b.max;
-
-        const i: Aabb = .{
-            .min = @max(amin, bmin),
-            .max = @min(amax, bmax),
-        };
-
-        if (!i.isValid()) {
-            buffer.*[0] = a;
-            return buffer.*[0..1];
-        }
-
-        const boxes: [6]Aabb = .{
-            .{ .min = .{ a.min[0], a.min[1], a.min[2] }, .max = .{ i.min[0], a.max[1], a.max[2] } },
-            .{ .min = .{ i.max[0], a.min[1], a.min[2] }, .max = .{ a.max[0], a.max[1], a.max[2] } },
-
-            .{ .min = .{ i.min[0], a.min[1], a.min[2] }, .max = .{ i.max[0], i.min[1], a.max[2] } },
-            .{ .min = .{ i.min[0], i.max[1], a.min[2] }, .max = .{ i.max[0], a.max[1], a.max[2] } },
-
-            .{ .min = .{ i.min[0], i.min[1], a.min[2] }, .max = .{ i.max[0], i.max[1], i.min[2] } },
-            .{ .min = .{ i.min[0], i.min[1], i.max[2] }, .max = .{ i.max[0], i.max[1], a.max[2] } },
-        };
-
-        var n: usize = 0;
-        for (boxes) |box| {
-            if (box.isValid()) {
-                buffer.*[n] = box;
-                n += 1;
-            }
-        }
-
-        return buffer.*[0..n];
-    }
-
-    fn volume(a: Aabb) u32 {
-        std.debug.assert(a.isValid());
-
-        const min: Chunk.Pos = a.min;
-        const max: Chunk.Pos = a.max;
-        const size = max - min;
-        return @intCast(@reduce(.Mul, size));
-    }
-};
 
 pub const Cursor = struct {
     /// region is 4x4x4 chunks
-    regions_to_send: Deque(Chunk.PackedPos) = .empty,
-    regions_to_gen: Deque(Chunk.PackedPos) = .empty,
+    regions_to_send: Deque(region.PackedPos) = .empty,
+    regions_to_gen: Deque(region.PackedPos) = .empty,
     chunks_to_send: Deque(Chunk.PackedPos) = .empty,
     chunks_to_gen: Deque(Chunk.PackedPos) = .empty,
 
     pos: Chunk.PackedPos = .pack(@splat(0)),
-    render_radius: u32 = @max(options.render_radius / region_len, 1),
-    render_height: u32 = @max(options.render_height / region_len, 1),
+    render_radius: u32 = @max(options.render_radius / region.len, 1),
+    render_height: u32 = @max(options.render_height / region.len, 1),
 
     pub fn init(cursor: *Cursor, alloc: std.mem.Allocator) !void {
         try cursor.queueSendAabb(alloc, cursor.loadedAabb());
@@ -101,7 +44,7 @@ pub const Cursor = struct {
             }
 
             pub fn swap(ctx: @This(), a: usize, b: usize) void {
-                return std.mem.swap(Chunk.PackedPos, ctx.queue.atPtr(a), ctx.queue.atPtr(b));
+                return std.mem.swap(region.PackedPos, ctx.queue.atPtr(a), ctx.queue.atPtr(b));
             }
         };
 
@@ -127,13 +70,13 @@ pub const Cursor = struct {
         var buffer: [6]Aabb = undefined;
         const to_load_regions = new_box.subtract(old_box, &buffer);
 
-        for (to_load_regions) |region| {
-            try cursor.queueSendAabb(alloc, region);
+        for (to_load_regions) |x| {
+            try cursor.queueSendAabb(alloc, x);
         }
     }
 
     pub fn chunkInRange(cursor: *const Cursor, pos: Chunk.Pos) bool {
-        const region_pos = pos / @as(Chunk.Pos, @splat(region_len));
+        const region_pos = pos / region.size;
         return cursor.regionInRange(region_pos);
     }
 
@@ -210,10 +153,10 @@ pub fn sendChunks(alloc: std.mem.Allocator, net_man: *NetworkManager, world: *co
         if (!cursor.regionInRange(region_pos)) continue;
 
         var exists: bool = false;
-        for (0..region_len) |ux| blk: {
-            for (0..region_len) |uy| {
-                for (0..region_len) |uz| {
-                    const chunk_pos = (region_pos * @as(Chunk.Pos, @splat(region_len))) + @as(Chunk.Pos, .{
+        for (0..region.len) |ux| blk: {
+            for (0..region.len) |uy| {
+                for (0..region.len) |uz| {
+                    const chunk_pos = (region_pos * region.size) + @as(Chunk.Pos, .{
                         @intCast(ux),
                         @intCast(uy),
                         @intCast(uz),
@@ -232,10 +175,10 @@ pub fn sendChunks(alloc: std.mem.Allocator, net_man: *NetworkManager, world: *co
             continue;
         }
 
-        for (0..region_len) |ux| {
-            for (0..region_len) |uy| {
-                for (0..region_len) |uz| {
-                    const chunk_pos = (region_pos * @as(Chunk.Pos, @splat(region_len))) + @as(Chunk.Pos, .{
+        for (0..region.len) |ux| {
+            for (0..region.len) |uy| {
+                for (0..region.len) |uz| {
+                    const chunk_pos = (region_pos * region.size) + @as(Chunk.Pos, .{
                         @intCast(ux),
                         @intCast(uy),
                         @intCast(uz),

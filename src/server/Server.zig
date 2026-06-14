@@ -4,6 +4,7 @@ const znet = @import("znet");
 const GenerationalSparseSet = @import("../utils/generational_sparse_set.zig").GenerationalSparseSet;
 const block = @import("../common/block.zig");
 const Chunk = @import("../common/Chunk.zig");
+const region = @import("../common/region.zig");
 const World = @import("../common/World.zig");
 const WorldGenerator = @import("../server/WorldGenerator.zig");
 const protocol = @import("../common/protocol.zig");
@@ -179,12 +180,11 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
 
             switch (msg_id) {
                 .update_chunk_cursor => {
-                    const new_pos = try reader.takeStruct(Chunk.PackedPos, .little);
-                    const region_pos = new_pos.vec() / @as(Chunk.Pos, @splat(chunk_streaming.region_len));
-                    if (@reduce(.And, region_pos == player.chunk_cursor.pos.vec())) return;
+                    const region_pos = try reader.takeStruct(Chunk.PackedPos, .little);
+                    if (@reduce(.And, region_pos.vec() == player.chunk_cursor.pos.vec())) return;
 
-                    try player.chunk_cursor.updatePos(server.alloc, region_pos);
-                    std.log.info("chunk pos changed: {}", .{new_pos.vec()});
+                    try player.chunk_cursor.updatePos(server.alloc, region_pos.vec());
+                    std.log.info("chunk cursor moved: {}", .{region_pos.vec()});
                 },
             }
         },

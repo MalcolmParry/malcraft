@@ -4,6 +4,7 @@ const mw = @import("mwengine");
 const math = mw.math;
 const block = @import("../common/block.zig");
 const Chunk = @import("../common/Chunk.zig");
+const region = @import("../common/region.zig");
 const Deque = @import("../utils/deque.zig").Deque;
 const World = @import("../common/World.zig");
 const Player = @import("Player.zig");
@@ -12,7 +13,6 @@ const znoise = @import("znoise");
 
 const WorldGenerator = @This();
 const i32x2 = @Vector(2, i32);
-const region_len = chunk_streaming.region_len;
 
 height_map: std.AutoHashMapUnmanaged([2]i32, *HeightMap),
 alloc: std.mem.Allocator,
@@ -68,11 +68,11 @@ pub fn genMany(
             try player.chunk_cursor.chunks_to_send.pushBack(alloc, pos);
         } else if (player.chunk_cursor.regions_to_gen.popFront()) |region_pos| {
             if (!player.chunk_cursor.regionInRange(region_pos.vec())) continue;
-            const base_chunk_pos = region_pos.vec() * @as(Chunk.Pos, @splat(region_len));
+            const base_chunk_pos = region_pos.vec() * region.size;
 
-            for (0..region_len) |x| {
-                for (0..region_len) |y| {
-                    for (0..region_len) |z| {
+            for (0..region.len) |x| {
+                for (0..region.len) |y| {
+                    for (0..region.len) |z| {
                         const rel: Chunk.Pos = .{
                             @intCast(x),
                             @intCast(y),

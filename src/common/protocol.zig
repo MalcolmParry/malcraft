@@ -43,7 +43,7 @@ pub const ServerMsgId = enum(u8) {
 /// every message starts with:
 ///     id: u8,
 pub const ClientMsgId = enum(u8) {
-    /// chunk_pos: Chunk.PackedPos,
+    /// region_pos: region.PackedPos,
     update_chunk_cursor,
 
     pub fn encode(id: ClientMsgId, writer: *std.Io.Writer) !void {

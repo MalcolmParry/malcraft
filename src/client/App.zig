@@ -1,4 +1,5 @@
 const std = @import("std");
+const options = @import("options");
 const mw = @import("mwengine");
 const math = mw.math;
 const znet = @import("znet");
@@ -9,8 +10,10 @@ const Renderer = @import("Renderer.zig");
 const Camera = @import("Camera.zig");
 const block = @import("../common/block.zig");
 const Chunk = @import("../common/Chunk.zig");
+const region = @import("../common/region.zig");
 const World = @import("../common/World.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
+const Aabb = @import("../utils/Aabb.zig");
 const App = @This();
 
 const zstd = @cImport({
@@ -26,7 +29,7 @@ renderer: Renderer,
 
 frame_timer: std.time.Timer,
 camera: Camera = .default,
-last_chunk_pos: Chunk.Pos = @splat(0),
+last_region_pos: region.Pos = @splat(0),
 mouse_lock: bool = true,
 generate_chunks: bool = true,
 last_cursor: math.Vec2,
@@ -119,19 +122,8 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
 
     const renderer_input = try app.handleInput(alloc, dt);
 
-    const chunk_pos = @as(Chunk.Pos, @intFromFloat(app.camera.pos)) / Chunk.size;
-    if (@reduce(.Or, app.last_chunk_pos != chunk_pos) and app.generate_chunks) {
-        defer app.last_chunk_pos = chunk_pos;
-
-        var buffer: [128]u8 = undefined;
-        var writer = std.Io.Writer.fixed(&buffer);
-        try writer.writeInt(u8, @intFromEnum(protocol.ClientMsgId.update_chunk_cursor), .little);
-        try writer.writeStruct(Chunk.PackedPos.pack(chunk_pos), .little);
-
-        const channel: protocol.Channel = .control;
-        const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
-        try app.net_man.send(app.server.ref, packet);
-    }
+    const region_pos = @as(Chunk.Pos, @intFromFloat(app.camera.pos)) / Chunk.size / region.size;
+    try app.maybeUpdateChunkCursor(alloc, region_pos);
 
     while (try app.net_man.popEvent()) |event| {
         try app.handleNetworkEvent(alloc, event);
@@ -145,6 +137,61 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
         .show_crosshair = app.mouse_lock,
         .generating_chunks = app.generate_chunks,
     }, alloc);
+}
+
+fn maybeUpdateChunkCursor(app: *App, alloc: std.mem.Allocator, region_pos: region.Pos) !void {
+    if (@reduce(.And, app.last_region_pos == region_pos)) return;
+
+    var buffer: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try writer.writeInt(u8, @intFromEnum(protocol.ClientMsgId.update_chunk_cursor), .little);
+    try writer.writeStruct(region.PackedPos.pack(region_pos), .little);
+
+    const channel: protocol.Channel = .control;
+    const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
+    try app.net_man.send(app.server.ref, packet);
+
+    const old_aabb = app.loadedChunkAabb();
+    app.last_region_pos = region_pos;
+    const new_aabb = app.loadedChunkAabb();
+
+    var aabb_buffer: [6]Aabb = undefined;
+    const old_regions = old_aabb.subtract(new_aabb, &aabb_buffer);
+
+    for (old_regions) |aabb| {
+        const min = aabb.min * region.size;
+        const max = aabb.max * region.size;
+
+        var x = min[0];
+        while (x < max[0]) : (x += 1) {
+            var y = min[1];
+            while (y < max[1]) : (y += 1) {
+                var z = min[2];
+                while (z < max[2]) : (z += 1) {
+                    const pos: Chunk.Pos = .{ x, y, z };
+                    const packed_pos: Chunk.PackedPos = .pack(pos);
+
+                    app.world.removeChunk(alloc, packed_pos);
+                    if (app.renderer.chunk_mesh_alloc.loaded_meshes.fetchSwapRemove(packed_pos)) |kv| {
+                        try app.renderer.chunk_mesh_alloc.queueFree(kv.value);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn loadedChunkAabb(app: *const App) Aabb {
+    const bounds: Chunk.Pos = .{
+        @max(options.render_radius / region.len, 1),
+        @max(options.render_radius / region.len, 1),
+        @max(options.render_height / region.len, 1),
+    };
+
+    return .{
+        .min = app.last_region_pos - bounds,
+        .max = app.last_region_pos + bounds,
+    };
 }
 
 fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData.Input {
@@ -260,17 +307,8 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
         .connect => |peer| {
             std.log.info("connected to server at {f}", .{peer.address});
 
-            const chunk_pos = @as(Chunk.Pos, @intFromFloat(app.camera.pos)) / Chunk.size;
-            app.last_chunk_pos = chunk_pos;
-
-            var buffer: [128]u8 = undefined;
-            var writer = std.Io.Writer.fixed(&buffer);
-            try writer.writeInt(u8, @intFromEnum(protocol.ClientMsgId.update_chunk_cursor), .little);
-            try writer.writeStruct(Chunk.PackedPos.pack(chunk_pos), .little);
-
-            const channel: protocol.Channel = .control;
-            const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
-            try app.net_man.send(app.server.ref, packet);
+            const region_pos = @as(Chunk.Pos, @intFromFloat(app.camera.pos)) / Chunk.size / region.size;
+            try app.maybeUpdateChunkCursor(alloc, region_pos);
         },
         .disconnect => |_| {
             std.log.info("disconnected from server at {f}", .{app.server.address});
