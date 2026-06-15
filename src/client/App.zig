@@ -123,7 +123,8 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
     const renderer_input = try app.handleInput(alloc, dt);
 
     const region_pos = @as(Chunk.Pos, @intFromFloat(app.camera.pos)) / Chunk.size / region.size;
-    try app.maybeUpdateChunkCursor(alloc, region_pos);
+    if (app.generate_chunks)
+        try app.maybeUpdateChunkCursor(alloc, region_pos);
 
     while (try app.net_man.popEvent()) |event| {
         try app.handleNetworkEvent(alloc, event);
@@ -137,6 +138,22 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
         .show_crosshair = app.mouse_lock,
         .generating_chunks = app.generate_chunks,
     }, alloc);
+}
+
+pub fn chunkInRange(app: *const App, pos: Chunk.Pos) bool {
+    const region_pos = pos / region.size;
+    return app.regionInRange(region_pos);
+}
+
+pub fn regionInRange(app: *const App, pos: Chunk.Pos) bool {
+    const render_radius = @max(options.render_radius / region.len, 1);
+    const render_height = @max(options.render_height / region.len, 1);
+
+    const rel = pos - app.last_region_pos;
+    if (@abs(rel[0]) > render_radius) return false;
+    if (@abs(rel[1]) > render_radius) return false;
+    if (@abs(rel[2]) > render_height) return false;
+    return true;
 }
 
 fn maybeUpdateChunkCursor(app: *App, alloc: std.mem.Allocator, region_pos: region.Pos) !void {
@@ -359,6 +376,9 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
 
                         const compressed_bytes = reader.buffered()[0..compressed_size];
                         reader.toss(compressed_size);
+
+                        if (!app.chunkInRange(pos.vec()))
+                            continue;
 
                         switch (storage_type) {
                             .u2_palette => {
