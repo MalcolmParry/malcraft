@@ -303,17 +303,17 @@ fn worker(info: *MeshThreadInfo) void {
 }
 
 fn greedyMeshWithFastExits(alloc: std.mem.Allocator, state: *MeshingState, world: *const World, pos: Chunk.Pos) void {
-    const chunk = world.getChunk(.pack(pos)) orelse return;
+    const chunk = world.getChunk(pos) orelse return;
     if (chunk.allAirFast()) return;
 
     const refs: ChunkRefs = .{
         .this = chunk,
-        .north = world.getChunk(.pack(pos + @as(block.Pos, .{ 1, 0, 0 }))),
-        .south = world.getChunk(.pack(pos + @as(block.Pos, .{ -1, 0, 0 }))),
-        .east = world.getChunk(.pack(pos + @as(block.Pos, .{ 0, 1, 0 }))),
-        .west = world.getChunk(.pack(pos + @as(block.Pos, .{ 0, -1, 0 }))),
-        .up = world.getChunk(.pack(pos + @as(block.Pos, .{ 0, 0, 1 }))),
-        .down = world.getChunk(.pack(pos + @as(block.Pos, .{ 0, 0, -1 }))),
+        .north = world.getChunk(pos + @as(block.Pos, .{ 1, 0, 0 })),
+        .south = world.getChunk(pos + @as(block.Pos, .{ -1, 0, 0 })),
+        .east = world.getChunk(pos + @as(block.Pos, .{ 0, 1, 0 })),
+        .west = world.getChunk(pos + @as(block.Pos, .{ 0, -1, 0 })),
+        .up = world.getChunk(pos + @as(block.Pos, .{ 0, 0, 1 })),
+        .down = world.getChunk(pos + @as(block.Pos, .{ 0, 0, -1 })),
     };
 
     if (chunk.allOpaqueFast()) {

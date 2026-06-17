@@ -4,7 +4,7 @@ const mw = @import("mwengine");
 const math = mw.math;
 const block = @import("../common/block.zig");
 const Chunk = @import("../common/Chunk.zig");
-const region = @import("../common/region.zig");
+const Region = @import("../common/Region.zig");
 const Deque = @import("../utils/deque.zig").Deque;
 const World = @import("../common/World.zig");
 const Player = @import("Player.zig");
@@ -60,19 +60,19 @@ pub fn genMany(
         const player = &players[player_index];
         if (player.chunk_cursor.chunks_to_gen.popFront()) |pos| {
             if (!player.chunk_cursor.chunkInRange(pos.vec())) continue;
-            if (world.containsChunk(pos)) continue;
+            if (world.containsChunk(pos.vec())) continue;
 
             const chunk = try gen.generate(pos.vec());
-            try world.placeChunk(alloc, pos, chunk);
+            try world.placeChunk(alloc, pos.vec(), chunk);
 
             try player.chunk_cursor.chunks_to_send.pushBack(alloc, pos);
         } else if (player.chunk_cursor.regions_to_gen.popFront()) |region_pos| {
             if (!player.chunk_cursor.regionInRange(region_pos.vec())) continue;
-            const base_chunk_pos = region_pos.vec() * region.size;
+            const base_chunk_pos = region_pos.vec() * Region.size;
 
-            for (0..region.len) |x| {
-                for (0..region.len) |y| {
-                    for (0..region.len) |z| {
+            for (0..Region.len) |x| {
+                for (0..Region.len) |y| {
+                    for (0..Region.len) |z| {
                         const rel: Chunk.Pos = .{
                             @intCast(x),
                             @intCast(y),
@@ -81,9 +81,9 @@ pub fn genMany(
 
                         const chunk_pos = base_chunk_pos + rel;
                         if (!player.chunk_cursor.chunkInRange(chunk_pos)) continue;
-                        if (world.containsChunk(.pack(chunk_pos))) continue;
+                        if (world.containsChunk(chunk_pos)) continue;
                         const chunk = try gen.generate(chunk_pos);
-                        try world.placeChunk(alloc, .pack(chunk_pos), chunk);
+                        try world.placeChunk(alloc, chunk_pos, chunk);
                     }
                 }
             }

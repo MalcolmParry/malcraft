@@ -2,7 +2,7 @@ const std = @import("std");
 const options = @import("options");
 const builtin = @import("builtin");
 const App = @import("client/App.zig");
-const Server = if (options.build_server) @import("server/Server.zig") else void;
+const Server = @import("server/Server.zig");
 
 pub fn main() !void {
     var gpa_obj: GPA = .init();

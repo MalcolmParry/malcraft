@@ -7,7 +7,7 @@ const Deque = @import("../utils/deque.zig").Deque;
 const Aabb = @import("../utils/Aabb.zig");
 const block = @import("../common/block.zig");
 const Chunk = @import("../common/Chunk.zig");
-const region = @import("../common/region.zig");
+const Region = @import("../common/Region.zig");
 const World = @import("../common/World.zig");
 const protocol = @import("../common/protocol.zig");
 const ServerMsgId = protocol.ServerMsgId;
@@ -21,14 +21,14 @@ const chunk_transfer_limit = 256 * 1024;
 
 pub const Cursor = struct {
     /// region is 4x4x4 chunks
-    regions_to_send: Deque(region.PackedPos) = .empty,
-    regions_to_gen: Deque(region.PackedPos) = .empty,
+    regions_to_send: Deque(Region.PackedPos) = .empty,
+    regions_to_gen: Deque(Region.PackedPos) = .empty,
     chunks_to_send: Deque(Chunk.PackedPos) = .empty,
     chunks_to_gen: Deque(Chunk.PackedPos) = .empty,
 
     pos: Chunk.PackedPos = .pack(@splat(0)),
-    render_radius: u32 = @max(options.render_radius / region.len, 1),
-    render_height: u32 = @max(options.render_height / region.len, 1),
+    render_radius: u32 = @max(options.render_radius / Region.len, 1),
+    render_height: u32 = @max(options.render_height / Region.len, 1),
 
     pub fn init(cursor: *Cursor, alloc: std.mem.Allocator) !void {
         try cursor.queueSendAabb(alloc, cursor.loadedAabb());
@@ -44,7 +44,7 @@ pub const Cursor = struct {
             }
 
             pub fn swap(ctx: @This(), a: usize, b: usize) void {
-                return std.mem.swap(region.PackedPos, ctx.queue.atPtr(a), ctx.queue.atPtr(b));
+                return std.mem.swap(Region.PackedPos, ctx.queue.atPtr(a), ctx.queue.atPtr(b));
             }
         };
 
@@ -76,7 +76,7 @@ pub const Cursor = struct {
     }
 
     pub fn chunkInRange(cursor: *const Cursor, pos: Chunk.Pos) bool {
-        const region_pos = pos / region.size;
+        const region_pos = pos / Region.size;
         return cursor.regionInRange(region_pos);
     }
 
@@ -93,7 +93,7 @@ pub const Cursor = struct {
 
         return .{
             .min = cursor.pos.vec() - bounds,
-            .max = cursor.pos.vec() + bounds,
+            .max = cursor.pos.vec() + bounds + @as(Region.Pos, @splat(1)),
         };
     }
 
@@ -136,9 +136,10 @@ pub fn sendChunks(alloc: std.mem.Allocator, net_man: *NetworkManager, world: *co
     var chunks_sent: usize = 0;
     while (send_state.totalBytesToSend() < chunk_transfer_limit) {
         const pos_p = cursor.chunks_to_send.popFront() orelse break;
+        const pos = pos_p.vec();
         if (!cursor.chunkInRange(pos_p.vec())) continue;
 
-        const chunk = world.getChunk(pos_p) orelse {
+        const chunk = world.getChunk(pos) orelse {
             try cursor.chunks_to_gen.pushBack(alloc, pos_p);
             continue;
         };
@@ -153,16 +154,16 @@ pub fn sendChunks(alloc: std.mem.Allocator, net_man: *NetworkManager, world: *co
         if (!cursor.regionInRange(region_pos)) continue;
 
         var exists: bool = false;
-        for (0..region.len) |ux| blk: {
-            for (0..region.len) |uy| {
-                for (0..region.len) |uz| {
-                    const chunk_pos = (region_pos * region.size) + @as(Chunk.Pos, .{
+        for (0..Region.len) |ux| blk: {
+            for (0..Region.len) |uy| {
+                for (0..Region.len) |uz| {
+                    const chunk_pos = (region_pos * Region.size) + @as(Chunk.Pos, .{
                         @intCast(ux),
                         @intCast(uy),
                         @intCast(uz),
                     });
 
-                    if (world.containsChunk(.pack(chunk_pos))) {
+                    if (world.containsChunk(chunk_pos)) {
                         exists = true;
                         break :blk;
                     }
@@ -175,17 +176,17 @@ pub fn sendChunks(alloc: std.mem.Allocator, net_man: *NetworkManager, world: *co
             continue;
         }
 
-        for (0..region.len) |ux| {
-            for (0..region.len) |uy| {
-                for (0..region.len) |uz| {
-                    const chunk_pos = (region_pos * region.size) + @as(Chunk.Pos, .{
+        for (0..Region.len) |ux| {
+            for (0..Region.len) |uy| {
+                for (0..Region.len) |uz| {
+                    const chunk_pos = (region_pos * Region.size) + @as(Chunk.Pos, .{
                         @intCast(ux),
                         @intCast(uy),
                         @intCast(uz),
                     });
 
                     const packed_chunk_pos: Chunk.PackedPos = .pack(chunk_pos);
-                    const chunk = world.getChunk(packed_chunk_pos) orelse {
+                    const chunk = world.getChunk(chunk_pos) orelse {
                         try cursor.chunks_to_gen.pushBack(alloc, packed_chunk_pos);
                         continue;
                     };

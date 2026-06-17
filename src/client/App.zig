@@ -10,7 +10,7 @@ const Renderer = @import("Renderer.zig");
 const Camera = @import("Camera.zig");
 const block = @import("../common/block.zig");
 const Chunk = @import("../common/Chunk.zig");
-const region = @import("../common/region.zig");
+const Region = @import("../common/Region.zig");
 const World = @import("../common/World.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
 const Aabb = @import("../utils/Aabb.zig");
@@ -29,7 +29,7 @@ renderer: Renderer,
 
 frame_timer: std.time.Timer,
 camera: Camera = .default,
-last_region_pos: region.Pos = @splat(0),
+last_region_pos: Region.Pos = @splat(0),
 mouse_lock: bool = true,
 generate_chunks: bool = true,
 last_cursor: math.Vec2,
@@ -122,7 +122,7 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
 
     const renderer_input = try app.handleInput(alloc, dt);
 
-    const region_pos = @as(Chunk.Pos, @intFromFloat(app.camera.pos)) / Chunk.size / region.size;
+    const region_pos = @as(Chunk.Pos, @intFromFloat(app.camera.pos)) / Chunk.size / Region.size;
     if (app.generate_chunks)
         try app.maybeUpdateChunkCursor(alloc, region_pos);
 
@@ -141,13 +141,13 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
 }
 
 pub fn chunkInRange(app: *const App, pos: Chunk.Pos) bool {
-    const region_pos = pos / region.size;
+    const region_pos = pos / Region.size;
     return app.regionInRange(region_pos);
 }
 
 pub fn regionInRange(app: *const App, pos: Chunk.Pos) bool {
-    const render_radius = @max(options.render_radius / region.len, 1);
-    const render_height = @max(options.render_height / region.len, 1);
+    const render_radius = @max(options.render_radius / Region.len, 1);
+    const render_height = @max(options.render_height / Region.len, 1);
 
     const rel = pos - app.last_region_pos;
     if (@abs(rel[0]) > render_radius) return false;
@@ -156,13 +156,13 @@ pub fn regionInRange(app: *const App, pos: Chunk.Pos) bool {
     return true;
 }
 
-fn maybeUpdateChunkCursor(app: *App, alloc: std.mem.Allocator, region_pos: region.Pos) !void {
+fn maybeUpdateChunkCursor(app: *App, alloc: std.mem.Allocator, region_pos: Region.Pos) !void {
     if (@reduce(.And, app.last_region_pos == region_pos)) return;
 
     var buffer: [128]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
     try writer.writeInt(u8, @intFromEnum(protocol.ClientMsgId.update_chunk_cursor), .little);
-    try writer.writeStruct(region.PackedPos.pack(region_pos), .little);
+    try writer.writeStruct(Region.PackedPos.pack(region_pos), .little);
 
     const channel: protocol.Channel = .control;
     const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
@@ -176,21 +176,32 @@ fn maybeUpdateChunkCursor(app: *App, alloc: std.mem.Allocator, region_pos: regio
     const old_regions = old_aabb.subtract(new_aabb, &aabb_buffer);
 
     for (old_regions) |aabb| {
-        const min = aabb.min * region.size;
-        const max = aabb.max * region.size;
+        var x = aabb.min[0];
+        while (x < aabb.max[0]) : (x += 1) {
+            var y = aabb.min[1];
+            while (y < aabb.max[1]) : (y += 1) {
+                var z = aabb.min[2];
+                while (z < aabb.max[2]) : (z += 1) {
+                    const pos: Region.Pos = .{ x, y, z };
+                    const packed_pos: Region.PackedPos = .pack(pos);
 
-        var x = min[0];
-        while (x < max[0]) : (x += 1) {
-            var y = min[1];
-            while (y < max[1]) : (y += 1) {
-                var z = min[2];
-                while (z < max[2]) : (z += 1) {
-                    const pos: Chunk.Pos = .{ x, y, z };
-                    const packed_pos: Chunk.PackedPos = .pack(pos);
+                    const kv = app.world.regions.fetchRemove(packed_pos) orelse continue;
+                    const region = kv.value;
 
-                    app.world.removeChunk(alloc, packed_pos);
-                    if (app.renderer.chunk_mesh_alloc.loaded_meshes.fetchSwapRemove(packed_pos)) |kv| {
-                        try app.renderer.chunk_mesh_alloc.queueFree(kv.value);
+                    region.deinit(alloc);
+                    alloc.destroy(region);
+
+                    for (0..Region.len) |cx| {
+                        for (0..Region.len) |cy| {
+                            for (0..Region.len) |cz| {
+                                const local_chunk_pos: Chunk.Pos = .{ @intCast(cx), @intCast(cy), @intCast(cz) };
+                                const chunk_pos = pos * Region.size + local_chunk_pos;
+
+                                if (app.renderer.chunk_mesh_alloc.loaded_meshes.fetchSwapRemove(.pack(chunk_pos))) |kv2| {
+                                    try app.renderer.chunk_mesh_alloc.queueFree(kv2.value);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -200,14 +211,14 @@ fn maybeUpdateChunkCursor(app: *App, alloc: std.mem.Allocator, region_pos: regio
 
 fn loadedChunkAabb(app: *const App) Aabb {
     const bounds: Chunk.Pos = .{
-        @max(options.render_radius / region.len, 1),
-        @max(options.render_radius / region.len, 1),
-        @max(options.render_height / region.len, 1),
+        @max(options.render_radius / Region.len, 1),
+        @max(options.render_radius / Region.len, 1),
+        @max(options.render_height / Region.len, 1),
     };
 
     return .{
         .min = app.last_region_pos - bounds,
-        .max = app.last_region_pos + bounds,
+        .max = app.last_region_pos + bounds + @as(Region.Pos, @splat(1)),
     };
 }
 
@@ -324,7 +335,7 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
         .connect => |peer| {
             std.log.info("connected to server at {f}", .{peer.address});
 
-            const region_pos = @as(Chunk.Pos, @intFromFloat(app.camera.pos)) / Chunk.size / region.size;
+            const region_pos = @as(Chunk.Pos, @intFromFloat(app.camera.pos)) / Chunk.size / Region.size;
             try app.maybeUpdateChunkCursor(alloc, region_pos);
         },
         .disconnect => |_| {
@@ -346,7 +357,6 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
                 .uniform_chunk_batch => {
                     var timer: std.time.Timer = try .start();
                     const count = try reader.takeInt(u16, .little);
-                    try app.world.uniform_chunks.ensureUnusedCapacity(alloc, count);
                     try app.chunk_mesher.queue.ensureUnusedCapacity(alloc, count * 2);
 
                     for (0..count) |_| {
@@ -354,7 +364,7 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
                         const kind_i = try reader.takeInt(u8, .little);
                         const kind = std.enums.fromInt(block.Kind, kind_i) orelse return error.BadMessage;
 
-                        app.world.uniform_chunks.putAssumeCapacity(pos, kind);
+                        try app.world.placeChunk(alloc, pos.vec(), .{ .data = .{ .uniform = kind } });
                         try app.chunk_mesher.addRequestWithFullCollateral(pos.vec());
                     }
 
@@ -362,8 +372,6 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
                 },
                 .compressed_chunk_batch => {
                     const count = try reader.takeInt(u16, .little);
-                    try app.world.one_to_one_chunks.ensureUnusedCapacity(alloc, count);
-                    try app.world.u2_palette_chunks.ensureUnusedCapacity(alloc, count);
                     try app.chunk_mesher.queue.ensureUnusedCapacity(alloc, count * 2);
 
                     for (0..count) |_| {
@@ -389,8 +397,8 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
                                 if (zstd.ZSTD_isError(result) != 0) return error.ZstdDecompressFailed;
                                 if (result != @sizeOf(Chunk.U2Palette)) return error.BadMessage;
 
-                                app.world.removeChunk(alloc, pos);
-                                app.world.u2_palette_chunks.putAssumeCapacity(pos, chunk);
+                                app.world.removeChunk(alloc, pos.vec());
+                                try app.world.placeChunk(alloc, pos.vec(), .{ .data = .{ .u2_palette = chunk } });
                             },
                             .u4 => {
                                 const one_to_one = try alloc.create(Chunk.OneToOne);
@@ -400,8 +408,8 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
                                 if (zstd.ZSTD_isError(result) != 0) return error.ZstdDecompressFailed;
                                 if (result != @sizeOf(Chunk.OneToOne)) return error.BadMessage;
 
-                                app.world.removeChunk(alloc, pos);
-                                app.world.one_to_one_chunks.putAssumeCapacity(pos, one_to_one);
+                                app.world.removeChunk(alloc, pos.vec());
+                                try app.world.placeChunk(alloc, pos.vec(), .{ .data = .{ .one_to_one = one_to_one } });
                             },
                         }
 
