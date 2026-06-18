@@ -12,20 +12,10 @@ pub fn isValid(a: Aabb) bool {
 }
 
 pub fn subtract(a: Aabb, b: Aabb, buffer: *[6]Aabb) []Aabb {
-    const amin: Pos = a.min;
-    const bmin: Pos = b.min;
-    const amax: Pos = a.max;
-    const bmax: Pos = b.max;
-
-    const i: Aabb = .{
-        .min = @max(amin, bmin),
-        .max = @min(amax, bmax),
-    };
-
-    if (!i.isValid()) {
+    const i = intersection(a, b) orelse {
         buffer.*[0] = a;
         return buffer.*[0..1];
-    }
+    };
 
     const boxes: [6]Aabb = .{
         .{ .min = .{ a.min[0], a.min[1], a.min[2] }, .max = .{ i.min[0], a.max[1], a.max[2] } },
@@ -56,4 +46,25 @@ pub fn volume(a: Aabb) u32 {
     const max: Pos = a.max;
     const size = max - min;
     return @intCast(@reduce(.Mul, size));
+}
+
+pub fn containsPoint(aabb: Aabb, pos: Pos) bool {
+    const min: Pos = aabb.min;
+    const max: Pos = aabb.max;
+
+    return @reduce(.And, pos >= min) and @reduce(.And, pos < max);
+}
+
+pub fn intersection(a: Aabb, b: Aabb) ?Aabb {
+    const amin: Pos = a.min;
+    const bmin: Pos = b.min;
+    const amax: Pos = a.max;
+    const bmax: Pos = b.max;
+
+    const result: Aabb = .{
+        .min = @max(amin, bmin),
+        .max = @min(amax, bmax),
+    };
+
+    return if (result.isValid()) result else null;
 }

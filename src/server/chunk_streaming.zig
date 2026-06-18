@@ -76,7 +76,7 @@ pub const Cursor = struct {
     }
 
     pub fn chunkInRange(cursor: *const Cursor, pos: Chunk.Pos) bool {
-        const region_pos = pos / Region.size;
+        const region_pos = @divFloor(pos, Region.size);
         return cursor.regionInRange(region_pos);
     }
 

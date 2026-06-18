@@ -122,7 +122,7 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
 
     const renderer_input = try app.handleInput(alloc, dt);
 
-    const region_pos = @as(Chunk.Pos, @intFromFloat(app.camera.pos)) / Chunk.size / Region.size;
+    const region_pos = @divFloor(@as(Chunk.Pos, @intFromFloat(app.camera.pos)), Chunk.size * Region.size);
     if (app.generate_chunks)
         try app.maybeUpdateChunkCursor(alloc, region_pos);
 
@@ -141,19 +141,12 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
 }
 
 pub fn chunkInRange(app: *const App, pos: Chunk.Pos) bool {
-    const region_pos = pos / Region.size;
+    const region_pos = @divFloor(pos, Region.size);
     return app.regionInRange(region_pos);
 }
 
 pub fn regionInRange(app: *const App, pos: Chunk.Pos) bool {
-    const render_radius = @max(options.render_radius / Region.len, 1);
-    const render_height = @max(options.render_height / Region.len, 1);
-
-    const rel = pos - app.last_region_pos;
-    if (@abs(rel[0]) > render_radius) return false;
-    if (@abs(rel[1]) > render_radius) return false;
-    if (@abs(rel[2]) > render_height) return false;
-    return true;
+    return app.loadedChunkAabb().containsPoint(pos);
 }
 
 fn maybeUpdateChunkCursor(app: *App, alloc: std.mem.Allocator, region_pos: Region.Pos) !void {
@@ -335,7 +328,7 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
         .connect => |peer| {
             std.log.info("connected to server at {f}", .{peer.address});
 
-            const region_pos = @as(Chunk.Pos, @intFromFloat(app.camera.pos)) / Chunk.size / Region.size;
+            const region_pos = @divFloor(@as(Chunk.Pos, @intFromFloat(app.camera.pos)), Chunk.size * Region.size);
             try app.maybeUpdateChunkCursor(alloc, region_pos);
         },
         .disconnect => |_| {
