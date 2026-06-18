@@ -29,7 +29,7 @@ renderer: Renderer,
 
 frame_timer: std.time.Timer,
 camera: Camera = .default,
-last_region_pos: Region.Pos = @splat(0),
+chunk_cursor: Chunk.Cursor = .{},
 mouse_lock: bool = true,
 generate_chunks: bool = true,
 last_cursor: math.Vec2,
@@ -140,17 +140,8 @@ pub fn tick(app: *App, alloc: std.mem.Allocator) !void {
     }, alloc);
 }
 
-pub fn chunkInRange(app: *const App, pos: Chunk.Pos) bool {
-    const region_pos = @divFloor(pos, Region.size);
-    return app.regionInRange(region_pos);
-}
-
-pub fn regionInRange(app: *const App, pos: Chunk.Pos) bool {
-    return app.loadedChunkAabb().containsPoint(pos);
-}
-
 fn maybeUpdateChunkCursor(app: *App, alloc: std.mem.Allocator, region_pos: Region.Pos) !void {
-    if (@reduce(.And, app.last_region_pos == region_pos)) return;
+    if (@reduce(.And, app.chunk_cursor.pos.vec() == region_pos)) return;
 
     var buffer: [128]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
@@ -161,9 +152,9 @@ fn maybeUpdateChunkCursor(app: *App, alloc: std.mem.Allocator, region_pos: Regio
     const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
     try app.net_man.send(app.server.ref, packet);
 
-    const old_aabb = app.loadedChunkAabb();
-    app.last_region_pos = region_pos;
-    const new_aabb = app.loadedChunkAabb();
+    const old_aabb = app.chunk_cursor.loadedAabb();
+    app.chunk_cursor.pos = .pack(region_pos);
+    const new_aabb = app.chunk_cursor.loadedAabb();
 
     var aabb_buffer: [6]Aabb = undefined;
     const old_regions = old_aabb.subtract(new_aabb, &aabb_buffer);
@@ -200,19 +191,6 @@ fn maybeUpdateChunkCursor(app: *App, alloc: std.mem.Allocator, region_pos: Regio
             }
         }
     }
-}
-
-fn loadedChunkAabb(app: *const App) Aabb {
-    const bounds: Chunk.Pos = .{
-        @max(options.render_radius / Region.len, 1),
-        @max(options.render_radius / Region.len, 1),
-        @max(options.render_height / Region.len, 1),
-    };
-
-    return .{
-        .min = app.last_region_pos - bounds,
-        .max = app.last_region_pos + bounds + @as(Region.Pos, @splat(1)),
-    };
 }
 
 fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData.Input {
@@ -378,7 +356,7 @@ fn handleNetworkEvent(app: *App, alloc: std.mem.Allocator, any_event: NetworkMan
                         const compressed_bytes = reader.buffered()[0..compressed_size];
                         reader.toss(compressed_size);
 
-                        if (!app.chunkInRange(pos.vec()))
+                        if (!app.chunk_cursor.chunkInRange(pos.vec()))
                             continue;
 
                         switch (storage_type) {

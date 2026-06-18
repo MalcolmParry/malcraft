@@ -1,7 +1,10 @@
 const std = @import("std");
+const options = @import("options");
 const mw = @import("mwengine");
 const math = mw.math;
 const block = @import("block.zig");
+const Region = @import("Region.zig");
+const Aabb = @import("../utils/Aabb.zig");
 
 const Chunk = @This();
 pub const len = 32;
@@ -207,3 +210,27 @@ pub inline fn allOpaqueFast(chunk: *const Chunk) bool {
         else => false,
     };
 }
+
+pub const Cursor = struct {
+    pos: Region.PackedPos = .pack(@splat(0)),
+    render_radius: u32 = @max(options.render_radius / Region.len, 1),
+    render_height: u32 = @max(options.render_height / Region.len, 1),
+
+    pub fn chunkInRange(cursor: *const Cursor, pos: Chunk.Pos) bool {
+        const region_pos = @divFloor(pos, Region.size);
+        return cursor.regionInRange(region_pos);
+    }
+
+    pub fn regionInRange(cursor: *const Cursor, pos: Region.Pos) bool {
+        return cursor.loadedAabb().containsPoint(pos);
+    }
+
+    pub fn loadedAabb(cursor: *const Cursor) Aabb {
+        const bounds: Chunk.Pos = .{ @intCast(cursor.render_radius), @intCast(cursor.render_radius), @intCast(cursor.render_height) };
+
+        return .{
+            .min = cursor.pos.vec() - bounds,
+            .max = cursor.pos.vec() + bounds + @as(Region.Pos, @splat(1)),
+        };
+    }
+};

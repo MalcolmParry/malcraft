@@ -8,7 +8,7 @@ const Region = @import("../common/Region.zig");
 const Deque = @import("../utils/deque.zig").Deque;
 const World = @import("../common/World.zig");
 const Player = @import("Player.zig");
-const chunk_streaming = @import("chunk_streaming.zig");
+const ChunkStreamer = @import("ChunkStreamer.zig");
 const znoise = @import("znoise");
 
 const WorldGenerator = @This();
@@ -58,16 +58,16 @@ pub fn genMany(
         if (player_index == 0) empty_queue_count = 0;
 
         const player = &players[player_index];
-        if (player.chunk_cursor.chunks_to_gen.popFront()) |pos| {
-            if (!player.chunk_cursor.chunkInRange(pos.vec())) continue;
+        if (player.chunk_streamer.chunks_to_gen.popFront()) |pos| {
+            if (!player.chunk_streamer.cursor.chunkInRange(pos.vec())) continue;
             if (world.containsChunk(pos.vec())) continue;
 
             const chunk = try gen.generate(pos.vec());
             try world.placeChunk(alloc, pos.vec(), chunk);
 
-            try player.chunk_cursor.chunks_to_send.pushBack(alloc, pos);
-        } else if (player.chunk_cursor.regions_to_gen.popFront()) |region_pos| {
-            if (!player.chunk_cursor.regionInRange(region_pos.vec())) continue;
+            try player.chunk_streamer.chunks_to_send.pushBack(alloc, pos);
+        } else if (player.chunk_streamer.regions_to_gen.popFront()) |region_pos| {
+            if (!player.chunk_streamer.cursor.regionInRange(region_pos.vec())) continue;
             const base_chunk_pos = region_pos.vec() * Region.size;
 
             for (0..Region.len) |x| {
@@ -80,7 +80,7 @@ pub fn genMany(
                         };
 
                         const chunk_pos = base_chunk_pos + rel;
-                        if (!player.chunk_cursor.chunkInRange(chunk_pos)) continue;
+                        if (!player.chunk_streamer.cursor.chunkInRange(chunk_pos)) continue;
                         if (world.containsChunk(chunk_pos)) continue;
                         const chunk = try gen.generate(chunk_pos);
                         try world.placeChunk(alloc, chunk_pos, chunk);
@@ -88,7 +88,7 @@ pub fn genMany(
                 }
             }
 
-            try player.chunk_cursor.regions_to_send.pushBack(alloc, region_pos);
+            try player.chunk_streamer.regions_to_send.pushBack(alloc, region_pos);
         } else {
             empty_queue_count += 1;
         }
