@@ -13,6 +13,7 @@ pkgs.mkShell {
     pkgs.glslang
     pkgs.git
     pkgs.shader-slang
+    pkgs.perf
   ];
 
   LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath [

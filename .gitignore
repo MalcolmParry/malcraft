@@ -1,2 +1,4 @@
 zig-out
 .zig-cache
+zig-pkg
+deps/mwengine/zig-pkg
