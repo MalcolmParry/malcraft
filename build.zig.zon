@@ -8,10 +8,6 @@
         .mwengine = .{
             .path = "deps/mwengine",
         },
-        .zigimg = .{
-            .url = "git+https://github.com/zigimg/zigimg.git#0bbe201a5591219177f2444371c2897746b47774",
-            .hash = "zigimg-0.1.0-8_eo2sGbFwCrsBjkTTP-kinCH62m5vmYDHQnQcngFuwh",
-        },
         .znoise = .{
             .url = "git+https://github.com/zig-gamedev/znoise.git#01c8b354cc3ef7f2293de75e58d3298a77d7ed06",
             .hash = "znoise-0.3.0-dev-gK1op9ikAQDrS4G22GluyaQaabjGzhdnhV2QyCoLE8z7",
@@ -20,8 +16,12 @@
             .path = "deps/znet",
         },
         .zstd = .{
-            .url = "git+https://github.com/allyourcodebase/zstd.git#64ae50e400740a054e6fe890808c515760474473",
-            .hash = "zstd-1.5.7-1-KEItkAMwAAD6OKY3m0OOmXG7aL-aLUfrDqbP5J5oYapU",
+            .url = "git+https://github.com/allyourcodebase/zstd.git#4ccb01e6fceae86fb9fe36c60b8a103cdc058155",
+            .hash = "zstd-1.5.7-2-KEItkAMwAADNhCbGaImKrjXjnSA51jcqEbGCA3RasVZ9",
+        },
+        .zigimg = .{
+            .url = "git+https://github.com/MalcolmParry/zigimg.git#3865a2836d828c7fcb40cf363b01ebdec660d0ca",
+            .hash = "zigimg-0.1.0-8_eo2h4mGAC7hSmxBRz5F6sPI3wXpdkHEjoKskxpQC5S",
         },
     },
 }
