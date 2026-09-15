@@ -64,6 +64,26 @@ pub fn removeChunk(world: *World, alloc: std.mem.Allocator, pos: Chunk.Pos) void
     chunk.* = null;
 }
 
+pub fn replaceChunk(world: *World, alloc: std.mem.Allocator, pos: Chunk.Pos, chunk: ?Chunk) !void {
+    const region_pos = @divFloor(pos, Region.size);
+    const kv = try world.regions.getOrPut(alloc, .pack(region_pos));
+
+    if (!kv.found_existing) {
+        kv.value_ptr.* = try alloc.create(Region);
+        @memset(kv.value_ptr.*.chunks[0..], null);
+    }
+
+    const region = kv.value_ptr.*;
+    const local_chunk_pos = @mod(pos, Region.size);
+    const ptr = &region.chunks[Region.index(local_chunk_pos)];
+
+    if (!kv.found_existing) {
+        if (ptr.*) |*x| x.deinit(alloc);
+    }
+
+    ptr.* = chunk;
+}
+
 pub fn getBlock(world: *const World, pos: block.Pos) ?block.Kind {
     const chunk_pos = chunkPosFromBlockPos(pos);
     const rel_pos = chunkRelFromBlockPos(pos);

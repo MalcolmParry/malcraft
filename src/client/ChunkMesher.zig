@@ -374,6 +374,7 @@ const MaskCube = [Chunk.len]MaskPlane;
 fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) void {
     const io = std.Io.Threaded.global_single_threaded.io();
     var start: std.Io.Timestamp = .now(io, .awake);
+    std.debug.assert(Chunk.len == 32);
 
     // first index is axis, second is how far along plane normal
     var cols: [3]MaskCubeP = @splat(@splat(@splat(0)));

@@ -356,7 +356,7 @@ fn handleNetworkEvent(app: *App, any_event: NetworkManager.Event) !void {
                         const kind_i = try reader.takeInt(u8, .little);
                         const kind = std.enums.fromInt(block.Kind, kind_i) orelse return error.BadMessage;
 
-                        try app.world.placeChunk(alloc, pos.vec(), .{ .data = .{ .uniform = kind } });
+                        try app.world.replaceChunk(alloc, pos.vec(), .{ .data = .{ .uniform = kind } });
                         try app.chunk_mesher.addRequestWithFullCollateral(pos.vec());
                     }
                 },
@@ -387,8 +387,7 @@ fn handleNetworkEvent(app: *App, any_event: NetworkManager.Event) !void {
                                 if (zstd.ZSTD_isError(result) != 0) return error.ZstdDecompressFailed;
                                 if (result != @sizeOf(Chunk.U2Palette)) return error.BadMessage;
 
-                                app.world.removeChunk(alloc, pos.vec());
-                                try app.world.placeChunk(alloc, pos.vec(), .{ .data = .{ .u2_palette = chunk } });
+                                try app.world.replaceChunk(alloc, pos.vec(), .{ .data = .{ .u2_palette = chunk } });
                             },
                             .u4 => {
                                 const one_to_one = try alloc.create(Chunk.OneToOne);
@@ -398,8 +397,7 @@ fn handleNetworkEvent(app: *App, any_event: NetworkManager.Event) !void {
                                 if (zstd.ZSTD_isError(result) != 0) return error.ZstdDecompressFailed;
                                 if (result != @sizeOf(Chunk.OneToOne)) return error.BadMessage;
 
-                                app.world.removeChunk(alloc, pos.vec());
-                                try app.world.placeChunk(alloc, pos.vec(), .{ .data = .{ .one_to_one = one_to_one } });
+                                try app.world.replaceChunk(alloc, pos.vec(), .{ .data = .{ .one_to_one = one_to_one } });
                             },
                         }
 
