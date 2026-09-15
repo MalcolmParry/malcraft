@@ -95,6 +95,14 @@ pub fn init(this: *ChunkMesher, info: InitInfo) !void {
 pub fn deinit(this: *ChunkMesher) void {
     std.log.info("total chunk mesh time {} ns", .{this.meshing_time_ns});
     std.log.info("mesh time per chunk {} ns", .{std.math.divTrunc(u64, this.meshing_time_ns, this.mesh_alloc.loaded_meshes.count()) catch 0});
+
+    if (mesh_normal_path_count.load(.monotonic) != 0) {
+        std.log.info("mean mesh time {} ns", .{mesh_time_ns.load(.monotonic) / mesh_normal_path_count.load(.monotonic)});
+        std.log.info("mean get opaque time {} ns", .{get_opaque_ns.load(.monotonic) / mesh_normal_path_count.load(.monotonic)});
+        std.log.info("mean edge detect time {} ns", .{edge_detect_ns.load(.monotonic) / mesh_normal_path_count.load(.monotonic)});
+        std.log.info("mean mesh remaining time {} ns", .{mesh_remaining_time_ns.load(.monotonic) / mesh_normal_path_count.load(.monotonic)});
+    }
+
     this.thread_info.shutdown();
 
     for (this.threads) |thread| {
@@ -310,21 +318,24 @@ fn worker(info: *MeshThreadInfo) void {
 }
 
 fn greedyMeshWithFastExits(alloc: std.mem.Allocator, state: *MeshingState, world: *const World, pos: Chunk.Pos) void {
-    const chunk = world.getChunk(.pack(pos)) orelse return;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const start: std.Io.Timestamp = .now(io, .awake);
+
+    const chunk = world.getChunk(pos) orelse return;
     if (chunk.allAirFast()) return;
 
-    const refs: ChunkRefs = .{
+    var refs: ChunkRefs = .{
         .this = chunk,
-        .north = world.getChunk(.pack(pos + @as(block.Pos, .{ 1, 0, 0 }))),
-        .south = world.getChunk(.pack(pos + @as(block.Pos, .{ -1, 0, 0 }))),
-        .east = world.getChunk(.pack(pos + @as(block.Pos, .{ 0, 1, 0 }))),
-        .west = world.getChunk(.pack(pos + @as(block.Pos, .{ 0, -1, 0 }))),
-        .up = world.getChunk(.pack(pos + @as(block.Pos, .{ 0, 0, 1 }))),
-        .down = world.getChunk(.pack(pos + @as(block.Pos, .{ 0, 0, -1 }))),
+        .adjacent = undefined,
     };
 
+    for (0..6) |face_i| {
+        const face: block.Face = @enumFromInt(face_i);
+        refs.adjacent[face_i] = world.getChunk(pos + face.dir());
+    }
+
     if (chunk.allOpaqueFast()) {
-        const adjacent_all_opaque = blk: for (refs.adjacent()) |maybe_chunk| {
+        const adjacent_all_opaque = blk: for (&refs.adjacent) |maybe_chunk| {
             const is_opaque = if (maybe_chunk) |x|
                 x.allOpaqueFast()
             else
@@ -337,8 +348,18 @@ fn greedyMeshWithFastExits(alloc: std.mem.Allocator, state: *MeshingState, world
             return;
     }
 
+    _ = mesh_normal_path_count.fetchAdd(1, .monotonic);
+    defer _ = mesh_time_ns.fetchAdd(@intCast(start.untilNow(io, .awake).toNanoseconds()), .monotonic);
+
     greedyMesh(alloc, state, refs);
 }
+
+var mesh_time_ns: std.atomic.Value(u64) = .init(0);
+
+var mesh_normal_path_count: std.atomic.Value(u64) = .init(0);
+var get_opaque_ns: std.atomic.Value(u64) = .init(0);
+var edge_detect_ns: std.atomic.Value(u64) = .init(0);
+var mesh_remaining_time_ns: std.atomic.Value(u64) = .init(0);
 
 // meshing algorithm from
 // https://youtu.be/qnGoGq7DWMc
@@ -351,44 +372,149 @@ const Mask = u32;
 const MaskPlane = [Chunk.len]Mask;
 const MaskCube = [Chunk.len]MaskPlane;
 fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var start: std.Io.Timestamp = .now(io, .awake);
+
     // first index is axis, second is how far along plane normal
     var cols: [3]MaskCubeP = @splat(@splat(@splat(0)));
 
-    for (0..chunk_len_p) |z| {
-        for (0..chunk_len_p) |y| {
-            for (0..chunk_len_p) |x| {
-                const pos_p: block.Pos = .{ @intCast(x), @intCast(y), @intCast(z) };
-                const pos = pos_p - @as(block.Pos, @splat(1));
+    switch (refs.this.data) {
+        .one_to_one => |data| {
+            for (0..Chunk.len) |x| {
+                for (0..Chunk.len) |y| {
+                    for (0..Chunk.len) |z| {
+                        const is_opaque = data.getBlock(.{
+                            @intCast(x), @intCast(y), @intCast(z),
+                        }).isOpaque();
+                        const bit: MaskP = if (is_opaque) 1 else 0;
 
-                if (refs.isOpaqueSafe(pos, !options.render_borders_with_nonexistant_chunks)) {
+                        const px: u6 = @intCast(x + 1);
+                        const py: u6 = @intCast(y + 1);
+                        const pz: u6 = @intCast(z + 1);
+
+                        // z,y - x axis
+                        cols[0][py][pz] |= bit << px;
+                        // x,z - y axis
+                        cols[1][pz][px] |= bit << py;
+                        // x,y - z axis
+                        cols[2][py][px] |= bit << pz;
+                    }
+                }
+            }
+        },
+        .u2_palette => |data| {
+            var opaque_bits: std.StaticBitSet(4) = undefined;
+            for (0..4) |i|
+                opaque_bits.setValue(i, data.palette[i].isOpaque());
+
+            for (0..Chunk.len) |x| {
+                for (0..Chunk.len) |y| {
+                    for (0..Chunk.len) |z| {
+                        const palette_index = data.getBlock(.{
+                            @intCast(x), @intCast(y), @intCast(z),
+                        });
+
+                        const bit: MaskP = @intFromBool(opaque_bits.isSet(palette_index));
+                        const px: u6 = @intCast(x + 1);
+                        const py: u6 = @intCast(y + 1);
+                        const pz: u6 = @intCast(z + 1);
+
+                        // z,y - x axis
+                        cols[0][py][pz] |= bit << px;
+                        // x,z - y axis
+                        cols[1][pz][px] |= bit << py;
+                        // x,y - z axis
+                        cols[2][py][px] |= bit << pz;
+                    }
+                }
+            }
+        },
+        .uniform => |kind| blk: {
+            if (!kind.isOpaque()) break :blk;
+            const mask = ((@as(MaskP, 1) << Chunk.len) - 1) << 1;
+
+            for (1..Chunk.len + 1) |px| {
+                for (1..Chunk.len + 1) |py| {
+                    cols[0][px][py] = mask;
+                    cols[1][px][py] = mask;
+                    cols[2][px][py] = mask;
+                }
+            }
+        },
+    }
+
+    inline for (0..6) |face_i| {
+        const face: block.Face = @enumFromInt(face_i);
+        if (refs.adjacent[face_i]) |chunk| {
+            for (0..Chunk.len) |uu| {
+                const u: u5 = @intCast(uu);
+                for (0..Chunk.len) |uv| {
+                    const v: u5 = @intCast(uv);
+                    const l = Chunk.len - 1;
+                    const pos: Chunk.RelPos = switch (face) {
+                        .north => .{ 0, u, v },
+                        .south => .{ l, u, v },
+                        .east => .{ u, 0, v },
+                        .west => .{ u, l, v },
+                        .up => .{ u, v, 0 },
+                        .down => .{ u, v, l },
+                    };
+
+                    if (!chunk.getBlock(pos).isOpaque()) continue;
+                    const px: u6 = switch (face) {
+                        .north => Chunk.len + 1,
+                        .south => 0,
+                        else => @as(u6, u) + 1,
+                    };
+
+                    const py: u6 = switch (face) {
+                        .east => Chunk.len + 1,
+                        .west => 0,
+                        .north, .south => @as(u6, u) + 1,
+                        .up, .down => @as(u6, v) + 1,
+                    };
+
+                    const pz: u6 = switch (face) {
+                        .up => Chunk.len + 1,
+                        .down => 0,
+                        else => @as(u6, v) + 1,
+                    };
+
                     // z,y - x axis
-                    cols[0][y][z] |= @as(MaskP, 1) << @intCast(x);
+                    cols[0][py][pz] |= @as(MaskP, 1) << px;
                     // x,z - y axis
-                    cols[1][z][x] |= @as(MaskP, 1) << @intCast(y);
+                    cols[1][pz][px] |= @as(MaskP, 1) << py;
                     // x,y - z axis
-                    cols[2][y][x] |= @as(MaskP, 1) << @intCast(z);
+                    cols[2][py][px] |= @as(MaskP, 1) << pz;
                 }
             }
         }
     }
 
-    var masks: [6]MaskCubeP = undefined;
+    _ = get_opaque_ns.fetchAdd(@intCast(start.untilNow(io, .awake).toNanoseconds()), .monotonic);
+    start = .now(io, .awake);
+
+    var masks: [6]MaskCube = undefined;
     for (0..3) |axis| {
-        for (0..chunk_len_p) |z| {
-            for (0..chunk_len_p) |x| {
-                const col = cols[axis][z][x];
-                masks[axis * 2 + 0][z][x] = col & ~(col >> 1);
-                masks[axis * 2 + 1][z][x] = col & ~(col << 1);
+        for (0..Chunk.len) |z| {
+            for (0..Chunk.len) |x| {
+                const col = cols[axis][z + 1][x + 1];
+                masks[axis * 2 + 0][z][x] = @truncate((col & ~(col >> 1)) >> 1);
+                masks[axis * 2 + 1][z][x] = @truncate((col & ~(col << 1)) >> 1);
             }
         }
     }
 
-    for (0..6) |face_int| {
+    _ = edge_detect_ns.fetchAdd(@intCast(start.untilNow(io, .awake).toNanoseconds()), .monotonic);
+    start = .now(io, .awake);
+    defer _ = mesh_remaining_time_ns.fetchAdd(@intCast(start.untilNow(io, .awake).toNanoseconds()), .monotonic);
+
+    inline for (0..6) |face_int| {
         const face: block.Face = @enumFromInt(face_int);
 
         for (0..Chunk.len) |z| {
             for (0..Chunk.len) |x| {
-                var col = (masks[face_int][z + 1][x + 1] >> 1) & std.math.maxInt(Mask);
+                var col = masks[face_int][z][x];
 
                 while (col != 0) {
                     const y = @ctz(col);
@@ -424,9 +550,12 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) v
                         };
 
                         const spos = pos + sample_offset;
-                        if (refs.isOpaqueSafe(spos, false)) {
-                            ao_bits |= @as(u8, 1) << @intCast(i);
-                        }
+                        const px: u6 = @intCast(spos[0] + 1);
+                        const py: u6 = @intCast(spos[1] + 1);
+                        const pz: u6 = @intCast(spos[2] + 1);
+
+                        if (cols[0][py][pz] & @as(MaskP, 1) << px == 0) continue;
+                        ao_bits |= @as(u8, 1) << @intCast(i);
                     }
 
                     const corner_bl = ao_bits & 1 > 0;
@@ -572,33 +701,10 @@ fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, da
 
 const ChunkRefs = struct {
     this: Chunk,
-    north: ?Chunk,
-    south: ?Chunk,
-    east: ?Chunk,
-    west: ?Chunk,
-    up: ?Chunk,
-    down: ?Chunk,
-
-    fn adjacent(refs: ChunkRefs) [6]?Chunk {
-        return .{
-            refs.north,
-            refs.south,
-            refs.east,
-            refs.west,
-            refs.up,
-            refs.down,
-        };
-    }
+    adjacent: [6]?Chunk,
 
     fn refFromFaceDir(refs: ChunkRefs, face_dir: block.Face) ?Chunk {
-        return switch (face_dir) {
-            .north => refs.north,
-            .south => refs.south,
-            .east => refs.east,
-            .west => refs.west,
-            .up => refs.up,
-            .down => refs.down,
-        };
+        return refs.adjacent[@intFromEnum(face_dir)];
     }
 
     fn isOpaqueSafe(refs: ChunkRefs, pos: block.Pos, default: bool) bool {

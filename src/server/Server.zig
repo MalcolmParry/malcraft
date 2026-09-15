@@ -4,12 +4,14 @@ const znet = @import("znet");
 const GenerationalSparseSet = @import("../utils/generational_sparse_set.zig").GenerationalSparseSet;
 const block = @import("../common/block.zig");
 const Chunk = @import("../common/Chunk.zig");
+const Region = @import("../common/Region.zig");
 const World = @import("../common/World.zig");
 const WorldGenerator = @import("../server/WorldGenerator.zig");
 const protocol = @import("../common/protocol.zig");
 const ServerMsgId = protocol.ServerMsgId;
+const ClientMsgId = protocol.ClientMsgId;
 const NetworkManager = @import("../common/NetworkManager.zig");
-const chunk_streaming = @import("chunk_streaming.zig");
+const ChunkStreamer = @import("ChunkStreamer.zig");
 const Player = @import("Player.zig");
 const Server = @This();
 
@@ -106,7 +108,7 @@ pub fn tick(server: *Server) !bool {
     while (try server.net_man.popEvent()) |event| try server.processNetEvent(event);
 
     for (server.players.dense.items) |*player| {
-        try chunk_streaming.sendChunks(server.alloc, io, &server.net_man, &server.world, player.peer, &player.chunk_cursor);
+        try ChunkStreamer.sendChunks(server.alloc, io, &server.net_man, &server.world, player.peer, &player.chunk_streamer);
     }
 
     blk: {
@@ -154,7 +156,7 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
             try server.net_man.send(peer.ref, init_packet);
 
             const player = server.players.getPtr(player_ref).?;
-            try player.chunk_cursor.init(server.alloc);
+            try player.chunk_streamer.init(server.alloc);
         },
         .disconnect => |peer| {
             std.log.info("disconnected {f}", .{peer.address});
@@ -169,6 +171,25 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
         },
         .receive => |packet_peer| {
             defer packet_peer.packet.deinit();
+            var reader = packet_peer.packet.reader();
+            const msg_id = try ClientMsgId.decode(&reader);
+
+            const peer = packet_peer.peer;
+            const player_ref: Player.Ref = .{
+                .slot = peer.slot,
+                .gen = peer.gen,
+            };
+            const player = server.players.getPtr(player_ref) orelse @panic("message received after disconnect");
+
+            switch (msg_id) {
+                .update_chunk_cursor => {
+                    const region_pos = try reader.takeStruct(Chunk.PackedPos, .little);
+                    if (@reduce(.And, region_pos.vec() == player.chunk_streamer.cursor.pos.vec())) return;
+
+                    try player.chunk_streamer.updatePos(server.alloc, region_pos.vec());
+                    std.log.info("chunk cursor moved: {}", .{region_pos.vec()});
+                },
+            }
         },
     }
 }

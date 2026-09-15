@@ -5,6 +5,7 @@
 pkgs.mkShell {
   packages = [
     pkgs.zig_0_16
+    pkgs.zls_0_16
     pkgs.libx11
     pkgs.vulkan-loader
     pkgs.vulkan-validation-layers
@@ -12,6 +13,7 @@ pkgs.mkShell {
     pkgs.glslang
     pkgs.git
     pkgs.shader-slang
+    pkgs.perf
   ];
 
   LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath [

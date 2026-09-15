@@ -4,88 +4,91 @@ const options = @import("options");
 const mw = @import("mwengine");
 const math = mw.math;
 const Deque = @import("../utils/deque.zig").Deque;
+const Aabb = @import("../utils/Aabb.zig");
 const block = @import("../common/block.zig");
 const Chunk = @import("../common/Chunk.zig");
+const Region = @import("../common/Region.zig");
 const World = @import("../common/World.zig");
 const protocol = @import("../common/protocol.zig");
 const ServerMsgId = protocol.ServerMsgId;
 const NetworkManager = @import("../common/NetworkManager.zig");
+pub const Streamer = @This();
 
 const zstd = @cImport({
     @cInclude("zstd.h");
 });
 
 const chunk_transfer_limit = 256 * 1024;
-pub const region_len = 4;
 
-pub const Cursor = struct {
-    /// region is 4x4x4 chunks
-    regions_to_send: Deque(Chunk.PackedPos) = .empty,
-    regions_to_gen: Deque(Chunk.PackedPos) = .empty,
-    chunks_to_gen: Deque(Chunk.PackedPos) = .empty,
+cursor: Chunk.Cursor = .{},
+regions_to_send: Deque(Region.PackedPos) = .empty,
+regions_to_gen: Deque(Region.PackedPos) = .empty,
+chunks_to_send: Deque(Chunk.PackedPos) = .empty,
+chunks_to_gen: Deque(Chunk.PackedPos) = .empty,
 
-    render_radius: u32 = options.render_radius,
-    render_height: u32 = options.render_height,
+pub fn init(streamer: *Streamer, alloc: std.mem.Allocator) !void {
+    try streamer.queueSendAabb(alloc, streamer.cursor.loadedAabb());
 
-    pub fn init(cursor: *Cursor, alloc: std.mem.Allocator) !void {
-        const radius_regions: i32 = @intCast(options.render_radius / region_len);
-        const height_regions: i32 = @intCast(options.render_height / region_len);
-        const region_count = (radius_regions * 2 + 1) * (radius_regions * 2 + 1) * (height_regions * 2 + 1);
-        try cursor.regions_to_send.ensureUnusedCapacity(alloc, region_count);
+    const SortContext = struct {
+        queue: *Deque(Chunk.PackedPos),
 
-        var z: i20 = 0;
-        while (z <= height_regions) : (z += 1) {
-            var y: i22 = -radius_regions;
-            while (y <= radius_regions) : (y += 1) {
-                var x: i22 = -radius_regions;
-                while (x <= radius_regions) : (x += 1) {
-                    const pos: Chunk.PackedPos = .{ .x = x, .y = y, .z = z };
-                    cursor.regions_to_send.pushBackAssumeCapacity(pos);
-                }
-            }
+        pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
+            const i64x3 = @Vector(3, i64);
+            const left_64: i64x3 = ctx.queue.at(a).vec();
+            const right_64: i64x3 = ctx.queue.at(b).vec();
+            return math.lengthSqr(left_64) < math.lengthSqr(right_64);
         }
 
-        const SortContext = struct {
-            queue: *Deque(Chunk.PackedPos),
+        pub fn swap(ctx: @This(), a: usize, b: usize) void {
+            return std.mem.swap(Region.PackedPos, ctx.queue.atPtr(a), ctx.queue.atPtr(b));
+        }
+    };
 
-            pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
-                const i64x3 = @Vector(3, i64);
-                const left_64: i64x3 = ctx.queue.at(a).vec();
-                const right_64: i64x3 = ctx.queue.at(b).vec();
-                return math.lengthSqr(left_64) < math.lengthSqr(right_64);
+    std.sort.heapContext(0, streamer.regions_to_send.len, SortContext{
+        .queue = &streamer.regions_to_send,
+    });
+}
+
+pub fn deinit(streamer: *Streamer, alloc: std.mem.Allocator) void {
+    streamer.regions_to_send.deinit(alloc);
+    streamer.regions_to_gen.deinit(alloc);
+    streamer.chunks_to_send.deinit(alloc);
+    streamer.chunks_to_gen.deinit(alloc);
+}
+
+pub fn updatePos(streamer: *Streamer, alloc: std.mem.Allocator, new: Chunk.Pos) !void {
+    if (@reduce(.And, streamer.cursor.pos.vec() == new)) return;
+
+    const old_box = streamer.cursor.loadedAabb();
+    streamer.cursor.pos = .pack(new);
+    const new_box = streamer.cursor.loadedAabb();
+
+    var buffer: [6]Aabb = undefined;
+    const to_load_regions = new_box.subtract(old_box, &buffer);
+
+    for (to_load_regions) |x| {
+        try streamer.queueSendAabb(alloc, x);
+    }
+}
+
+pub fn queueSendAabb(streamer: *Streamer, alloc: std.mem.Allocator, aabb: Aabb) !void {
+    try streamer.regions_to_send.ensureUnusedCapacity(alloc, aabb.volume());
+
+    var x = aabb.min[0];
+    while (x < aabb.max[0]) : (x += 1) {
+        var y = aabb.min[1];
+        while (y < aabb.max[1]) : (y += 1) {
+            var z = aabb.min[2];
+            while (z < aabb.max[2]) : (z += 1) {
+                const pos: Chunk.Pos = .{ x, y, z };
+                streamer.regions_to_send.pushBackAssumeCapacity(.pack(pos));
             }
-
-            pub fn swap(ctx: @This(), a: usize, b: usize) void {
-                return std.mem.swap(Chunk.PackedPos, ctx.queue.atPtr(a), ctx.queue.atPtr(b));
-            }
-        };
-
-        std.sort.heapContext(0, cursor.regions_to_send.len, SortContext{
-            .queue = &cursor.regions_to_send,
-        });
+        }
     }
+}
 
-    pub fn deinit(cursor: *Cursor, alloc: std.mem.Allocator) void {
-        cursor.regions_to_send.deinit(alloc);
-        cursor.regions_to_gen.deinit(alloc);
-        cursor.chunks_to_gen.deinit(alloc);
-    }
-
-    pub fn chunkInRange(cursor: *const Cursor, pos: Chunk.Pos) bool {
-        if (@abs(pos[0]) > cursor.render_radius) return false;
-        if (@abs(pos[1]) > cursor.render_radius) return false;
-        if (@abs(pos[2]) > cursor.render_height) return false;
-        return true;
-    }
-
-    pub fn regionInRange(cursor: *const Cursor, pos: Chunk.Pos) bool {
-        return cursor.chunkInRange(pos * @as(Chunk.Pos, @splat(region_len)));
-    }
-};
-
-pub fn sendChunks(alloc: std.mem.Allocator, io: std.Io, net_man: *NetworkManager, world: *const World, peer: NetworkManager.PeerRef, cursor: *Cursor) !void {
-    if (cursor.regions_to_send.len == 0) return;
-
+pub fn sendChunks(alloc: std.mem.Allocator, io: std.Io, net_man: *NetworkManager, world: *const World, peer: NetworkManager.PeerRef, streamer: *Streamer) !void {
+    if (streamer.regions_to_send.len == 0) return;
     const start: std.Io.Timestamp = .now(io, .awake);
 
     var uniform_buffer: [protocol.max_packet_size]u8 = undefined;
@@ -102,22 +105,37 @@ pub fn sendChunks(alloc: std.mem.Allocator, io: std.Io, net_man: *NetworkManager
     };
     try send_state.init();
 
-    var regions_sent: usize = 0;
-    while (cursor.regions_to_send.popFront()) |region_pos_p| {
+    var chunks_sent: usize = 0;
+    while (send_state.totalBytesToSend() < chunk_transfer_limit) {
+        const pos_p = streamer.chunks_to_send.popFront() orelse break;
+        const pos = pos_p.vec();
+        if (!streamer.cursor.chunkInRange(pos_p.vec())) continue;
+
+        const chunk = world.getChunk(pos) orelse {
+            try streamer.chunks_to_gen.pushBack(alloc, pos_p);
+            continue;
+        };
+
+        try send_state.send(pos_p, chunk);
+        chunks_sent += 1;
+    }
+
+    while (send_state.totalBytesToSend() < chunk_transfer_limit) {
+        const region_pos_p = streamer.regions_to_send.popFront() orelse break;
         const region_pos = region_pos_p.vec();
-        if (!cursor.regionInRange(region_pos)) continue;
+        if (!streamer.cursor.regionInRange(region_pos)) continue;
 
         var exists: bool = false;
-        for (0..region_len) |ux| blk: {
-            for (0..region_len) |uy| {
-                for (0..region_len) |uz| {
-                    const chunk_pos = (region_pos * @as(Chunk.Pos, @splat(region_len))) + @as(Chunk.Pos, .{
+        for (0..Region.len) |ux| blk: {
+            for (0..Region.len) |uy| {
+                for (0..Region.len) |uz| {
+                    const chunk_pos = (region_pos * Region.size) + @as(Chunk.Pos, .{
                         @intCast(ux),
                         @intCast(uy),
                         @intCast(uz),
                     });
 
-                    if (world.containsChunk(.pack(chunk_pos))) {
+                    if (world.containsChunk(chunk_pos)) {
                         exists = true;
                         break :blk;
                     }
@@ -126,37 +144,34 @@ pub fn sendChunks(alloc: std.mem.Allocator, io: std.Io, net_man: *NetworkManager
         }
 
         if (!exists) {
-            try cursor.regions_to_gen.pushBack(alloc, region_pos_p);
+            try streamer.regions_to_gen.pushBack(alloc, region_pos_p);
             continue;
         }
 
-        for (0..region_len) |ux| {
-            for (0..region_len) |uy| {
-                for (0..region_len) |uz| {
-                    const chunk_pos = (region_pos * @as(Chunk.Pos, @splat(region_len))) + @as(Chunk.Pos, .{
+        for (0..Region.len) |ux| {
+            for (0..Region.len) |uy| {
+                for (0..Region.len) |uz| {
+                    const chunk_pos = (region_pos * Region.size) + @as(Chunk.Pos, .{
                         @intCast(ux),
                         @intCast(uy),
                         @intCast(uz),
                     });
 
                     const packed_chunk_pos: Chunk.PackedPos = .pack(chunk_pos);
-                    const chunk = world.getChunk(packed_chunk_pos) orelse {
-                        try cursor.chunks_to_gen.pushBack(alloc, packed_chunk_pos);
+                    const chunk = world.getChunk(chunk_pos) orelse {
+                        try streamer.chunks_to_gen.pushBack(alloc, packed_chunk_pos);
                         continue;
                     };
 
                     try send_state.send(packed_chunk_pos, chunk);
+                    chunks_sent += 1;
                 }
             }
         }
-
-        regions_sent += 1;
-        if (send_state.totalBytesToSend() >= chunk_transfer_limit)
-            break;
     }
 
     try send_state.flush();
-    std.log.info("{}μs to send {} regions ({} chunks)", .{ start.untilNow(io, .awake).toMicroseconds(), regions_sent, regions_sent * 4 * 4 * 4 });
+    std.log.info("{}μs to send {} chunks in {Bi:.0}", .{ start.untilNow(io, .awake).toMicroseconds(), chunks_sent, send_state.totalBytesToSend() });
 }
 
 const SendState = struct {

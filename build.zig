@@ -58,7 +58,7 @@ pub fn build(b: *Build) !void {
     }
 
     const default_render_radius: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 64 else 3;
-    const default_render_height: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 16 else 8;
+    const default_render_height: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 8 else 8;
 
     const options = b.addOptions();
     options.addOption(bool, "build_server", build_server);

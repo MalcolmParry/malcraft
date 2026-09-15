@@ -1,4 +1,5 @@
 const std = @import("std");
+const options = @import("options");
 const mw = @import("mwengine");
 const math = mw.math;
 const znet = @import("znet");
@@ -9,8 +10,10 @@ const Renderer = @import("Renderer.zig");
 const Camera = @import("Camera.zig");
 const block = @import("../common/block.zig");
 const Chunk = @import("../common/Chunk.zig");
+const Region = @import("../common/Region.zig");
 const World = @import("../common/World.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
+const Aabb = @import("../utils/Aabb.zig");
 const App = @This();
 
 const zstd = @cImport({
@@ -28,7 +31,9 @@ renderer: Renderer,
 
 last_frame_start: std.Io.Timestamp,
 camera: Camera = .default,
+chunk_cursor: Chunk.Cursor = .{},
 mouse_lock: bool = true,
+generate_chunks: bool = true,
 last_cursor: math.Vec2,
 
 world: World,
@@ -133,6 +138,10 @@ pub fn tick(app: *App) !void {
 
     const renderer_input = try app.handleInput(alloc, dt_s);
 
+    const region_pos = @divFloor(@as(Chunk.Pos, @intFromFloat(app.camera.pos)), Chunk.size * Region.size);
+    if (app.generate_chunks)
+        try app.maybeUpdateChunkCursor(alloc, region_pos);
+
     while (try app.net_man.popEvent()) |event| {
         try app.handleNetworkEvent(event);
     }
@@ -143,7 +152,61 @@ pub fn tick(app: *App) !void {
         .input = renderer_input,
         .viewport = app.window.getFramebufferSize(),
         .show_crosshair = app.mouse_lock,
+        .generating_chunks = app.generate_chunks,
     }, alloc);
+}
+
+fn maybeUpdateChunkCursor(app: *App, alloc: std.mem.Allocator, region_pos: Region.Pos) !void {
+    if (@reduce(.And, app.chunk_cursor.pos.vec() == region_pos)) return;
+
+    var buffer: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try writer.writeInt(u8, @intFromEnum(protocol.ClientMsgId.update_chunk_cursor), .little);
+    try writer.writeStruct(Region.PackedPos.pack(region_pos), .little);
+
+    const channel: protocol.Channel = .control;
+    const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
+    try app.net_man.send(app.server.ref, packet);
+
+    const old_aabb = app.chunk_cursor.loadedAabb();
+    app.chunk_cursor.pos = .pack(region_pos);
+    const new_aabb = app.chunk_cursor.loadedAabb();
+
+    var aabb_buffer: [6]Aabb = undefined;
+    const old_regions = old_aabb.subtract(new_aabb, &aabb_buffer);
+
+    for (old_regions) |aabb| {
+        var x = aabb.min[0];
+        while (x < aabb.max[0]) : (x += 1) {
+            var y = aabb.min[1];
+            while (y < aabb.max[1]) : (y += 1) {
+                var z = aabb.min[2];
+                while (z < aabb.max[2]) : (z += 1) {
+                    const pos: Region.Pos = .{ x, y, z };
+                    const packed_pos: Region.PackedPos = .pack(pos);
+
+                    const kv = app.world.regions.fetchRemove(packed_pos) orelse continue;
+                    const region = kv.value;
+
+                    region.deinit(alloc);
+                    alloc.destroy(region);
+
+                    for (0..Region.len) |cx| {
+                        for (0..Region.len) |cy| {
+                            for (0..Region.len) |cz| {
+                                const local_chunk_pos: Chunk.Pos = .{ @intCast(cx), @intCast(cy), @intCast(cz) };
+                                const chunk_pos = pos * Region.size + local_chunk_pos;
+
+                                if (app.renderer.chunk_mesh_alloc.loaded_meshes.fetchSwapRemove(.pack(chunk_pos))) |kv2| {
+                                    try app.renderer.chunk_mesh_alloc.queueFree(kv2.value);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData.Input {
@@ -155,6 +218,7 @@ fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData
             switch (key) {
                 .escape => app.should_close = true,
                 .f => renderer_input.wireframe = true,
+                .g => app.generate_chunks = !app.generate_chunks,
                 .o => app.camera = .default,
                 .left_alt => {
                     app.mouse_lock = !app.mouse_lock;
@@ -260,6 +324,9 @@ fn handleNetworkEvent(app: *App, any_event: NetworkManager.Event) !void {
     switch (any_event) {
         .connect => |peer| {
             std.log.info("connected to server at {f}", .{peer.address});
+
+            const region_pos = @divFloor(@as(Chunk.Pos, @intFromFloat(app.camera.pos)), Chunk.size * Region.size);
+            try app.maybeUpdateChunkCursor(alloc, region_pos);
         },
         .disconnect => {
             std.log.info("disconnected from server at {f}", .{app.server.address});
@@ -282,7 +349,6 @@ fn handleNetworkEvent(app: *App, any_event: NetworkManager.Event) !void {
                     const count = try reader.takeInt(u16, .little);
                     defer std.log.info("processed packet: {d: >4} uniform chunks: {d: >4}μs", .{ count, start.untilNow(io, .awake).toMicroseconds() });
 
-                    try app.world.uniform_chunks.ensureUnusedCapacity(alloc, count);
                     try app.chunk_mesher.queue.ensureUnusedCapacity(alloc, count * 2);
 
                     for (0..count) |_| {
@@ -290,14 +356,12 @@ fn handleNetworkEvent(app: *App, any_event: NetworkManager.Event) !void {
                         const kind_i = try reader.takeInt(u8, .little);
                         const kind = std.enums.fromInt(block.Kind, kind_i) orelse return error.BadMessage;
 
-                        app.world.uniform_chunks.putAssumeCapacity(pos, kind);
+                        try app.world.placeChunk(alloc, pos.vec(), .{ .data = .{ .uniform = kind } });
                         try app.chunk_mesher.addRequestWithFullCollateral(pos.vec());
                     }
                 },
                 .compressed_chunk_batch => {
                     const count = try reader.takeInt(u16, .little);
-                    try app.world.one_to_one_chunks.ensureUnusedCapacity(alloc, count);
-                    try app.world.u2_palette_chunks.ensureUnusedCapacity(alloc, count);
                     try app.chunk_mesher.queue.ensureUnusedCapacity(alloc, count * 2);
 
                     for (0..count) |_| {
@@ -311,6 +375,9 @@ fn handleNetworkEvent(app: *App, any_event: NetworkManager.Event) !void {
                         const compressed_bytes = reader.buffered()[0..compressed_size];
                         reader.toss(compressed_size);
 
+                        if (!app.chunk_cursor.chunkInRange(pos.vec()))
+                            continue;
+
                         switch (storage_type) {
                             .u2_palette => {
                                 const chunk = try alloc.create(Chunk.U2Palette);
@@ -320,8 +387,8 @@ fn handleNetworkEvent(app: *App, any_event: NetworkManager.Event) !void {
                                 if (zstd.ZSTD_isError(result) != 0) return error.ZstdDecompressFailed;
                                 if (result != @sizeOf(Chunk.U2Palette)) return error.BadMessage;
 
-                                app.world.removeChunk(alloc, pos);
-                                app.world.u2_palette_chunks.putAssumeCapacity(pos, chunk);
+                                app.world.removeChunk(alloc, pos.vec());
+                                try app.world.placeChunk(alloc, pos.vec(), .{ .data = .{ .u2_palette = chunk } });
                             },
                             .u4 => {
                                 const one_to_one = try alloc.create(Chunk.OneToOne);
@@ -331,8 +398,8 @@ fn handleNetworkEvent(app: *App, any_event: NetworkManager.Event) !void {
                                 if (zstd.ZSTD_isError(result) != 0) return error.ZstdDecompressFailed;
                                 if (result != @sizeOf(Chunk.OneToOne)) return error.BadMessage;
 
-                                app.world.removeChunk(alloc, pos);
-                                app.world.one_to_one_chunks.putAssumeCapacity(pos, one_to_one);
+                                app.world.removeChunk(alloc, pos.vec());
+                                try app.world.placeChunk(alloc, pos.vec(), .{ .data = .{ .one_to_one = one_to_one } });
                             },
                         }
 
