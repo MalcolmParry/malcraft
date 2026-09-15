@@ -213,8 +213,8 @@ pub inline fn allOpaqueFast(chunk: *const Chunk) bool {
 
 pub const Cursor = struct {
     pos: Region.PackedPos = .pack(@splat(0)),
-    render_radius: u32 = @max(options.render_radius / Region.len, 1),
-    render_height: u32 = @max(options.render_height / Region.len, 1),
+    render_radius: u32,
+    render_height: u32,
 
     pub fn chunkInRange(cursor: *const Cursor, pos: Chunk.Pos) bool {
         const region_pos = @divFloor(pos, Region.size);

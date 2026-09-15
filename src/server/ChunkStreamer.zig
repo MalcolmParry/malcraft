@@ -20,7 +20,7 @@ const zstd = @cImport({
 
 const chunk_transfer_limit = 256 * 1024;
 
-cursor: Chunk.Cursor = .{},
+cursor: Chunk.Cursor,
 regions_to_send: Deque(Region.PackedPos) = .empty,
 regions_to_gen: Deque(Region.PackedPos) = .empty,
 chunks_to_send: Deque(Chunk.PackedPos) = .empty,

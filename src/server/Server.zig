@@ -20,6 +20,7 @@ const ns_per_tick: comptime_int = (1.0 / @as(comptime_float, tps)) * std.time.ns
 
 alloc: std.mem.Allocator,
 io: std.Io,
+opts: Options,
 stdin_thread: std.Thread,
 console_input: ConsoleInput,
 net_man: NetworkManager,
@@ -31,10 +32,18 @@ tick_count: u64 = 0,
 total_work_ns: u64 = 0,
 players: Player.Set = .empty,
 
-pub fn init(server: *Server, alloc: std.mem.Allocator, io: std.Io) !void {
+pub const Options = struct {
+    chunk_streaming_radius: u32,
+    chunk_streaming_height: u32,
+    ip: [:0]const u8,
+    port: u16,
+};
+
+pub fn init(server: *Server, alloc: std.mem.Allocator, io: std.Io, opts: Options) !void {
     server.* = .{
         .alloc = alloc,
         .io = io,
+        .opts = opts,
         .stdin_thread = undefined,
         .console_input = .{},
         .net_man = undefined,
@@ -53,8 +62,8 @@ pub fn init(server: *Server, alloc: std.mem.Allocator, io: std.Io) !void {
 
     try server.net_man.init(alloc, io, .{
         .addr = try .init(.{
-            .ip = .any,
-            .port = .{ .uint = 5000 },
+            .ip = .{ .ipv4 = opts.ip },
+            .port = .{ .uint = opts.port },
         }),
         .channel_limit = .{ .count = std.enums.values(protocol.Channel).len },
         .peer_limit = 32,
@@ -108,6 +117,7 @@ pub fn tick(server: *Server) !bool {
     while (try server.net_man.popEvent()) |event| try server.processNetEvent(event);
 
     for (server.players.dense.items) |*player| {
+        if (player.state != .normal) continue;
         try ChunkStreamer.sendChunks(server.alloc, io, &server.net_man, &server.world, player.peer, &player.chunk_streamer);
     }
 
@@ -142,21 +152,10 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
             };
 
             try server.players.insertAtRef(server.alloc, player_ref, .{
+                .state = .pre_init,
                 .peer = peer.ref,
+                .chunk_streamer = undefined,
             });
-
-            var small_buffer: [64]u8 = undefined;
-            var small_writer = std.Io.Writer.fixed(&small_buffer);
-
-            try ServerMsgId.init.encode(&small_writer);
-            try small_writer.writeInt(u16, @intCast(peer.ref.slot), .little);
-
-            const init_channel = protocol.Channel.control;
-            const init_packet = try znet.Packet.init(small_writer.buffered(), init_channel.toInt(), init_channel.getFlags());
-            try server.net_man.send(peer.ref, init_packet);
-
-            const player = server.players.getPtr(player_ref).?;
-            try player.chunk_streamer.init(server.alloc);
         },
         .disconnect => |peer| {
             std.log.info("disconnected {f}", .{peer.address});
@@ -181,7 +180,35 @@ pub fn processNetEvent(server: *Server, event: NetworkManager.Event) !void {
             };
             const player = server.players.getPtr(player_ref) orelse @panic("message received after disconnect");
 
+            if (player.state == .pre_init) {
+                if (msg_id != .init) return error.BadMessage;
+
+                const chunk_streaming_radius = @min(try reader.takeInt(u32, .little), server.opts.chunk_streaming_radius);
+                const chunk_streaming_height = @min(try reader.takeInt(u32, .little), server.opts.chunk_streaming_height);
+
+                var small_buffer: [64]u8 = undefined;
+                var small_writer = std.Io.Writer.fixed(&small_buffer);
+
+                try ServerMsgId.init.encode(&small_writer);
+                try small_writer.writeInt(u16, @intCast(packet_peer.peer.slot), .little);
+
+                const init_channel = protocol.Channel.control;
+                const init_packet = try znet.Packet.init(small_writer.buffered(), init_channel.toInt(), init_channel.getFlags());
+                try server.net_man.send(packet_peer.peer, init_packet);
+
+                player.state = .normal;
+                player.chunk_streamer = .{ .cursor = .{
+                    .render_radius = (chunk_streaming_radius + Region.len - 1) / Region.len,
+                    .render_height = (chunk_streaming_height + Region.len - 1) / Region.len,
+                } };
+
+                try player.chunk_streamer.init(server.alloc);
+
+                return;
+            }
+
             switch (msg_id) {
+                .init => return error.BadMessage,
                 .update_chunk_cursor => {
                     const region_pos = try reader.takeStruct(Chunk.PackedPos, .little);
                     if (@reduce(.And, region_pos.vec() == player.chunk_streamer.cursor.pos.vec())) return;

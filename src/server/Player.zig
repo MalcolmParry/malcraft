@@ -6,10 +6,17 @@ const Player = @This();
 
 pub const Set = GenerationalSparseSet(Player);
 pub const Ref = Set.Ref;
+pub const State = enum {
+    pre_init,
+    normal,
+};
 
+state: State,
 peer: NetworkManager.PeerRef,
-chunk_streamer: ChunkStreamer = .{},
+chunk_streamer: ChunkStreamer,
 
 pub fn deinit(player: *Player, alloc: std.mem.Allocator) void {
-    player.chunk_streamer.deinit(alloc);
+    if (player.state == .normal) {
+        player.chunk_streamer.deinit(alloc);
+    }
 }

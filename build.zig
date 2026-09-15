@@ -21,6 +21,7 @@ pub fn build(b: *Build) !void {
     client_run.step.dependOn(client_step);
     client_run_step.dependOn(&client_run.step);
     client_run.setCwd(.{ .cwd_relative = b.install_prefix });
+    client_run.addArgs(b.args orelse &.{});
     if (b.option(bool, "renderdoc", "enable render doc capture") orelse false)
         client_run.setEnvironmentVariable("ENABLE_VULKAN_RENDERDOC_CAPTURE", "1");
 

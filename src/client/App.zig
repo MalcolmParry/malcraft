@@ -1,5 +1,4 @@
 const std = @import("std");
-const options = @import("options");
 const mw = @import("mwengine");
 const math = mw.math;
 const znet = @import("znet");
@@ -31,7 +30,7 @@ renderer: Renderer,
 
 last_frame_start: std.Io.Timestamp,
 camera: Camera = .default,
-chunk_cursor: Chunk.Cursor = .{},
+chunk_cursor: Chunk.Cursor,
 mouse_lock: bool = true,
 generate_chunks: bool = true,
 last_cursor: math.Vec2,
@@ -39,7 +38,14 @@ last_cursor: math.Vec2,
 world: World,
 chunk_mesher: ChunkMesher,
 
-pub fn init(app: *App, alloc: std.mem.Allocator, io: std.Io) !void {
+pub const Options = struct {
+    render_radius: u32,
+    render_height: u32,
+    ip: [:0]const u8,
+    port: u16,
+};
+
+pub fn init(app: *App, alloc: std.mem.Allocator, io: std.Io, opts: Options) !void {
     try znet.init();
     errdefer znet.deinit();
 
@@ -58,6 +64,10 @@ pub fn init(app: *App, alloc: std.mem.Allocator, io: std.Io) !void {
 
         .last_frame_start = .now(io, .awake),
         .last_cursor = window.getCursorPos(),
+        .chunk_cursor = .{
+            .render_radius = opts.render_radius,
+            .render_height = opts.render_height,
+        },
 
         .world = .{},
         .chunk_mesher = undefined,
@@ -79,8 +89,8 @@ pub fn init(app: *App, alloc: std.mem.Allocator, io: std.Io) !void {
     try app.net_man.pushCommand(.{ .connect = .{
         .config = .{
             .addr = try .init(.{
-                .ip = .{ .ipv4 = "localhost" },
-                .port = .{ .uint = 5000 },
+                .ip = .{ .ipv4 = opts.ip },
+                .port = .{ .uint = opts.port },
             }),
             .channel_limit = .{ .count = std.enums.values(protocol.Channel).len },
             .data = 0,
@@ -89,6 +99,18 @@ pub fn init(app: *App, alloc: std.mem.Allocator, io: std.Io) !void {
         .semaphore = &semaphore,
     } });
     semaphore.waitUncancelable(io);
+
+    {
+        var buffer: [64]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buffer);
+        try writer.writeInt(u8, @intFromEnum(protocol.ClientMsgId.init), .little);
+        try writer.writeInt(u32, opts.render_radius, .little);
+        try writer.writeInt(u32, opts.render_height, .little);
+
+        const channel: protocol.Channel = .control;
+        const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
+        try app.net_man.send(app.server.ref, packet);
+    }
 
     try app.renderer.init(.{
         .alloc = alloc,

@@ -43,6 +43,9 @@ pub const ServerMsgId = enum(u8) {
 /// every message starts with:
 ///     id: u8,
 pub const ClientMsgId = enum(u8) {
+    /// chunk_streaming_radius: u32,
+    /// chunk_streaming_height: u32,
+    init,
     /// region_pos: region.PackedPos,
     update_chunk_cursor,
 
