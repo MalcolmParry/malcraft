@@ -21,8 +21,10 @@ const zstd = @cImport({
 
 alloc: std.mem.Allocator,
 io: std.Io,
+opts: Options,
 net_man: NetworkManager,
 server: NetworkManager.PeerData,
+connected: bool = false,
 
 should_close: bool = false,
 window: *mw.Window,
@@ -56,6 +58,7 @@ pub fn init(app: *App, alloc: std.mem.Allocator, io: std.Io, opts: Options) !voi
     app.* = .{
         .alloc = alloc,
         .io = io,
+        .opts = opts,
         .net_man = undefined,
         .server = undefined,
 
@@ -99,18 +102,6 @@ pub fn init(app: *App, alloc: std.mem.Allocator, io: std.Io, opts: Options) !voi
         .semaphore = &semaphore,
     } });
     semaphore.waitUncancelable(io);
-
-    {
-        var buffer: [64]u8 = undefined;
-        var writer: std.Io.Writer = .fixed(&buffer);
-        try writer.writeInt(u8, @intFromEnum(protocol.ClientMsgId.init), .little);
-        try writer.writeInt(u32, opts.render_radius, .little);
-        try writer.writeInt(u32, opts.render_height, .little);
-
-        const channel: protocol.Channel = .control;
-        const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
-        try app.net_man.send(app.server.ref, packet);
-    }
 
     try app.renderer.init(.{
         .alloc = alloc,
@@ -179,6 +170,7 @@ pub fn tick(app: *App) !void {
 }
 
 fn maybeUpdateChunkCursor(app: *App, alloc: std.mem.Allocator, region_pos: Region.Pos) !void {
+    if (!app.connected) return;
     if (@reduce(.And, app.chunk_cursor.pos.vec() == region_pos)) return;
 
     var buffer: [128]u8 = undefined;
@@ -347,8 +339,19 @@ fn handleNetworkEvent(app: *App, any_event: NetworkManager.Event) !void {
         .connect => |peer| {
             std.log.info("connected to server at {f}", .{peer.address});
 
+            var buffer: [64]u8 = undefined;
+            var writer: std.Io.Writer = .fixed(&buffer);
+            try writer.writeInt(u8, @intFromEnum(protocol.ClientMsgId.init), .little);
+            try writer.writeInt(u32, app.opts.render_radius, .little);
+            try writer.writeInt(u32, app.opts.render_height, .little);
+
+            const channel: protocol.Channel = .control;
+            const packet = try znet.Packet.init(writer.buffered(), channel.toInt(), channel.getFlags());
+            try app.net_man.send(app.server.ref, packet);
+
             const region_pos = @divFloor(@as(Chunk.Pos, @intFromFloat(app.camera.pos)), Chunk.size * Region.size);
             try app.maybeUpdateChunkCursor(alloc, region_pos);
+            app.connected = true;
         },
         .disconnect => {
             std.log.info("disconnected from server at {f}", .{app.server.address});
