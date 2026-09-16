@@ -65,8 +65,8 @@ pub fn init(app: *App, alloc: std.mem.Allocator, io: std.Io, opts: Options) !voi
         .last_frame_start = .now(io, .awake),
         .last_cursor = window.getCursorPos(),
         .chunk_cursor = .{
-            .render_radius = opts.render_radius,
-            .render_height = opts.render_height,
+            .render_radius = (opts.render_radius + Region.len - 1) / Region.len,
+            .render_height = (opts.render_height + Region.len - 1) / Region.len,
         },
 
         .world = .{},
@@ -375,6 +375,11 @@ fn handleNetworkEvent(app: *App, any_event: NetworkManager.Event) !void {
 
                     for (0..count) |_| {
                         const pos = try reader.takeStruct(Chunk.PackedPos, .little);
+                        if (!app.chunk_cursor.chunkInRange(pos.vec())) {
+                            try reader.discardAll(1);
+                            continue;
+                        }
+
                         const kind_i = try reader.takeInt(u8, .little);
                         const kind = std.enums.fromInt(block.Kind, kind_i) orelse return error.BadMessage;
 

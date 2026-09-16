@@ -77,13 +77,8 @@ fn buildClient(b: *Build, target: std.Build.ResolvedTarget, optimize: std.builti
     client.root_module.linkLibrary(zstd.artifact("zstd"));
     client.root_module.addIncludePath(zstd.path("lib/"));
 
-    const default_render_radius: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 64 else 3;
-    const default_render_height: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 16 else 8;
-
     const options = b.addOptions();
     options.addOption(bool, "gpu_validation", b.option(bool, "gpu-validation", "") orelse (optimize != .ReleaseFast));
-    options.addOption(u32, "render_radius", default_render_radius);
-    options.addOption(u32, "render_height", default_render_height);
     options.addOption(bool, "render_borders_with_nonexistant_chunks", b.option(bool, "borders", "Should render borders with nonexistant chunks (kind of broken now)") orelse true);
     client.root_module.addOptions("options", options);
 
@@ -147,14 +142,6 @@ fn buildServer(b: *Build, target: std.Build.ResolvedTarget, optimize: std.builti
     });
     server.root_module.addImport("znoise", znoise.module("root"));
     server.root_module.linkLibrary(znoise.artifact("FastNoiseLite"));
-
-    const default_render_radius: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 64 else 3;
-    const default_render_height: u32 = if (optimize == .ReleaseFast or optimize == .ReleaseSafe) 16 else 8;
-
-    const options = b.addOptions();
-    options.addOption(u32, "render_radius", default_render_radius);
-    options.addOption(u32, "render_height", default_render_height);
-    server.root_module.addOptions("options", options);
 
     const exe_install = b.addInstallArtifact(server, .{});
     try step_list.append(b.allocator, &exe_install.step);
