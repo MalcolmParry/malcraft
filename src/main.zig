@@ -36,7 +36,10 @@ pub fn main(init: std.process.Init) !void {
 
                 const val: desc.t = val: switch (@typeInfo(desc.t)) {
                     .int => if (maybe_str_val) |str_val|
-                        try std.fmt.parseInt(desc.t, str_val, 10)
+                        std.fmt.parseInt(desc.t, str_val, 10) catch {
+                            std.log.err("bad int value: '{s}'", .{str_val});
+                            std.process.exit(1);
+                        }
                     else
                         argRequiresValue(arg),
                     .bool => if (maybe_str_val) |str_val| {

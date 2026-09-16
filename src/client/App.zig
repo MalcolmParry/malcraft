@@ -276,7 +276,7 @@ fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData
         const ray_cast = app.world.rayCast(origin, dir);
         const pos: block.Pos = switch (ray_cast) {
             .no_hit => break :blk,
-            .inside => @intFromFloat(@floor(origin)),
+            .inside => @floor(origin),
             .hit => |x| x.pos,
         };
 
@@ -369,7 +369,7 @@ fn handleNetworkEvent(app: *App, any_event: NetworkManager.Event) !void {
                     std.log.info("player_id: {}", .{player_id});
                 },
                 .uniform_chunk_batch => {
-                    const start: std.Io.Timestamp = .now(io, .awake);
+                    const start: std.Io.Timestamp = if (app.opts.log_chunk_packets) .now(io, .awake) else undefined;
                     const count = try reader.takeInt(u16, .little);
 
                     defer if (app.opts.log_chunk_packets)
