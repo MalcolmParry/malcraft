@@ -5,10 +5,16 @@ pub fn build(b: *Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseFast });
 
+    const shaders_step = b.step("shaders", "build the shaders");
+    var shaders_dep_steps: std.ArrayList(*Build.Step) = .empty;
+    try buildShaders(b, &shaders_dep_steps);
+    for (shaders_dep_steps.items) |step| shaders_step.dependOn(step);
+
     const client_step = b.step("client", "build the client");
     var client_dep_steps: std.ArrayList(*Build.Step) = .empty;
     const client = try buildClient(b, target, optimize, &client_dep_steps);
     for (client_dep_steps.items) |step| client_step.dependOn(step);
+    client.step.dependOn(shaders_step);
     b.getInstallStep().dependOn(client_step);
 
     const server_step = b.step("server", "build the server");
@@ -54,18 +60,9 @@ fn buildClient(b: *Build, target: std.Build.ResolvedTarget, optimize: std.builti
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{
-                    .name = "mwengine",
-                    .module = mwengine.module("mwengine"),
-                },
-                .{
-                    .name = "znet",
-                    .module = znet.module("znet"),
-                },
-                .{
-                    .name = "zigimg",
-                    .module = zigimg.module("zigimg"),
-                },
+                .{ .name = "mwengine", .module = mwengine.module("mwengine") },
+                .{ .name = "znet", .module = znet.module("znet") },
+                .{ .name = "zigimg", .module = zigimg.module("zigimg") },
             },
         }),
     });
@@ -89,7 +86,6 @@ fn buildClient(b: *Build, target: std.Build.ResolvedTarget, optimize: std.builti
         .install_subdir = "res",
     });
 
-    try buildShaders(b, step_list);
     try step_list.append(b.allocator, &exe_install.step);
     try step_list.append(b.allocator, &res_install.step);
 

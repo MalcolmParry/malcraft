@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const mw = @import("mwengine");
 const math = mw.math;
 const znet = @import("znet");
@@ -13,6 +14,7 @@ const Region = @import("../common/Region.zig");
 const World = @import("../common/World.zig");
 const ChunkMesher = @import("ChunkMesher.zig");
 const Aabb = @import("../utils/Aabb.zig");
+const Options = @import("../main.zig").Options;
 const App = @This();
 
 const zstd = @cImport({
@@ -39,13 +41,6 @@ last_cursor: math.Vec2,
 
 world: World,
 chunk_mesher: ChunkMesher,
-
-pub const Options = struct {
-    render_radius: u32,
-    render_height: u32,
-    ip: [:0]const u8,
-    port: u16,
-};
 
 pub fn init(app: *App, alloc: std.mem.Allocator, io: std.Io, opts: Options) !void {
     try znet.init();
@@ -88,11 +83,14 @@ pub fn init(app: *App, alloc: std.mem.Allocator, io: std.Io, opts: Options) !voi
     });
     errdefer app.net_man.deinit();
 
+    const nt_ip = try alloc.dupeZ(u8, opts.ip);
+    defer alloc.free(nt_ip);
+
     var semaphore: std.Io.Semaphore = .{};
     try app.net_man.pushCommand(.{ .connect = .{
         .config = .{
             .addr = try .init(.{
-                .ip = .{ .ipv4 = opts.ip },
+                .ip = .{ .ipv4 = nt_ip },
                 .port = .{ .uint = opts.port },
             }),
             .channel_limit = .{ .count = std.enums.values(protocol.Channel).len },
@@ -120,10 +118,11 @@ pub fn init(app: *App, alloc: std.mem.Allocator, io: std.Io, opts: Options) !voi
 }
 
 pub fn deinit(app: *App) void {
+    std.debug.print("\n", .{});
+    std.log.info("--// SHUTTING DOWN \\\\--", .{});
+
     const alloc = app.alloc;
-    // std.log.info("hic", .{});
     app.renderer.deinit(alloc);
-    // std.log.info("an hic?", .{});
     app.window.deinit();
 
     app.chunk_mesher.deinit();
@@ -253,7 +252,7 @@ fn handleInput(app: *App, alloc: std.mem.Allocator, dt: f32) !Renderer.FrameData
                     const ray_cast = app.world.rayCast(origin, dir);
                     const pos: block.Pos = switch (ray_cast) {
                         .no_hit => break :blk,
-                        .inside => @intFromFloat(@floor(origin)),
+                        .inside => @floor(origin),
                         .hit => |x| x.pos + x.face.dir(),
                     };
 
@@ -372,7 +371,9 @@ fn handleNetworkEvent(app: *App, any_event: NetworkManager.Event) !void {
                 .uniform_chunk_batch => {
                     const start: std.Io.Timestamp = .now(io, .awake);
                     const count = try reader.takeInt(u16, .little);
-                    defer std.log.info("processed packet: {d: >4} uniform chunks: {d: >4}μs", .{ count, start.untilNow(io, .awake).toMicroseconds() });
+
+                    defer if (app.opts.log_chunk_packets)
+                        std.log.info("processed packet: {d: >4} uniform chunks: {d: >4}μs", .{ count, start.untilNow(io, .awake).toMicroseconds() });
 
                     try app.chunk_mesher.queue.ensureUnusedCapacity(alloc, count * 2);
 
@@ -434,7 +435,8 @@ fn handleNetworkEvent(app: *App, any_event: NetworkManager.Event) !void {
                         try app.chunk_mesher.addRequestWithFullCollateral(pos.vec());
                     }
 
-                    std.log.info("processed packet: {d: >3} compressed chunks: {Bi:.2}", .{ count, event.packet.dataSlice().len });
+                    if (app.opts.log_chunk_packets)
+                        std.log.info("processed packet: {d: >3} compressed chunks: {Bi:.2}", .{ count, event.packet.dataSlice().len });
                 },
             }
         },
