@@ -100,7 +100,8 @@ pub fn deinit(this: *ChunkMesher) void {
         std.log.info("mean mesh time {} ns", .{mesh_time_ns.load(.monotonic) / mesh_normal_path_count.load(.monotonic)});
         std.log.info("mean get opaque time {} ns", .{get_opaque_ns.load(.monotonic) / mesh_normal_path_count.load(.monotonic)});
         std.log.info("mean edge detect time {} ns", .{edge_detect_ns.load(.monotonic) / mesh_normal_path_count.load(.monotonic)});
-        std.log.info("mean mesh remaining time {} ns", .{mesh_remaining_time_ns.load(.monotonic) / mesh_normal_path_count.load(.monotonic)});
+        std.log.info("map build time {} ns", .{map_build_ns.load(.monotonic) / mesh_normal_path_count.load(.monotonic)});
+        std.log.info("greedy mesh time {} ns", .{greedy_mesh_ns.load(.monotonic) / mesh_normal_path_count.load(.monotonic)});
     }
 
     this.thread_info.shutdown();
@@ -359,7 +360,8 @@ var mesh_time_ns: std.atomic.Value(u64) = .init(0);
 var mesh_normal_path_count: std.atomic.Value(u64) = .init(0);
 var get_opaque_ns: std.atomic.Value(u64) = .init(0);
 var edge_detect_ns: std.atomic.Value(u64) = .init(0);
-var mesh_remaining_time_ns: std.atomic.Value(u64) = .init(0);
+var map_build_ns: std.atomic.Value(u64) = .init(0);
+var greedy_mesh_ns: std.atomic.Value(u64) = .init(0);
 
 // meshing algorithm from
 // https://youtu.be/qnGoGq7DWMc
@@ -498,37 +500,53 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) v
     var masks: [6]MaskCube = undefined;
     for (0..3) |axis| {
         for (0..Chunk.len) |z| {
-            for (0..Chunk.len) |x| {
-                const col = cols[axis][z + 1][x + 1];
-                masks[axis * 2 + 0][z][x] = @truncate((col & ~(col >> 1)) >> 1);
-                masks[axis * 2 + 1][z][x] = @truncate((col & ~(col << 1)) >> 1);
+            const vec_size = std.simd.suggestVectorLength(u64) orelse 0;
+            const Vec = @Vector(vec_size, u64);
+            const Vec32 = @Vector(vec_size, u32);
+            const vecs_in_plane = if (vec_size != 0) 32 / vec_size else 0;
+
+            for (0..vecs_in_plane) |i| {
+                const plane: Vec = cols[axis][z + 1][1 + i * vec_size ..][0..vec_size].*;
+                const one: Vec = @splat(1);
+                masks[axis * 2 + 0][z][i * vec_size ..][0..vec_size].* = @as(Vec32, @truncate((plane & ~(plane >> one)) >> one));
+                masks[axis * 2 + 1][z][i * vec_size ..][0..vec_size].* = @as(Vec32, @truncate((plane & ~(plane << one)) >> one));
+            }
+
+            if (vec_size == 0 or 32 % vec_size != 0) {
+                for (vecs_in_plane * vec_size..32) |x| {
+                    const col = cols[axis][z + 1][x + 1];
+                    masks[axis * 2 + 0][z][x] = @truncate((col & ~(col >> 1)) >> 1);
+                    masks[axis * 2 + 1][z][x] = @truncate((col & ~(col << 1)) >> 1);
+                }
             }
         }
     }
 
     _ = edge_detect_ns.fetchAdd(@intCast(start.untilNow(io, .awake).toNanoseconds()), .monotonic);
     start = .now(io, .awake);
-    defer _ = mesh_remaining_time_ns.fetchAdd(@intCast(start.untilNow(io, .awake).toNanoseconds()), .monotonic);
 
     inline for (0..6) |face_int| {
         const face: block.Face = @enumFromInt(face_int);
+        var last_quad_data: ?QuadData = null;
+        var last_map: *MaskCube = undefined;
 
-        for (0..Chunk.len) |z| {
-            for (0..Chunk.len) |x| {
+        for (0..Chunk.len) |uz| {
+            const z: u5 = @intCast(uz);
+            for (0..Chunk.len) |ux| {
+                const x: u5 = @intCast(ux);
                 var col = masks[face_int][z][x];
 
                 while (col != 0) {
-                    const y = @ctz(col);
+                    const y: u5 = @intCast(@ctz(col));
                     col &= col - 1;
 
-                    const pos_usize: @Vector(3, usize) = switch (face) {
+                    const pos: Chunk.RelPos = switch (face) {
                         .north, .south => .{ y, z, x },
                         .east, .west => .{ x, y, z },
                         .up, .down => .{ x, z, y },
                     };
-                    const pos: Chunk.RelPos = @intCast(pos_usize);
 
-                    const ao_sample_dirs: [8]@Vector(2, i32) = .{
+                    const ao_sample_dirs: [8][2]i8 = .{
                         .{ -1, -1 },
                         .{ 1, -1 },
                         .{ -1, 1 },
@@ -583,15 +601,27 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) v
                         .flip = shouldFlip(ao),
                     };
 
-                    const res = state.maps[face_int].getOrPut(alloc, quad_data) catch @panic("");
-                    if (!res.found_existing) res.value_ptr.* = @splat(@splat(0));
-                    res.value_ptr.*[y][x] |= @as(Mask, 1) << @intCast(z);
+                    const map = if (std.meta.eql(last_quad_data, quad_data))
+                        last_map
+                    else blk: {
+                        const res = state.maps[face_int].getOrPut(alloc, quad_data) catch @panic("oom");
+                        if (!res.found_existing) res.value_ptr.* = @splat(@splat(0));
+                        last_quad_data = quad_data;
+                        last_map = res.value_ptr;
+                        break :blk res.value_ptr;
+                    };
+
+                    map.*[y][x] |= @as(Mask, 1) << @intCast(z);
                 }
             }
         }
     }
 
-    for (&state.maps, 0..) |*map, face_int| {
+    _ = map_build_ns.fetchAdd(@intCast(start.untilNow(io, .awake).toNanoseconds()), .monotonic);
+    start = .now(io, .awake);
+    defer _ = greedy_mesh_ns.fetchAdd(@intCast(start.untilNow(io, .awake).toNanoseconds()), .monotonic);
+
+    inline for (&state.maps, 0..) |*map, face_int| {
         const face: block.Face = @enumFromInt(face_int);
 
         var iter = map.iterator();
@@ -625,13 +655,13 @@ fn shouldFlip(ao: AoCorners) bool {
     return (bl + tr) > (br + tl);
 }
 
-const QuadData = struct {
+const QuadData = packed struct(u12) {
     ao: AoCorners,
-    flip: bool,
     tex_id: TextureManager.Id,
+    flip: bool,
 };
 
-fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, data: QuadData, face: block.Face, z: u5) void {
+inline fn greedyMeshBinaryPlane(quads: *std.ArrayList(GreedyQuad), plane: MaskPlane, data: QuadData, face: block.Face, z: u5) void {
     var new = plane;
 
     for (0..Chunk.len) |x_usize| {
