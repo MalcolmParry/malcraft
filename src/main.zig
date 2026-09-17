@@ -153,16 +153,13 @@ const args = .{
         .t = u32,
         .default = switch (builtin.mode) {
             .ReleaseFast, .ReleaseSafe => 64,
-            else => 4,
+            else => 16,
         },
     },
     .render_height = .{
         .aliases = .{"rh"},
         .t = u32,
-        .default = switch (builtin.mode) {
-            .ReleaseFast, .ReleaseSafe => 16,
-            else => 8,
-        },
+        .default = 8,
     },
     .ip = .{
         .t = []const u8,

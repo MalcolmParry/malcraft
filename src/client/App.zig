@@ -109,8 +109,8 @@ pub fn init(app: *App, alloc: std.mem.Allocator, io: std.Io, opts: Options) !voi
     errdefer app.renderer.deinit(alloc);
 
     try app.chunk_mesher.init(.{
-        .alloc = alloc,
         .io = io,
+        .alloc = alloc,
         .world = &app.world,
         .mesh_alloc = &app.renderer.chunk_mesh_alloc,
     });
@@ -143,7 +143,8 @@ pub fn tick(app: *App) !void {
     const dt_ns: u64 = @intCast(dt.toNanoseconds());
     const dt_s = @as(f32, @floatFromInt(dt_ns)) / std.time.ns_per_s;
 
-    try app.chunk_mesher.meshMany();
+    const meshing_budget: std.Io.Duration = .fromMilliseconds(4);
+    try app.chunk_mesher.meshMany(std.Io.Timestamp.now(io, .boot).addDuration(meshing_budget));
 
     app.window.update();
     if (app.window.shouldClose()) app.should_close = true;

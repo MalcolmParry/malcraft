@@ -49,61 +49,54 @@ const AoCorners = packed struct(u8) {
     tr: u2,
 };
 
+io: std.Io,
 alloc: std.mem.Allocator,
-arena: std.heap.ArenaAllocator,
 mesh_alloc: *ChunkMeshAllocator,
-thread_info: MeshThreadInfo,
-threads: []std.Thread,
-queue: std.AutoArrayHashMapUnmanaged(Chunk.PackedPos, void),
+queue: std.AutoArrayHashMapUnmanaged(Chunk.PackedPos, void) = .empty,
+world: *const World,
+thread_states: []ThreadState,
 
-meshing_time_ns: u64,
+mesh_batch_count: u64 = 0,
+meshing_time_ns: u64 = 0,
+meshed_chunk_count: u64 = 0,
 
 pub const InitInfo = struct {
-    alloc: std.mem.Allocator,
     io: std.Io,
+    alloc: std.mem.Allocator,
     mesh_alloc: *ChunkMeshAllocator,
     world: *const World,
 };
 
-pub fn init(this: *ChunkMesher, info: InitInfo) !void {
-    this.alloc = info.alloc;
-    this.arena = .init(info.alloc);
-    this.mesh_alloc = info.mesh_alloc;
-    this.meshing_time_ns = 0;
-    this.queue = .empty;
+pub fn init(mesher: *ChunkMesher, info: InitInfo) !void {
+    const alloc = info.alloc;
 
-    const thread_count: u8 = @min(255, @max(1, std.Thread.getCpuCount() catch 1));
-    this.threads = try info.alloc.alloc(std.Thread, thread_count);
-    errdefer info.alloc.free(this.threads);
+    const thread_count = @max(1, std.Thread.getCpuCount() catch 1);
+    const thread_states = try alloc.alloc(ThreadState, thread_count);
+    errdefer alloc.free(thread_states);
 
-    this.thread_info = .{
-        .thread_count = thread_count,
+    for (thread_states) |*state| try state.init(alloc);
+
+    mesher.* = .{
         .io = info.io,
+        .alloc = alloc,
+        .mesh_alloc = info.mesh_alloc,
         .world = info.world,
-        .jobs = &.{},
+        .thread_states = thread_states,
     };
-
-    for (this.threads) |*thread| {
-        thread.* = try .spawn(.{}, worker, .{
-            &this.thread_info,
-        });
-    }
-
-    this.thread_info.waitUntilDone();
 }
 
-pub fn deinit(this: *ChunkMesher) void {
-    std.log.info("total chunk mesh time {} ns", .{this.meshing_time_ns});
-    std.log.info("mesh time per chunk {} ns", .{std.math.divTrunc(u64, this.meshing_time_ns, this.mesh_alloc.loaded_meshes.count()) catch 0});
-    this.thread_info.shutdown();
+pub fn deinit(mesher: *ChunkMesher) void {
+    const alloc = mesher.alloc;
 
-    for (this.threads) |thread| {
-        thread.join();
+    std.log.info("total chunk mesh time {} ns", .{mesher.meshing_time_ns});
+    if (mesher.meshed_chunk_count != 0) {
+        std.log.info("mean mesh time per batch {} ns", .{mesher.meshing_time_ns / mesher.mesh_batch_count});
+        std.log.info("mesh time per chunk {} ns", .{mesher.meshing_time_ns / mesher.meshed_chunk_count});
     }
 
-    this.queue.deinit(this.alloc);
-    this.alloc.free(this.threads);
-    this.arena.deinit();
+    for (mesher.thread_states) |*state| state.deinit(alloc);
+    alloc.free(mesher.thread_states);
+    mesher.queue.deinit(mesher.alloc);
 }
 
 pub fn addRequest(mesher: *ChunkMesher, pos: Chunk.PackedPos) !void {
@@ -117,30 +110,26 @@ pub fn addRequestWithCollateral(mesher: *ChunkMesher, pos: block.Pos) !void {
     const rel = World.chunkRelFromBlockPos(pos);
     try mesher.addRequest(.pack(chunk_pos));
 
-    const zero_mask_vec = rel == @as(Chunk.Pos, @splat(0));
-    const max_mask_vec = rel == @as(Chunk.Pos, @splat(Chunk.len - 1));
+    const zero: Chunk.Pos = @splat(0);
+    var zero_mask: u3 = @bitCast(rel == zero);
+    while (zero_mask != 0) {
+        const axis = @clz(zero_mask);
+        zero_mask &= zero_mask - 1;
 
-    const zero_mask: [3]bool = zero_mask_vec;
-    const max_mask: [3]bool = max_mask_vec;
-
-    if (@reduce(.Or, zero_mask_vec)) {
-        for (0..3) |axis| {
-            if (zero_mask[axis]) {
-                var new: [3]i32 = chunk_pos;
-                new[axis] -= 1;
-                try mesher.addRequest(.pack(new));
-            }
-        }
+        var new: [3]i32 = chunk_pos;
+        new[axis] -= 1;
+        try mesher.addRequest(.pack(new));
     }
 
-    if (@reduce(.Or, max_mask_vec)) {
-        for (0..3) |axis| {
-            if (max_mask[axis]) {
-                var new: [3]i32 = chunk_pos;
-                new[axis] += 1;
-                try mesher.addRequest(.pack(new));
-            }
-        }
+    const max: Chunk.Pos = @splat(Chunk.len - 1);
+    var max_mask: u3 = @bitCast(rel == max);
+    while (max_mask != 0) {
+        const axis = @clz(max_mask);
+        max_mask &= max_mask - 1;
+
+        var new: [3]i32 = chunk_pos;
+        new[axis] += 1;
+        try mesher.addRequest(.pack(new));
     }
 }
 
@@ -154,162 +143,117 @@ pub fn addRequestWithFullCollateral(mesher: *ChunkMesher, pos: Chunk.Pos) !void 
     try mesher.addRequest(.pack(pos + Chunk.Pos{ 0, 0, -1 }));
 }
 
-const target_mesh_time_ns = 4_000_000;
-const max_chunks_meshed = 1024;
-pub fn meshMany(this: *ChunkMesher) !void {
-    const io = this.thread_info.io;
-    const start: std.Io.Timestamp = .now(io, .awake);
-    defer this.meshing_time_ns += @intCast(start.untilNow(io, .awake).toNanoseconds());
+pub fn meshMany(mesher: *ChunkMesher, deadline: std.Io.Timestamp) !void {
+    const io = mesher.io;
 
-    _ = this.arena.reset(.retain_capacity);
-    const arena = this.arena.allocator();
+    const thread_count = mesher.thread_states.len;
+    const jobs = mesher.queue.keys();
+    if (jobs.len == 0) return;
 
-    const job_count = @min(this.queue.count(), max_chunks_meshed);
-    if (job_count == 0) return;
+    const start: std.Io.Timestamp = .now(io, .boot);
+    mesher.mesh_batch_count += 1;
+    defer mesher.meshing_time_ns += @intCast(start.untilNow(io, .boot).toNanoseconds());
 
-    this.thread_info.jobs = try arena.alloc(Job, job_count);
-    var iter = this.queue.iterator();
-    var i: usize = 0;
-    while (iter.next()) |kv| : (i += 1) {
-        if (i >= job_count) break;
+    const jobs_per_thread = jobs.len / thread_count;
+    for (mesher.thread_states, 0..) |*state, i| {
+        const owned_job_count = if (i + 1 == thread_count) jobs.len - (thread_count * jobs_per_thread) else jobs_per_thread;
 
-        this.thread_info.jobs[i] = .{
-            .pos = kv.key_ptr.*,
-        };
+        state.completed.clearRetainingCapacity();
+        state.job_index = .init(0);
+        state.jobs = jobs[i * jobs_per_thread ..][0..owned_job_count];
     }
 
-    this.thread_info.index.store(0, .monotonic);
-    this.thread_info.run();
-    this.thread_info.waitUntilDone();
-    const completed = this.thread_info.completed.load(.monotonic);
-    const completed_jobs = this.thread_info.jobs[0..completed];
+    var group: std.Io.Group = .init;
+    for (0..mesher.thread_states.len) |thread_i| {
+        try group.concurrent(io, worker, .{ mesher, thread_i, deadline });
+    }
+    try group.await(io);
 
-    std.debug.assert(completed <= this.thread_info.jobs.len);
-    try this.mesh_alloc.ensureCapacity(completed);
-    for (completed_jobs) |job| {
-        _ = this.queue.swapRemove(job.pos);
+    for (mesher.thread_states) |state| {
+        try mesher.mesh_alloc.ensureCapacity(state.completed.items.len);
+        mesher.meshed_chunk_count += state.completed.items.len;
 
-        if (job.faces.len == 0) {
-            _ = this.mesh_alloc.loaded_meshes.swapRemove(job.pos);
-            continue;
+        for (state.completed.items) |job| {
+            _ = mesher.queue.swapRemove(job.pos);
+
+            if (job.faces.len == 0) {
+                _ = mesher.mesh_alloc.loaded_meshes.swapRemove(job.pos);
+                continue;
+            }
+
+            try mesher.mesh_alloc.writeChunkAssumeCapacity(job.faces, job.pos);
         }
-
-        try this.mesh_alloc.writeChunkAssumeCapacity(
-            job.faces,
-            job.pos,
-        );
     }
 }
 
-const Job = struct {
+const CompletedJob = struct {
     pos: Chunk.PackedPos,
-    // result
-    faces: []GreedyQuad = &.{},
+    faces: []GreedyQuad,
 };
 
-const MeshThreadInfo = struct {
-    const cl = std.atomic.cache_line;
-
-    phase: std.atomic.Value(u32) align(cl) = .init(0),
-    done: std.atomic.Value(u32) align(cl) = .init(0),
-    stop: std.atomic.Value(bool) = .init(false),
-
-    index: std.atomic.Value(u32) align(cl) = .init(0),
-    completed: std.atomic.Value(u32) align(cl) = .init(0),
-    thread_count: u32 align(cl),
-    io: std.Io,
-    world: *const World,
-    jobs: []Job,
-
-    fn waitUntilDone(this: *MeshThreadInfo) void {
-        while (true) {
-            const cur = this.done.load(.acquire);
-            if (cur >= this.thread_count) break;
-            this.io.futexWaitUncancelable(u32, &this.done.raw, cur);
-        }
-    }
-
-    fn run(this: *MeshThreadInfo) void {
-        this.done.store(0, .monotonic);
-        this.completed.store(0, .monotonic);
-        _ = this.phase.fetchAdd(1, .release);
-        this.io.futexWake(u32, &this.phase.raw, this.thread_count);
-    }
-
-    fn shutdown(this: *MeshThreadInfo) void {
-        this.stop.store(true, .monotonic);
-        this.io.futexWake(u32, &this.phase.raw, this.thread_count);
-    }
-};
-
-const MeshingState = struct {
+const ThreadState = struct {
+    _: void align(std.atomic.cache_line) = {},
+    arena: std.heap.ArenaAllocator,
     quads: std.ArrayList(GreedyQuad),
     maps: [6]std.AutoArrayHashMapUnmanaged(QuadData, MaskCube),
 
-    fn init(state: *MeshingState, alloc: std.mem.Allocator) !void {
+    job_index: std.atomic.Value(u64),
+    jobs: []Chunk.PackedPos,
+    completed: std.ArrayList(CompletedJob),
+
+    fn init(state: *ThreadState, alloc: std.mem.Allocator) !void {
+        state.arena = .init(alloc);
         state.quads = try .initCapacity(alloc, max_faces);
         for (&state.maps) |*map| map.* = .empty;
+        state.completed = .empty;
     }
 
-    fn deinit(state: *MeshingState, alloc: std.mem.Allocator) void {
+    fn deinit(state: *ThreadState, alloc: std.mem.Allocator) void {
+        state.arena.deinit();
         state.quads.deinit(alloc);
         for (&state.maps) |*map| map.deinit(alloc);
+        state.completed.deinit(alloc);
     }
 };
 
-fn worker(info: *MeshThreadInfo) void {
-    const mesher: *ChunkMesher = @fieldParentPtr("thread_info", info);
+fn worker(mesher: *ChunkMesher, thread_i: usize, deadline: std.Io.Timestamp) void {
+    const io = mesher.io;
     const alloc = mesher.alloc;
-    const io = info.io;
+    const state = &mesher.thread_states[thread_i];
 
-    var arena_obj: std.heap.ArenaAllocator = .init(alloc);
-    defer arena_obj.deinit();
-    const arena = arena_obj.allocator();
+    const arena = state.arena.allocator();
+    _ = state.arena.reset(.retain_capacity);
 
-    var state: MeshingState = undefined;
-    state.init(alloc) catch @panic("");
-    defer state.deinit(alloc);
+    var queue_index = thread_i;
+    while (true) top: {
+        if (deadline.untilNow(io, .boot).toNanoseconds() > 0) break;
 
-    var seen_phase = info.phase.load(.acquire);
-    while (true) {
-        _ = info.done.fetchAdd(1, .release);
-        io.futexWake(u32, &info.done.raw, 1);
+        const pos = job: while (true) {
+            const queue = &mesher.thread_states[queue_index];
+            const i = queue.job_index.fetchAdd(1, .monotonic);
 
-        while (true) {
-            if (info.stop.load(.monotonic)) return;
-
-            const cur = info.phase.load(.acquire);
-            if (cur != seen_phase) {
-                seen_phase = cur;
-                break;
+            if (i >= queue.jobs.len) {
+                queue_index = (queue_index + 1) % mesher.thread_states.len;
+                if (queue_index == thread_i) break :top;
+                continue;
             }
 
-            io.futexWaitUncancelable(u32, &info.phase.raw, seen_phase);
-        }
+            break :job queue.jobs[i];
+        };
 
-        var start: std.Io.Timestamp = .now(io, .awake);
-        var completed: u32 = 0;
-        _ = arena_obj.reset(.retain_capacity);
-        while (true) {
-            if (start.untilNow(io, .awake).toNanoseconds() > target_mesh_time_ns) break;
-            const i = info.index.fetchAdd(1, .monotonic);
-            if (i >= info.jobs.len) break;
-            const job = &info.jobs[i];
+        state.quads.clearRetainingCapacity();
+        for (&state.maps) |*map| map.clearRetainingCapacity();
 
-            state.quads.clearRetainingCapacity();
-            for (&state.maps) |*map| map.clearRetainingCapacity();
+        greedyMeshWithFastExits(alloc, state, mesher.world, pos.vec());
 
-            greedyMeshWithFastExits(alloc, &state, info.world, job.pos.vec());
-
-            job.faces = arena.dupe(GreedyQuad, state.quads.items) catch @panic("");
-            completed += 1;
-        }
-
-        _ = info.completed.fetchAdd(completed, .monotonic);
+        state.completed.append(alloc, .{
+            .pos = pos,
+            .faces = arena.dupe(GreedyQuad, state.quads.items) catch @panic("oom"),
+        }) catch @panic("oom");
     }
 }
 
-fn greedyMeshWithFastExits(alloc: std.mem.Allocator, state: *MeshingState, world: *const World, pos: Chunk.Pos) void {
+fn greedyMeshWithFastExits(alloc: std.mem.Allocator, state: *ThreadState, world: *const World, pos: Chunk.Pos) void {
     const chunk = world.getChunk(pos) orelse return;
     if (chunk.allAirFast()) return;
 
@@ -350,7 +294,7 @@ const MaskCubeP = [chunk_len_p]MaskPlaneP;
 const Mask = u32;
 const MaskPlane = [Chunk.len]Mask;
 const MaskCube = [Chunk.len]MaskPlane;
-fn greedyMesh(alloc: std.mem.Allocator, state: *MeshingState, refs: ChunkRefs) void {
+fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) void {
     std.debug.assert(Chunk.len == 32);
 
     // first index is axis, second is how far along plane normal
