@@ -38,6 +38,12 @@ pub const Kind = enum(u4) {
             else => true,
         };
     }
+
+    pub fn isOpaqueVec(these: anytype) @Vector(@typeInfo(@TypeOf(these)).vector.len, bool) {
+        const T = @TypeOf(these);
+        const not_air = these != @as(T, @splat(@intFromEnum(Kind.air)));
+        return not_air;
+    }
 };
 
 pub const Face = enum(u3) {
