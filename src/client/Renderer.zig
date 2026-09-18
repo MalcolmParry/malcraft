@@ -291,9 +291,10 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
         .dt_ns = data.dt_ns,
         .show_crosshair = data.show_crosshair,
         .camera = data.camera,
-        .chunk_mesh_buffer_bytes_used = ChunkMeshAllocator.buffer_size - this.chunk_mesh_alloc.queryBytesFree(),
-        .chunk_mesh_buffer_bytes_total = ChunkMeshAllocator.buffer_size,
-        .chunk_mesh_buffer_largest_free_block = this.chunk_mesh_alloc.queryLargestFreeBlock(),
+        .chunk_mesh_buffer_bytes_used = this.chunk_mesh_alloc.free_list_alloc.queryUsed(),
+        .chunk_mesh_buffer_bytes_total = this.chunk_mesh_alloc.free_list_alloc.queryTotalUsed(),
+        .chunk_mesh_buffer_bytes_wasted = this.chunk_mesh_alloc.free_list_alloc.queryWasted(),
+        .chunk_mesh_buffer_slabs_used = this.chunk_mesh_alloc.free_list_alloc.querySlabsUsed(),
         .loaded_mesh_count = this.chunk_mesh_alloc.loaded_meshes.count(),
         .overwritten_meshes = this.chunk_mesh_alloc.overwritten_meshes,
         .generating_chunks = data.generating_chunks,
@@ -355,9 +356,11 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
 }
 
 fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constants: PerFramePushConstants, aspect_ratio: f32, camera: Camera) void {
+    if (this.chunk_mesh_alloc.loaded_meshes.count() == 0) return;
+
     render_pass.cmdBindPipeline(this.chunk_pipeline);
     render_pass.cmdBindResourceSets(this.chunk_pipeline, &.{this.chunk_resource_set}, 0);
-    render_pass.cmdBindVertexBuffer(0, this.chunk_mesh_alloc.buffer.region());
+    render_pass.cmdBindVertexBuffer(0, this.chunk_mesh_alloc.free_list_alloc.super_descs.items[0].buffer.region());
     render_pass.cmdPushConstants(this.chunk_pipeline, .{
         .stages = .{ .vertex = true },
         .offset = 0,

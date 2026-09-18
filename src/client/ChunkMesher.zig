@@ -88,7 +88,7 @@ pub fn init(mesher: *ChunkMesher, info: InitInfo) !void {
 pub fn deinit(mesher: *ChunkMesher) void {
     const alloc = mesher.alloc;
 
-    std.log.info("total chunk mesh time {} ns", .{mesher.meshing_time_ns});
+    std.log.info("total chunk mesh time {} ns in {} batches", .{ mesher.meshing_time_ns, mesher.mesh_batch_count });
     if (mesher.meshed_chunk_count != 0) {
         std.log.info("mean mesh time per batch {} ns", .{mesher.meshing_time_ns / mesher.mesh_batch_count});
         std.log.info("mesh time per chunk {} ns", .{mesher.meshing_time_ns / mesher.meshed_chunk_count});
@@ -113,7 +113,7 @@ pub fn addRequestWithCollateral(mesher: *ChunkMesher, pos: block.Pos) !void {
     const zero: Chunk.Pos = @splat(0);
     var zero_mask: u3 = @bitCast(rel == zero);
     while (zero_mask != 0) {
-        const axis = @clz(zero_mask);
+        const axis = @ctz(zero_mask);
         zero_mask &= zero_mask - 1;
 
         var new: [3]i32 = chunk_pos;
@@ -124,7 +124,7 @@ pub fn addRequestWithCollateral(mesher: *ChunkMesher, pos: block.Pos) !void {
     const max: Chunk.Pos = @splat(Chunk.len - 1);
     var max_mask: u3 = @bitCast(rel == max);
     while (max_mask != 0) {
-        const axis = @clz(max_mask);
+        const axis = @ctz(max_mask);
         max_mask &= max_mask - 1;
 
         var new: [3]i32 = chunk_pos;

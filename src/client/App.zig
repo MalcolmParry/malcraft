@@ -60,7 +60,7 @@ pub fn init(app: *App, alloc: std.mem.Allocator, io: std.Io, opts: Options) !voi
         .window = window,
         .renderer = undefined,
 
-        .last_frame_start = .now(io, .awake),
+        .last_frame_start = .now(io, .boot),
         .last_cursor = window.getCursorPos(),
         .chunk_cursor = .{
             .render_radius = (opts.render_radius + Region.len - 1) / Region.len,
@@ -136,7 +136,7 @@ pub fn tick(app: *App) !void {
     const alloc = app.alloc;
     const io = app.io;
 
-    const now: std.Io.Timestamp = .now(io, .awake);
+    const now: std.Io.Timestamp = .now(io, .boot);
     const dt = app.last_frame_start.durationTo(now);
     app.last_frame_start = now;
 

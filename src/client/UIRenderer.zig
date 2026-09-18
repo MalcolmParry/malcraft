@@ -106,7 +106,8 @@ pub const RenderInfo = struct {
     dt_ns: u64,
     chunk_mesh_buffer_bytes_used: usize,
     chunk_mesh_buffer_bytes_total: usize,
-    chunk_mesh_buffer_largest_free_block: usize,
+    chunk_mesh_buffer_bytes_wasted: usize,
+    chunk_mesh_buffer_slabs_used: usize,
     loaded_mesh_count: usize,
     overwritten_meshes: u64,
     generating_chunks: bool,
@@ -210,7 +211,8 @@ pub fn render(ui: *UIRenderer, info: RenderInfo) !void {
             \\Yaw:   {d: >6.2}
             \\Pitch: {d: >6.2}
             \\
-            \\Mesh Buffer: {Bi:.2} / {Bi:.2} (Largest free block {Bi:.2})
+            \\Mesh Buffer: {Bi:.2} / {Bi:.2}
+            \\Bytes wasted {Bi:.2}, Fragmentation {d: >3.0}%, Slabs used {d}
             \\Meshed Chunks: {}
             \\Overwritten Meshes: {}
             \\Generating Chunks: {}
@@ -226,7 +228,9 @@ pub fn render(ui: *UIRenderer, info: RenderInfo) !void {
             math.deg(cam_euler[1]),
             info.chunk_mesh_buffer_bytes_used,
             info.chunk_mesh_buffer_bytes_total,
-            info.chunk_mesh_buffer_largest_free_block,
+            info.chunk_mesh_buffer_bytes_wasted,
+            if (info.chunk_mesh_buffer_bytes_used != 0) @as(f64, @floatFromInt(info.chunk_mesh_buffer_bytes_wasted)) / @as(f64, @floatFromInt(info.chunk_mesh_buffer_bytes_used)) * 100 else 0,
+            info.chunk_mesh_buffer_slabs_used,
             info.loaded_mesh_count,
             info.overwritten_meshes,
             info.generating_chunks,
