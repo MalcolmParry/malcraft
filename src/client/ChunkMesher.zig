@@ -177,7 +177,9 @@ pub fn meshMany(mesher: *ChunkMesher, deadline: std.Io.Timestamp) !void {
             _ = mesher.queue.swapRemove(job.pos);
 
             if (job.faces.len == 0) {
-                _ = mesher.mesh_alloc.loaded_meshes.swapRemove(job.pos);
+                if (mesher.mesh_alloc.loaded_meshes.fetchSwapRemove(job.pos)) |kv|
+                    try mesher.mesh_alloc.queueFree(kv.value);
+
                 continue;
             }
 
