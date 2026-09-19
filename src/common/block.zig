@@ -34,15 +34,16 @@ pub const Kind = enum(u4) {
 
     pub fn isOpaque(this: Kind) bool {
         return switch (this) {
-            .air => false,
+            .air, .water => false,
             else => true,
         };
     }
 
     pub fn isOpaqueVec(these: anytype) @Vector(@typeInfo(@TypeOf(these)).vector.len, bool) {
         const T = @TypeOf(these);
-        const not_air = these != @as(T, @splat(@intFromEnum(Kind.air)));
-        return not_air;
+        const is_air = these == @as(T, @splat(@intFromEnum(Kind.air)));
+        const is_water = these == @as(T, @splat(@intFromEnum(Kind.water)));
+        return !is_air & !is_water;
     }
 };
 

@@ -129,7 +129,7 @@ pub fn rayCast(world: *const World, origin: math.Vec3, dir: math.Vec3) RayCastRe
     var side_dist: [3]f32 = ((step_vec * (pos_f - origin)) + (step_vec * half) + half) * delta_vec;
 
     if (world.getBlock(pos)) |b| {
-        if (b.isOpaque()) return .inside;
+        if (b.isOpaque() or b == .water) return .inside;
     }
 
     const max_iterations = 64;
@@ -148,7 +148,7 @@ pub fn rayCast(world: *const World, origin: math.Vec3, dir: math.Vec3) RayCastRe
         pos[axis] += step[axis];
 
         if (world.getBlock(pos)) |b| {
-            if (b.isOpaque()) {
+            if (b.isOpaque() or b == .water) {
                 const pos_face = block.Face.posDirFromAxis(axis);
                 const face = if (step[axis] > 0) pos_face.opposite() else pos_face;
 

@@ -301,6 +301,7 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
 
     // first index is axis, second is how far along plane normal
     var opaque_cols: [3]MaskCubeP = @splat(@splat(@splat(0)));
+    var water_cols: [3]MaskCubeP = @splat(@splat(@splat(0)));
 
     switch (refs.this.data) {
         .one_to_one => |data| {
@@ -322,24 +323,40 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
                     const v0 = vec & mask;
                     const v1 = vec >> @splat(4);
                     const v: FullVec = std.simd.interlace(.{ v0, v1 });
-                    var col: Mask = @bitCast(@call(.always_inline, block.Kind.isOpaqueVec, .{v}));
-                    opaque_cols[2][py][px] = @as(MaskP, col) << 1;
 
-                    while (col != 0) {
-                        const z = @ctz(col);
-                        col &= col - 1;
+                    var opaque_col: Mask = @bitCast(@call(.always_inline, block.Kind.isOpaqueVec, .{v}));
+                    var water_col: Mask = @bitCast(v == @as(FullVec, @splat(@intFromEnum(block.Kind.water))));
+
+                    opaque_cols[2][py][px] = @as(MaskP, opaque_col) << 1;
+                    while (opaque_col != 0) {
+                        const z = @ctz(opaque_col);
+                        opaque_col &= opaque_col - 1;
                         const pz: u6 = @intCast(z + 1);
 
                         opaque_cols[0][py][pz] |= @as(MaskP, 1) << px;
                         opaque_cols[1][pz][px] |= @as(MaskP, 1) << py;
+                    }
+
+                    water_cols[2][py][px] = @as(MaskP, water_col) << 1;
+                    while (water_col != 0) {
+                        const z = @ctz(water_col);
+                        water_col &= water_col - 1;
+                        const pz: u6 = @intCast(z + 1);
+
+                        water_cols[0][py][pz] |= @as(MaskP, 1) << px;
+                        water_cols[1][pz][px] |= @as(MaskP, 1) << py;
                     }
                 }
             }
         },
         .u2_palette => |data| {
             var opaque_bits: std.StaticBitSet(4) = undefined;
-            for (0..4) |i|
-                opaque_bits.setValue(i, data.palette[i].isOpaque());
+            var water_index: u8 = 255;
+            for (0..4) |i| {
+                const kind = data.palette[i];
+                if (kind == .water) water_index = @intCast(i);
+                opaque_bits.setValue(i, kind.isOpaque());
+            }
 
             const bytes_per_col = Chunk.len / 4;
             const bytes_per_plane = bytes_per_col * Chunk.len;
@@ -361,36 +378,47 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
                     const v3 = vec >> @splat(6);
 
                     const v: FullVec = std.simd.interlace(.{ v0, v1, v2, v3 });
-                    var col: Mask = 0;
+                    var water_col: Mask = @bitCast(v == @as(FullVec, @splat(water_index)));
+                    var opaque_col: Mask = 0;
                     inline for (0..4) |i| {
                         if (opaque_bits.isSet(i)) {
                             const b = v == @as(FullVec, @splat(@intCast(i)));
-                            col |= @bitCast(b);
+                            opaque_col |= @bitCast(b);
                         }
                     }
 
-                    opaque_cols[2][py][px] = @as(MaskP, col) << 1;
-
-                    while (col != 0) {
-                        const z = @ctz(col);
-                        col &= col - 1;
+                    opaque_cols[2][py][px] = @as(MaskP, opaque_col) << 1;
+                    while (opaque_col != 0) {
+                        const z = @ctz(opaque_col);
+                        opaque_col &= opaque_col - 1;
                         const pz: u6 = @intCast(z + 1);
 
                         opaque_cols[0][py][pz] |= @as(MaskP, 1) << px;
                         opaque_cols[1][pz][px] |= @as(MaskP, 1) << py;
                     }
+
+                    water_cols[2][py][px] = @as(MaskP, water_col) << 1;
+                    while (water_col != 0) {
+                        const z = @ctz(water_col);
+                        water_col &= water_col - 1;
+                        const pz: u6 = @intCast(z + 1);
+
+                        water_cols[0][py][pz] |= @as(MaskP, 1) << px;
+                        water_cols[1][pz][px] |= @as(MaskP, 1) << py;
+                    }
                 }
             }
         },
         .uniform => |kind| blk: {
-            if (!kind.isOpaque()) break :blk;
+            if (!kind.isOpaque() and kind != .water) break :blk;
+            const cols = if (kind == .water) &water_cols else &opaque_cols;
             const mask = ((1 << Chunk.len) - 1) << 1;
 
             for (1..Chunk.len + 1) |px| {
                 for (1..Chunk.len + 1) |py| {
-                    opaque_cols[0][px][py] = mask;
-                    opaque_cols[1][px][py] = mask;
-                    opaque_cols[2][px][py] = mask;
+                    cols[0][px][py] = mask;
+                    cols[1][px][py] = mask;
+                    cols[2][px][py] = mask;
                 }
             }
         },
@@ -413,7 +441,10 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
                         .down => .{ u, v, l },
                     };
 
-                    if (!chunk.getBlock(pos).isOpaque()) continue;
+                    const kind = chunk.getBlock(pos);
+                    if (!kind.isOpaque() and kind != .water) continue;
+                    const cols = if (kind == .water) &water_cols else &opaque_cols;
+
                     const px: u6 = switch (face) {
                         .north => Chunk.len + 1,
                         .south => 0,
@@ -434,11 +465,11 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
                     };
 
                     // z,y - x axis
-                    opaque_cols[0][py][pz] |= @as(MaskP, 1) << px;
+                    cols[0][py][pz] |= @as(MaskP, 1) << px;
                     // x,z - y axis
-                    opaque_cols[1][pz][px] |= @as(MaskP, 1) << py;
+                    cols[1][pz][px] |= @as(MaskP, 1) << py;
                     // x,y - z axis
-                    opaque_cols[2][py][px] |= @as(MaskP, 1) << pz;
+                    cols[2][py][px] |= @as(MaskP, 1) << pz;
                 }
             }
         }
@@ -453,16 +484,32 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
             const vecs_in_plane = if (vec_size != 0) Chunk.len / vec_size else 0;
 
             for (0..vecs_in_plane) |i| {
-                const plane: VecP = opaque_cols[axis][z + 1][1 + i * vec_size ..][0..vec_size].*;
+                const opaque_plane: VecP = opaque_cols[axis][z + 1][1 + i * vec_size ..][0..vec_size].*;
+                const water_plane: VecP = water_cols[axis][z + 1][1 + i * vec_size ..][0..vec_size].*;
                 const one: VecP = @splat(1);
-                masks[axis * 2 + 0][z][i * vec_size ..][0..vec_size].* = @as(Vec, @truncate((plane & ~(plane >> one)) >> one));
-                masks[axis * 2 + 1][z][i * vec_size ..][0..vec_size].* = @as(Vec, @truncate((plane & ~(plane << one)) >> one));
+
+                const opaque_pos_edges: Vec = @truncate((opaque_plane & ~(opaque_plane >> one)) >> one);
+                const opaque_neg_edges: Vec = @truncate((opaque_plane & ~(opaque_plane << one)) >> one);
+
+                const water_pos_edges: Vec = @truncate((water_plane & ~((water_plane | opaque_plane) >> one)) >> one);
+                const water_neg_edges: Vec = @truncate((water_plane & ~((water_plane | opaque_plane) << one)) >> one);
+
+                masks[axis * 2 + 0][z][i * vec_size ..][0..vec_size].* = opaque_pos_edges | water_pos_edges;
+                masks[axis * 2 + 1][z][i * vec_size ..][0..vec_size].* = opaque_neg_edges | water_neg_edges;
             }
 
             for (vecs_in_plane * vec_size..Chunk.len) |x| {
-                const col = opaque_cols[axis][z + 1][x + 1];
-                masks[axis * 2 + 0][z][x] = @truncate((col & ~(col >> 1)) >> 1);
-                masks[axis * 2 + 1][z][x] = @truncate((col & ~(col << 1)) >> 1);
+                const opaque_col = opaque_cols[axis][z + 1][x + 1];
+                const water_col = water_cols[axis][z + 1][x + 1];
+
+                const opaque_pos_edges: Mask = @truncate((opaque_col & ~(opaque_col >> 1)) >> 1);
+                const opaque_neg_edges: Mask = @truncate((opaque_col & ~(opaque_col << 1)) >> 1);
+
+                const water_pos_edges: Mask = @truncate((water_col & ~((water_col | opaque_col) >> 1)) >> 1);
+                const water_neg_edges: Mask = @truncate((water_col & ~((water_col | opaque_col) << 1)) >> 1);
+
+                masks[axis * 2 + 0][z][x] = opaque_pos_edges | water_pos_edges;
+                masks[axis * 2 + 1][z][x] = opaque_neg_edges | water_neg_edges;
             }
         }
     }
