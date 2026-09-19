@@ -306,7 +306,7 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
         .one_to_one => |data| {
             const bytes_per_col = Chunk.len / 2;
             const bytes_per_plane = bytes_per_col * Chunk.len;
-            const Vec = @Vector(bytes_per_col, u8);
+            const Vec = Chunk.OneToOne.ColVec;
             const FullVec = @Vector(Chunk.len, u8);
 
             for (0..Chunk.len) |x| {
@@ -314,7 +314,8 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
                 const plane = data.blocks[x * bytes_per_plane ..][0..bytes_per_plane];
                 for (0..Chunk.len) |y| {
                     const py: u6 = @intCast(y + 1);
-                    const vec: Vec = plane[y * bytes_per_col ..][0..bytes_per_col].*;
+                    const col_slice: *align(@alignOf(Vec)) const [bytes_per_col]u8 = @alignCast(plane[y * bytes_per_col ..][0..bytes_per_col]);
+                    const vec: Vec = col_slice.*;
 
                     const mask: Vec = @splat(15);
                     const v0 = vec & mask;
@@ -341,7 +342,7 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
 
             const bytes_per_col = Chunk.len / 4;
             const bytes_per_plane = bytes_per_col * Chunk.len;
-            const Vec = @Vector(bytes_per_col, u8);
+            const Vec = Chunk.U2Palette.ColVec;
             const FullVec = @Vector(Chunk.len, u8);
 
             for (0..Chunk.len) |x| {
@@ -349,7 +350,8 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
                 const plane = data.blocks[x * bytes_per_plane ..][0..bytes_per_plane];
                 for (0..Chunk.len) |y| {
                     const py: u6 = @intCast(y + 1);
-                    const vec: Vec = plane[y * bytes_per_col ..][0..bytes_per_col].*;
+                    const col_slice: *align(@alignOf(Vec)) const [bytes_per_col]u8 = @alignCast(plane[y * bytes_per_col ..][0..bytes_per_col]);
+                    const vec: Vec = col_slice.*;
 
                     const mask: Vec = @splat(3);
                     const v0 = vec & mask;

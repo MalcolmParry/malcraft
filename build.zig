@@ -3,7 +3,7 @@ const Build = std.Build;
 
 pub fn build(b: *Build) !void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseFast });
+    const optimize = b.standardOptimizeOption(.{});
 
     const shaders_step = b.step("shaders", "build the shaders");
     var shaders_dep_steps: std.ArrayList(*Build.Step) = .empty;
