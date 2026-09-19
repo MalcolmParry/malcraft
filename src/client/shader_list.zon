@@ -9,6 +9,16 @@
         .stage = .pixel,
         .entry = "psMain",
     },
+    .water_vertex = .{
+        .src = "src/client/shaders/water.slang",
+        .stage = .vertex,
+        .entry = "vsMain",
+    },
+    .water_pixel = .{
+        .src = "src/client/shaders/water.slang",
+        .stage = .pixel,
+        .entry = "psMain",
+    },
     .immediate_box_vertex = .{
         .src = "deps/mwengine/src/shaders/immediate/box.slang",
         .stage = .vertex,

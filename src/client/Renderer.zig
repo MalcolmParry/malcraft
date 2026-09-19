@@ -34,6 +34,7 @@ chunk_mesh_alloc: ChunkMeshAllocator,
 chunk_resource_layout: gpu.ResourceSet.Layout,
 chunk_resource_set: gpu.ResourceSet,
 chunk_pipeline: gpu.GraphicsPipeline,
+water_pipeline: gpu.GraphicsPipeline,
 
 pub const FrameData = struct {
     pub const Input = struct {
@@ -131,8 +132,8 @@ pub fn init(this: *@This(), info: InitInfo) !void {
     try this.destruct_queue.append(alloc, .{ .resource_set = this.chunk_resource_set });
 
     this.wireframe = false;
-    try this.initChunkPipeline(alloc);
-    errdefer this.chunk_pipeline.deinit(this.device, alloc);
+    try this.initChunkPipelines(alloc);
+    errdefer this.deinitChunkPipelines(alloc);
 
     this.dirty_swapchain = false;
 
@@ -169,7 +170,7 @@ pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
 
     this.ui.deinit(this.device);
     this.deinitFramesInFlight(alloc);
-    this.chunk_pipeline.deinit(this.device, alloc);
+    this.deinitChunkPipelines(alloc);
     gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
     this.destruct_queue.deinit(alloc);
     alloc.free(this.images_initialized);
@@ -214,8 +215,9 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
 
     if (input.wireframe) {
         try per_frame.trash.append(alloc, .{ .graphics_pipeline = this.chunk_pipeline });
+        try per_frame.trash.append(alloc, .{ .graphics_pipeline = this.water_pipeline });
         this.wireframe = !this.wireframe;
-        try this.initChunkPipeline(alloc);
+        try this.initChunkPipelines(alloc);
     }
 
     const viewport_f: math.Vec2 = @floatFromInt(data.viewport);
@@ -277,7 +279,7 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
         .vp = math.matrixToArray(data.camera.vp(aspect_ratio)),
     };
 
-    this.drawChunks(render_pass, push_constants, aspect_ratio, data.camera);
+    try this.drawChunks(alloc, render_pass, push_constants, aspect_ratio, data.camera);
 
     render_pass.cmdEnd();
 
@@ -355,8 +357,17 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
     }
 }
 
-fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constants: PerFramePushConstants, aspect_ratio: f32, camera: Camera) void {
+fn drawChunks(this: *Renderer, alloc: std.mem.Allocator, render_pass: gpu.RenderPassEncoder, push_constants: PerFramePushConstants, aspect_ratio: f32, camera: Camera) !void {
     if (this.chunk_mesh_alloc.loaded_meshes.count() == 0) return;
+
+    const WaterChunk = struct {
+        pos: Chunk.PackedPos,
+        offset: u32,
+        count: u32,
+    };
+
+    var water_chunks: std.ArrayList(WaterChunk) = .empty;
+    defer water_chunks.deinit(alloc);
 
     render_pass.cmdBindPipeline(this.chunk_pipeline);
     render_pass.cmdBindResourceSets(this.chunk_pipeline, &.{this.chunk_resource_set}, 0);
@@ -378,7 +389,7 @@ fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constant
     const au = @abs(up);
 
     var chunk_mesh_iter = this.chunk_mesh_alloc.loaded_meshes.iterator();
-    while (chunk_mesh_iter.next()) |kv| {
+    while (chunk_mesh_iter.next()) |kv| chunk_iter: {
         const pos: math.Vec3 = @floatFromInt(kv.key_ptr.*.vec() * Chunk.size);
         const chunk_size_f = math.i2f(math.Vec3, Chunk.size);
         // extent
@@ -390,14 +401,55 @@ fn drawChunks(this: *Renderer, render_pass: gpu.RenderPassEncoder, push_constant
         const min = c_vs - e_vs;
         const max = c_vs + e_vs;
 
-        const culled = blk: for (frustum_planes) |p| {
-            if (!aabbInPlane(min, max, p)) {
-                break :blk true;
-            }
-        } else false;
+        for (frustum_planes) |p| {
+            if (!aabbInPlane(min, max, p))
+                break :chunk_iter;
+        }
 
-        if (!culled)
-            this.drawChunk(render_pass, kv.key_ptr.*.vec(), kv.value_ptr.*);
+        const chunk_pos = kv.key_ptr.*;
+        const loaded = kv.value_ptr.*;
+
+        if (loaded.opaque_count != 0) {
+            this.drawChunk(render_pass, chunk_pos.vec(), kv.value_ptr.*);
+        }
+
+        if (loaded.water_count != 0) {
+            try water_chunks.append(alloc, .{
+                .pos = chunk_pos,
+                .offset = loaded.waterOffset(),
+                .count = loaded.water_count,
+            });
+        }
+    }
+
+    render_pass.cmdBindPipeline(this.water_pipeline);
+    render_pass.cmdPushConstants(this.chunk_pipeline, .{
+        .stages = .{ .vertex = true },
+        .offset = 0,
+        .size = @sizeOf(PerFramePushConstants),
+    }, @ptrCast(&push_constants));
+
+    for (water_chunks.items) |chunk| {
+        const chunk_push_constants: ChunkPushConstants = .{
+            .pos = chunk.pos.vec(),
+        };
+
+        render_pass.cmdPushConstants(
+            this.water_pipeline,
+            .{
+                .stages = .{ .vertex = true },
+                .offset = @sizeOf(PerFramePushConstants),
+                .size = @sizeOf(ChunkPushConstants),
+            },
+            std.mem.asBytes(&chunk_push_constants).ptr,
+        );
+
+        render_pass.cmdDraw(.{
+            .vertex_count = 6,
+            .instance_count = chunk.count,
+            .first_instance = chunk.offset,
+            .indexed = false,
+        });
     }
 }
 
@@ -464,8 +516,8 @@ fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.Pos
 
     render_pass.cmdDraw(.{
         .vertex_count = 6,
-        .instance_count = @intCast(loaded_mesh.face_count),
-        .first_instance = @intCast(loaded_mesh.face_offset),
+        .instance_count = @intCast(loaded_mesh.opaque_count),
+        .first_instance = @intCast(loaded_mesh.opaque_offset),
         .indexed = false,
     });
 }
@@ -487,20 +539,18 @@ fn deinitFramesInFlight(this: *Renderer, alloc: std.mem.Allocator) void {
     alloc.free(this.per_frame_in_flight);
 }
 
-fn initChunkPipeline(this: *Renderer, alloc: std.mem.Allocator) !void {
+fn initChunkPipelines(this: *Renderer, alloc: std.mem.Allocator) !void {
     this.chunk_pipeline = try .init(this.device, .{
         .alloc = alloc,
         .render_target_desc = .{
             .color_format = this.display.imageFormat(),
             .depth_format = .d32_sfloat,
         },
-        .push_constant_ranges = &.{
-            .{
-                .stages = .{ .vertex = true },
-                .offset = 0,
-                .size = @sizeOf(PerFramePushConstants) + @sizeOf(ChunkPushConstants),
-            },
-        },
+        .push_constant_ranges = &.{.{
+            .stages = .{ .vertex = true },
+            .offset = 0,
+            .size = @sizeOf(PerFramePushConstants) + @sizeOf(ChunkPushConstants),
+        }},
         .resource_layouts = &.{this.chunk_resource_layout},
         .shaders = &.{
             this.shader_man.getShader(.chunk_opaque_vertex),
@@ -521,6 +571,53 @@ fn initChunkPipeline(this: *Renderer, alloc: std.mem.Allocator) !void {
             .compare_op = .less,
         },
     });
+    errdefer this.chunk_pipeline.deinit(this.device, alloc);
+
+    this.water_pipeline = try .init(this.device, .{
+        .alloc = alloc,
+        .render_target_desc = .{
+            .color_format = this.display.imageFormat(),
+            .depth_format = .d32_sfloat,
+        },
+        .push_constant_ranges = &.{.{
+            .stages = .{ .vertex = true },
+            .offset = 0,
+            .size = @sizeOf(PerFramePushConstants) + @sizeOf(ChunkPushConstants),
+        }},
+        .resource_layouts = &.{this.chunk_resource_layout},
+        .shaders = &.{
+            this.shader_man.getShader(.water_vertex),
+            this.shader_man.getShader(.water_pixel),
+        },
+        .vertex_input_bindings = &.{.{
+            .binding = 0,
+            .rate = .per_instance,
+            .fields = &.{
+                .{ .type = .uint32 },
+            },
+        }},
+        .polygon_mode = if (this.wireframe) .line else .fill,
+        .cull_mode = .none,
+        .depth_mode = .{
+            .testing = true,
+            .writing = false,
+            .compare_op = .less,
+        },
+        .blend_info = .{
+            .src_color_factor = .src_alpha,
+            .dst_color_factor = .one_minus_src_alpha,
+            .color_op = .add,
+
+            .src_alpha_factor = .one,
+            .dst_alpha_factor = .one_minus_src_alpha,
+            .alpha_op = .add,
+        },
+    });
+}
+
+fn deinitChunkPipelines(renderer: *Renderer, alloc: std.mem.Allocator) void {
+    renderer.chunk_pipeline.deinit(renderer.device, alloc);
+    renderer.water_pipeline.deinit(renderer.device, alloc);
 }
 
 const PerFrameInFlight = struct {

@@ -13,8 +13,13 @@ const ChunkMesher = @This();
 pub const max_faces = (Chunk.block_count / 2) * 6;
 
 pub const GpuLoaded = struct {
-    face_count: u32,
-    face_offset: u32,
+    opaque_count: u32,
+    opaque_offset: u32,
+    water_count: u32,
+
+    pub fn waterOffset(loaded: GpuLoaded) u32 {
+        return @divExact((loaded.opaque_offset + loaded.opaque_count) * @sizeOf(GreedyQuad), @sizeOf(WaterFace));
+    }
 };
 
 pub const GreedyQuad = packed struct(u64) {
@@ -32,8 +37,17 @@ pub const GreedyQuad = packed struct(u64) {
     },
     y: packed struct(u32) {
         ao_corners: AoCorners,
-        unused2: u24 = undefined,
+        unused2: u24 = 0,
     },
+};
+
+pub const WaterFace = packed struct(u32) {
+    face: block.Face,
+    x: u5,
+    y: u5,
+    z: u5,
+    has_water_above: bool,
+    unused: u13 = 0,
 };
 
 comptime {
@@ -176,27 +190,29 @@ pub fn meshMany(mesher: *ChunkMesher, deadline: std.Io.Timestamp) !void {
         for (state.completed.items) |job| {
             _ = mesher.queue.swapRemove(job.pos);
 
-            if (job.faces.len == 0) {
+            if (job.opaque_quads.len == 0 and job.water_faces.len == 0) {
                 if (mesher.mesh_alloc.loaded_meshes.fetchSwapRemove(job.pos)) |kv|
                     try mesher.mesh_alloc.queueFree(kv.value);
 
                 continue;
             }
 
-            try mesher.mesh_alloc.writeChunkAssumeCapacity(job.faces, job.pos);
+            try mesher.mesh_alloc.writeChunkAssumeCapacity(job.opaque_quads, job.water_faces, job.pos);
         }
     }
 }
 
 const CompletedJob = struct {
     pos: Chunk.PackedPos,
-    faces: []GreedyQuad,
+    opaque_quads: []GreedyQuad,
+    water_faces: []WaterFace,
 };
 
 const ThreadState = struct {
     _: void align(std.atomic.cache_line) = {},
     arena: std.heap.ArenaAllocator,
     quads: std.ArrayList(GreedyQuad),
+    water_faces: std.ArrayList(WaterFace),
     maps: [6]std.AutoArrayHashMapUnmanaged(QuadData, MaskCube),
 
     job_index: std.atomic.Value(u64),
@@ -206,12 +222,14 @@ const ThreadState = struct {
     fn init(state: *ThreadState, alloc: std.mem.Allocator) !void {
         state.arena = .init(alloc);
         state.quads = try .initCapacity(alloc, max_faces);
+        state.water_faces = .empty;
         for (&state.maps) |*map| map.* = .empty;
         state.completed = .empty;
     }
 
     fn deinit(state: *ThreadState, alloc: std.mem.Allocator) void {
         state.arena.deinit();
+        state.water_faces.deinit(alloc);
         state.quads.deinit(alloc);
         for (&state.maps) |*map| map.deinit(alloc);
         state.completed.deinit(alloc);
@@ -244,13 +262,15 @@ fn worker(mesher: *ChunkMesher, thread_i: usize, deadline: std.Io.Timestamp) voi
         };
 
         state.quads.clearRetainingCapacity();
+        state.water_faces.clearRetainingCapacity();
         for (&state.maps) |*map| map.clearRetainingCapacity();
 
         greedyMeshWithFastExits(alloc, state, mesher.world, pos.vec());
 
         state.completed.append(alloc, .{
             .pos = pos,
-            .faces = arena.dupe(GreedyQuad, state.quads.items) catch @panic("oom"),
+            .opaque_quads = arena.dupe(GreedyQuad, state.quads.items) catch @panic("oom"),
+            .water_faces = arena.dupe(WaterFace, state.water_faces.items) catch @panic("oom"),
         }) catch @panic("oom");
     }
 }
@@ -535,6 +555,23 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
                         .up, .down => .{ x, z, y },
                     };
 
+                    const block_id = refs.this.getBlock(pos);
+                    if (block_id == .water) {
+                        const px = @as(u6, pos[0]) + 1;
+                        const py = @as(u6, pos[1]) + 1;
+                        const pz = @as(u6, pos[2]) + 1;
+
+                        state.water_faces.append(alloc, .{
+                            .face = face,
+                            .x = pos[0],
+                            .y = pos[1],
+                            .z = pos[2],
+                            .has_water_above = water_cols[0][py][pz + 1] & @as(MaskP, 1) << px != 0,
+                        }) catch @panic("oom");
+
+                        continue;
+                    }
+
                     const ao_sample_dirs: [8][2]i8 = .{
                         .{ -1, -1 },
                         .{ 1, -1 },
@@ -583,7 +620,6 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
                         .tr = aoCorner(corner_tr, side_t, side_r),
                     };
 
-                    const block_id = refs.this.getBlock(pos);
                     const quad_data: QuadData = .{
                         .tex_id = .fromBlockId(block_id),
                         .ao = ao,

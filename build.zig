@@ -171,7 +171,7 @@ fn buildShaders(b: *Build, step_list: *std.ArrayList(*Build.Step)) !void {
 
         compile.addArgs(&compile_opts);
         compile.addArg("-O3");
-        compile.addArgs(&.{ "-target", "spirv" });
+        compile.addArgs(&.{ "-target", "spirv", "-g2" });
         compile.addArgs(&.{ "-profile", "spirv_1_3" });
         compile.addArgs(&.{ "-entry", entry.entry });
         compile.addArgs(&.{ "-stage", switch (stage) {
