@@ -300,13 +300,13 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
     std.debug.assert(Chunk.len == 32);
 
     // first index is axis, second is how far along plane normal
-    var cols: [3]MaskCubeP = @splat(@splat(@splat(0)));
+    var opaque_cols: [3]MaskCubeP = @splat(@splat(@splat(0)));
 
     switch (refs.this.data) {
         .one_to_one => |data| {
             const bytes_per_col = Chunk.len / 2;
             const bytes_per_plane = bytes_per_col * Chunk.len;
-            const Vec = Chunk.OneToOne.ColVec;
+            const Vec = @Vector(bytes_per_col, u8);
             const FullVec = @Vector(Chunk.len, u8);
 
             for (0..Chunk.len) |x| {
@@ -314,7 +314,8 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
                 const plane = data.blocks[x * bytes_per_plane ..][0..bytes_per_plane];
                 for (0..Chunk.len) |y| {
                     const py: u6 = @intCast(y + 1);
-                    const col_slice: *align(@alignOf(Vec)) const [bytes_per_col]u8 = @alignCast(plane[y * bytes_per_col ..][0..bytes_per_col]);
+                    const col_slice: *align(16) const [bytes_per_col]u8 = @alignCast(plane[y * bytes_per_col ..][0..bytes_per_col]);
+                    comptime std.debug.assert(@alignOf(Vec) <= 16);
                     const vec: Vec = col_slice.*;
 
                     const mask: Vec = @splat(15);
@@ -322,15 +323,15 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
                     const v1 = vec >> @splat(4);
                     const v: FullVec = std.simd.interlace(.{ v0, v1 });
                     var col: Mask = @bitCast(@call(.always_inline, block.Kind.isOpaqueVec, .{v}));
-                    cols[2][py][px] = @as(MaskP, col) << 1;
+                    opaque_cols[2][py][px] = @as(MaskP, col) << 1;
 
                     while (col != 0) {
                         const z = @ctz(col);
                         col &= col - 1;
                         const pz: u6 = @intCast(z + 1);
 
-                        cols[0][py][pz] |= @as(MaskP, 1) << px;
-                        cols[1][pz][px] |= @as(MaskP, 1) << py;
+                        opaque_cols[0][py][pz] |= @as(MaskP, 1) << px;
+                        opaque_cols[1][pz][px] |= @as(MaskP, 1) << py;
                     }
                 }
             }
@@ -342,7 +343,7 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
 
             const bytes_per_col = Chunk.len / 4;
             const bytes_per_plane = bytes_per_col * Chunk.len;
-            const Vec = Chunk.U2Palette.ColVec;
+            const Vec = @Vector(bytes_per_col, u8);
             const FullVec = @Vector(Chunk.len, u8);
 
             for (0..Chunk.len) |x| {
@@ -350,7 +351,7 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
                 const plane = data.blocks[x * bytes_per_plane ..][0..bytes_per_plane];
                 for (0..Chunk.len) |y| {
                     const py: u6 = @intCast(y + 1);
-                    const col_slice: *align(@alignOf(Vec)) const [bytes_per_col]u8 = @alignCast(plane[y * bytes_per_col ..][0..bytes_per_col]);
+                    const col_slice: *align(8) const [bytes_per_col]u8 = @alignCast(plane[y * bytes_per_col ..][0..bytes_per_col]);
                     const vec: Vec = col_slice.*;
 
                     const mask: Vec = @splat(3);
@@ -368,15 +369,15 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
                         }
                     }
 
-                    cols[2][py][px] = @as(MaskP, col) << 1;
+                    opaque_cols[2][py][px] = @as(MaskP, col) << 1;
 
                     while (col != 0) {
                         const z = @ctz(col);
                         col &= col - 1;
                         const pz: u6 = @intCast(z + 1);
 
-                        cols[0][py][pz] |= @as(MaskP, 1) << px;
-                        cols[1][pz][px] |= @as(MaskP, 1) << py;
+                        opaque_cols[0][py][pz] |= @as(MaskP, 1) << px;
+                        opaque_cols[1][pz][px] |= @as(MaskP, 1) << py;
                     }
                 }
             }
@@ -387,9 +388,9 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
 
             for (1..Chunk.len + 1) |px| {
                 for (1..Chunk.len + 1) |py| {
-                    cols[0][px][py] = mask;
-                    cols[1][px][py] = mask;
-                    cols[2][px][py] = mask;
+                    opaque_cols[0][px][py] = mask;
+                    opaque_cols[1][px][py] = mask;
+                    opaque_cols[2][px][py] = mask;
                 }
             }
         },
@@ -433,11 +434,11 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
                     };
 
                     // z,y - x axis
-                    cols[0][py][pz] |= @as(MaskP, 1) << px;
+                    opaque_cols[0][py][pz] |= @as(MaskP, 1) << px;
                     // x,z - y axis
-                    cols[1][pz][px] |= @as(MaskP, 1) << py;
+                    opaque_cols[1][pz][px] |= @as(MaskP, 1) << py;
                     // x,y - z axis
-                    cols[2][py][px] |= @as(MaskP, 1) << pz;
+                    opaque_cols[2][py][px] |= @as(MaskP, 1) << pz;
                 }
             }
         }
@@ -452,14 +453,14 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
             const vecs_in_plane = if (vec_size != 0) Chunk.len / vec_size else 0;
 
             for (0..vecs_in_plane) |i| {
-                const plane: VecP = cols[axis][z + 1][1 + i * vec_size ..][0..vec_size].*;
+                const plane: VecP = opaque_cols[axis][z + 1][1 + i * vec_size ..][0..vec_size].*;
                 const one: VecP = @splat(1);
                 masks[axis * 2 + 0][z][i * vec_size ..][0..vec_size].* = @as(Vec, @truncate((plane & ~(plane >> one)) >> one));
                 masks[axis * 2 + 1][z][i * vec_size ..][0..vec_size].* = @as(Vec, @truncate((plane & ~(plane << one)) >> one));
             }
 
             for (vecs_in_plane * vec_size..Chunk.len) |x| {
-                const col = cols[axis][z + 1][x + 1];
+                const col = opaque_cols[axis][z + 1][x + 1];
                 masks[axis * 2 + 0][z][x] = @truncate((col & ~(col >> 1)) >> 1);
                 masks[axis * 2 + 1][z][x] = @truncate((col & ~(col << 1)) >> 1);
             }
@@ -514,7 +515,7 @@ fn greedyMesh(alloc: std.mem.Allocator, state: *ThreadState, refs: ChunkRefs) vo
                         const py: u6 = @intCast(spos[1] + 1);
                         const pz: u6 = @intCast(spos[2] + 1);
 
-                        if (cols[0][py][pz] & @as(MaskP, 1) << px == 0) continue;
+                        if (opaque_cols[0][py][pz] & @as(MaskP, 1) << px == 0) continue;
                         ao_bits |= @as(u8, 1) << @intCast(i);
                     }
 

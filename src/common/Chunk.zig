@@ -16,10 +16,9 @@ pub const RelPos = @Vector(3, u5);
 pub const PackedPos = block.PackedPos;
 
 pub const OneToOne = struct {
-    blocks: [block_count / 2]u8 align(@alignOf(ColVec)),
+    blocks: [block_count / 2]u8 align(16),
 
     pub const Col = [len / 4]u8;
-    pub const ColVec = @Vector(col_stride, u8);
     const plane_stride = len * len / 2;
     const col_stride = len / 2;
 
@@ -72,9 +71,8 @@ pub const OneToOne = struct {
 pub const U2Palette = struct {
     palette_bitmask: std.StaticBitSet(4),
     palette: [4]block.Kind,
-    blocks: [block_count / 4]u8 align(@alignOf(ColVec)),
+    blocks: [block_count / 4]u8 align(16),
 
-    pub const ColVec = @Vector(col_stride, u8);
     const plane_stride = len * len / 4;
     const col_stride = len / 4;
 
