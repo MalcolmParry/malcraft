@@ -3,7 +3,6 @@ const znet = @import("znet");
 const options = @import("options");
 const mw = @import("mwengine");
 const math = mw.math;
-const Deque = @import("../utils/deque.zig").Deque;
 const Aabb = @import("../utils/Aabb.zig");
 const block = @import("../common/block.zig");
 const Chunk = @import("../common/Chunk.zig");
@@ -21,16 +20,16 @@ const zstd = @cImport({
 const chunk_transfer_limit = 256 * 1024;
 
 cursor: Chunk.Cursor,
-regions_to_send: Deque(Region.PackedPos) = .empty,
-regions_to_gen: Deque(Region.PackedPos) = .empty,
-chunks_to_send: Deque(Chunk.PackedPos) = .empty,
-chunks_to_gen: Deque(Chunk.PackedPos) = .empty,
+regions_to_send: std.Deque(Region.PackedPos) = .empty,
+regions_to_gen: std.Deque(Region.PackedPos) = .empty,
+chunks_to_send: std.Deque(Chunk.PackedPos) = .empty,
+chunks_to_gen: std.Deque(Chunk.PackedPos) = .empty,
 
 pub fn init(streamer: *Streamer, alloc: std.mem.Allocator) !void {
     try streamer.queueSendAabb(alloc, streamer.cursor.loadedAabb());
 
     const SortContext = struct {
-        queue: *Deque(Chunk.PackedPos),
+        queue: *std.Deque(Chunk.PackedPos),
 
         pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
             const i64x3 = @Vector(3, i64);

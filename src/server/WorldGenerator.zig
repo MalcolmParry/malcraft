@@ -5,7 +5,6 @@ const math = mw.math;
 const block = @import("../common/block.zig");
 const Chunk = @import("../common/Chunk.zig");
 const Region = @import("../common/Region.zig");
-const Deque = @import("../utils/deque.zig").Deque;
 const World = @import("../common/World.zig");
 const Player = @import("Player.zig");
 const ChunkStreamer = @import("ChunkStreamer.zig");

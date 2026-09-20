@@ -17,7 +17,16 @@ pub fn init(device: gpu.Device, alloc: std.mem.Allocator, io: std.Io) !ShaderMan
         const shader_code = try reader.interface.allocRemaining(alloc, .limited(1024 * 1024));
         defer alloc.free(shader_code);
 
-        shader.* = try gpu.Shader.fromSpirv(device, shader_stages[i], @ptrCast(@alignCast(shader_code)), alloc);
+        shader.* = try gpu.Shader.fromSpirv(device, shader_stages[i], @ptrCast(@alignCast(shader_code)));
+
+        var label_writer_buffer: [128]u8 = undefined;
+        var label_writer: std.Io.Writer = .fixed(&label_writer_buffer);
+
+        label_writer.print("shader {s}\x00", .{@tagName(@as(ShaderId, @enumFromInt(i)))}) catch unreachable;
+        shader.debugLabel(
+            device,
+            @ptrCast(label_writer.buffer[0 .. label_writer.end - 1]),
+        );
     }
 
     return .{
@@ -25,8 +34,8 @@ pub fn init(device: gpu.Device, alloc: std.mem.Allocator, io: std.Io) !ShaderMan
     };
 }
 
-pub fn deinit(man: *ShaderManager, device: gpu.Device, alloc: std.mem.Allocator) void {
-    for (&man.shaders) |shader| shader.deinit(device, alloc);
+pub fn deinit(man: *ShaderManager, device: gpu.Device) void {
+    for (&man.shaders) |shader| shader.deinit(device);
 }
 
 pub fn getShader(man: *ShaderManager, id: ShaderId) gpu.Shader {

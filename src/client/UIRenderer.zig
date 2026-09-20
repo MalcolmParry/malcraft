@@ -114,10 +114,11 @@ pub const RenderInfo = struct {
 };
 
 pub fn render(ui: *UIRenderer, info: RenderInfo) !void {
-    const viewport_f: math.Vec2 = @floatFromInt(info.viewport);
+    const viewport: gpu.Image.Size2DVec = info.viewport;
+    const viewport_f: math.Vec2 = @floatFromInt(viewport);
     const frame_count = info.frame_count;
 
-    try ui.immediate.begin(@as(@Vector(2, u16), @intCast(info.viewport)));
+    try ui.immediate.begin(@as(@Vector(2, u16), @intCast(viewport)));
 
     if (info.show_crosshair) {
         const scale = viewport_f[1] * 0.00035;

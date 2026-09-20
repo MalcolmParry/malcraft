@@ -43,13 +43,12 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, device: gpu.Device, stage_man:
     const Pixel = [4]u8;
 
     const mip_levels = 5;
-    const size: gpu.Image.Size2D = .{ 16, 16 };
+    const size: gpu.Image.Size2DVec = .{ 16, 16 };
     const pixel_count = @reduce(.Mul, size);
     const layer_size = pixel_count * @sizeOf(Pixel);
     const layer_count: u32 = @intCast(std.enums.values(Id).len);
 
     const image = try device.initImage(.{
-        .alloc = alloc,
         .format = .rgba8_srgb,
         .usage = .{
             .src = true,
@@ -61,27 +60,27 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, device: gpu.Device, stage_man:
         .mip_count = mip_levels,
         .size = size,
     });
-    errdefer image.deinit(device, alloc);
+    errdefer image.deinit(device);
+    image.debugLabel(device, "texture image");
 
     const sampler = try device.initSampler(.{
-        .alloc = alloc,
         .min_filter = .nearest,
         .mag_filter = .nearest,
         .address_mode_u = .repeat,
         .address_mode_v = .repeat,
         .address_mode_w = .repeat,
     });
-    errdefer sampler.deinit(device, alloc);
+    errdefer sampler.deinit(device);
 
     const view = try device.initImageView(.{
-        .alloc = alloc,
         .kind = .array_2d,
         .image = image,
         .subresource_range = .{
             .aspect = .{ .color = true },
         },
     });
-    errdefer view.deinit(device, alloc);
+    errdefer view.deinit(device);
+    view.debugLabel(device, "texture image view");
 
     const staging = try stage_man.allocateBytesAligned(layer_size * layer_count, .@"4");
     defer stage_man.reset();
@@ -100,7 +99,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, device: gpu.Device, stage_man:
         @memcpy(staging.slice[layer_size * i .. layer_size * (i + 1)], cropped.rawBytes());
     }
 
-    const cmd_encoder = try device.initCommandEncoder();
+    const cmd_encoder = try device.initCommandEncoder(alloc);
     defer cmd_encoder.deinit(device);
 
     try cmd_encoder.begin();
@@ -145,7 +144,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, device: gpu.Device, stage_man:
                 .subresource_range = .{
                     .aspect = .{ .color = true },
                     .mip_offset = @intCast(level - 1),
-                    .mip_count = 1,
+                    .mip_count = .{ .count = 1 },
                 },
                 .old_layout = .transfer_dst,
                 .new_layout = .transfer_src,
@@ -182,7 +181,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, device: gpu.Device, stage_man:
                 .subresource_range = .{
                     .aspect = .{ .color = true },
                     .mip_offset = @intCast(level - 1),
-                    .mip_count = 1,
+                    .mip_count = .{ .count = 1 },
                 },
                 .old_layout = .transfer_src,
                 .new_layout = .shader_read_only,
@@ -200,7 +199,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, device: gpu.Device, stage_man:
             .subresource_range = .{
                 .aspect = .{ .color = true },
                 .mip_offset = mip_levels - 1,
-                .mip_count = 1,
+                .mip_count = .{ .count = 1 },
             },
             .old_layout = .transfer_dst,
             .new_layout = .shader_read_only,
@@ -234,8 +233,8 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, device: gpu.Device, stage_man:
     };
 }
 
-pub fn deinit(man: *TextureManager, alloc: std.mem.Allocator, device: gpu.Device) void {
-    man.sampler.deinit(device, alloc);
-    man.view.deinit(device, alloc);
-    man.image.deinit(device, alloc);
+pub fn deinit(man: *TextureManager, device: gpu.Device) void {
+    man.sampler.deinit(device);
+    man.view.deinit(device);
+    man.image.deinit(device);
 }

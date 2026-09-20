@@ -64,12 +64,12 @@ pub fn init(this: *@This(), info: InitInfo) !void {
     errdefer this.instance.deinit(alloc);
 
     const phys_device = try this.instance.bestPhysicalDevice();
-    this.device = try .init(this.instance, phys_device, alloc);
-    errdefer this.device.deinit(alloc);
+    this.device = try .init(this.instance, alloc, phys_device);
+    errdefer this.device.deinit();
 
     this.display = try .init(this.device, info.window, alloc);
     errdefer this.display.deinit(alloc);
-    std.log.info("display size: {}", .{this.display.imageSize()});
+    std.log.info("display size: {}", .{@as(gpu.Image.Size2DVec, this.display.imageSize())});
 
     this.timeline_value = 0;
     this.timeline = try this.device.initTimeline(0);
@@ -95,7 +95,7 @@ pub fn init(this: *@This(), info: InitInfo) !void {
     errdefer this.upload_man.deinit();
 
     this.shader_man = try .init(this.device, alloc, io);
-    errdefer this.shader_man.deinit(this.device, alloc);
+    errdefer this.shader_man.deinit(this.device);
 
     this.images_initialized = try alloc.alloc(bool, this.info.frames_in_flight);
     errdefer alloc.free(this.images_initialized);
@@ -103,7 +103,7 @@ pub fn init(this: *@This(), info: InitInfo) !void {
 
     this.destruct_queue = try .initCapacity(alloc, 32);
     errdefer this.destruct_queue.deinit(alloc);
-    errdefer gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
+    errdefer gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device);
 
     try this.initFramesInFlight(alloc);
     errdefer this.deinitFramesInFlight(alloc);
@@ -116,24 +116,21 @@ pub fn init(this: *@This(), info: InitInfo) !void {
     });
     errdefer this.chunk_mesh_alloc.deinit();
 
-    this.chunk_resource_layout = try .init(this.device, .{
-        .alloc = alloc,
-        .descriptors = &.{.{
-            .t = .image,
-            .stages = .{ .pixel = true },
-            .flags = .{},
-            .binding = 0,
-            .count = 1,
-        }},
-    });
+    this.chunk_resource_layout = try .init(this.device, &.{.{
+        .t = .image,
+        .stages = .{ .pixel = true },
+        .flags = .{},
+        .binding = 0,
+        .count = 1,
+    }});
     try this.destruct_queue.append(alloc, .{ .resource_layout = this.chunk_resource_layout });
 
-    this.chunk_resource_set = try .init(this.device, this.chunk_resource_layout, alloc);
+    this.chunk_resource_set = try .init(this.device, this.chunk_resource_layout);
     try this.destruct_queue.append(alloc, .{ .resource_set = this.chunk_resource_set });
 
     this.wireframe = false;
-    try this.initChunkPipelines(alloc);
-    errdefer this.deinitChunkPipelines(alloc);
+    try this.initChunkPipelines();
+    errdefer this.deinitChunkPipelines();
 
     this.dirty_swapchain = false;
 
@@ -148,7 +145,7 @@ pub fn init(this: *@This(), info: InitInfo) !void {
     errdefer this.ui.deinit(this.device);
 
     this.texture_man = try .init(alloc, io, this.device, &this.stage_man);
-    errdefer this.texture_man.deinit(alloc, this.device);
+    errdefer this.texture_man.deinit(this.device);
 
     try this.chunk_resource_set.update(this.device, &.{
         .{
@@ -159,32 +156,33 @@ pub fn init(this: *@This(), info: InitInfo) !void {
                 .sampler = this.texture_man.sampler,
             }} },
         },
-    }, alloc);
+    });
 }
 
 pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
     this.device.waitUntilIdle() catch @panic("failed to wait for device in deinit");
 
     this.chunk_mesh_alloc.deinit();
-    this.texture_man.deinit(alloc, this.device);
+    this.texture_man.deinit(this.device);
 
     this.ui.deinit(this.device);
     this.deinitFramesInFlight(alloc);
-    this.deinitChunkPipelines(alloc);
-    gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device, alloc);
+    this.deinitChunkPipelines();
+    gpu.AnyObject.deinitAllReversed(this.destruct_queue.items, this.device);
     this.destruct_queue.deinit(alloc);
     alloc.free(this.images_initialized);
-    this.shader_man.deinit(this.device, alloc);
+    this.shader_man.deinit(this.device);
     this.upload_man.deinit();
     this.stage_man.deinit(this.device, alloc);
     this.timeline.deinit(this.device);
     this.display.deinit(alloc);
-    this.device.deinit(alloc);
+    this.device.deinit();
     this.instance.deinit(alloc);
 }
 
 pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
     const input = data.input;
+    const viewport: gpu.Image.Size2DVec = data.viewport;
 
     if (this.timeline_value >= this.per_frame_in_flight.len)
         try this.timeline.wait(this.device, this.timeline_value - this.per_frame_in_flight.len + 1, std.time.ns_per_s);
@@ -193,7 +191,7 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
     const per_frame = &this.per_frame_in_flight[frame_slot];
     this.info.frame_count += 1;
 
-    gpu.AnyObject.deinitAllReversed(per_frame.trash.items, this.device, alloc);
+    gpu.AnyObject.deinitAllReversed(per_frame.trash.items, this.device);
     per_frame.trash.clearRetainingCapacity();
     try this.chunk_mesh_alloc.freeQueued();
     this.stage_man.nextFrame();
@@ -201,10 +199,10 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
     if (this.dirty_swapchain) {
         try this.device.waitUntilIdle();
 
-        std.log.info("rebuilding swapchain {}", .{data.viewport});
+        std.log.info("rebuilding swapchain {}", .{viewport});
         try this.display.rebuild(data.viewport, alloc);
         for (this.per_frame_in_flight) |*x| {
-            x.deinitViewportDependants(this, alloc);
+            x.deinitViewportDependants(this);
             try x.initViewportDependants(this, alloc);
         }
 
@@ -217,10 +215,10 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
         try per_frame.trash.append(alloc, .{ .graphics_pipeline = this.chunk_pipeline });
         try per_frame.trash.append(alloc, .{ .graphics_pipeline = this.water_pipeline });
         this.wireframe = !this.wireframe;
-        try this.initChunkPipelines(alloc);
+        try this.initChunkPipelines();
     }
 
-    const viewport_f: math.Vec2 = @floatFromInt(data.viewport);
+    const viewport_f: math.Vec2 = @floatFromInt(viewport);
     const aspect_ratio = viewport_f[0] / viewport_f[1];
 
     const acquired_image = blk: {
@@ -268,7 +266,7 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
             },
             .depth_attachment = .{
                 .image_view = per_frame.depth_image_view,
-                .load = .{ .clear = .{ .depth = 1 } },
+                .load = .{ .clear = .{ .depth = 0 } },
                 .store = .store,
             },
         },
@@ -369,58 +367,66 @@ fn drawChunks(this: *Renderer, alloc: std.mem.Allocator, render_pass: gpu.Render
     var water_chunks: std.ArrayList(WaterChunk) = .empty;
     defer water_chunks.deinit(alloc);
 
-    render_pass.cmdBindPipeline(this.chunk_pipeline);
-    render_pass.cmdBindResourceSets(this.chunk_pipeline, &.{this.chunk_resource_set}, 0);
-    render_pass.cmdBindVertexBuffer(0, this.chunk_mesh_alloc.free_list_alloc.super_descs.items[0].buffer.region());
-    render_pass.cmdPushConstants(this.chunk_pipeline, .{
-        .stages = .{ .vertex = true },
-        .offset = 0,
-        .size = @sizeOf(PerFramePushConstants),
-    }, @ptrCast(&push_constants));
+    {
+        render_pass.cmdBeginDebugBlockLabel("chunk opaque");
+        defer render_pass.cmdEndDebugBlockLabel();
 
-    // frustum culling stuff
-    const frustum_planes = frustumPlanes(camera, aspect_ratio);
-    const q = math.quatFromEuler(camera.euler);
-    const forward = math.quatMulVec(q, math.dir_forward);
-    const right = math.quatMulVec(q, math.dir_right);
-    const up = math.quatMulVec(q, math.dir_up);
-    const af = @abs(forward);
-    const ar = @abs(right);
-    const au = @abs(up);
+        render_pass.cmdBindPipeline(this.chunk_pipeline);
+        render_pass.cmdBindResourceSets(this.chunk_pipeline, &.{this.chunk_resource_set}, 0);
+        render_pass.cmdBindVertexBuffer(0, this.chunk_mesh_alloc.free_list_alloc.super_descs.items[0].buffer.region());
+        render_pass.cmdPushConstants(this.chunk_pipeline, .{
+            .stages = .{ .vertex = true },
+            .offset = 0,
+            .size = @sizeOf(PerFramePushConstants),
+        }, @ptrCast(&push_constants));
 
-    var chunk_mesh_iter = this.chunk_mesh_alloc.loaded_meshes.iterator();
-    while (chunk_mesh_iter.next()) |kv| chunk_iter: {
-        const pos: math.Vec3 = @floatFromInt(kv.key_ptr.*.vec() * Chunk.size);
-        const chunk_size_f = math.i2f(math.Vec3, Chunk.size);
-        // extent
-        const e_ws = chunk_size_f / math.splat3(f32, 2);
-        // center
-        const c_ws = pos + e_ws;
-        const c_vs = pointToViewSpace(c_ws, camera.pos, forward, right, up);
-        const e_vs = pointToViewSpace(e_ws, @splat(0), af, ar, au);
-        const min = c_vs - e_vs;
-        const max = c_vs + e_vs;
+        // frustum culling stuff
+        const frustum_planes = frustumPlanes(camera, aspect_ratio);
+        const q = math.quatFromEuler(camera.euler);
+        const forward = math.quatMulVec(q, math.dir_forward);
+        const right = math.quatMulVec(q, math.dir_right);
+        const up = math.quatMulVec(q, math.dir_up);
+        const af = @abs(forward);
+        const ar = @abs(right);
+        const au = @abs(up);
 
-        for (frustum_planes) |p| {
-            if (!aabbInPlane(min, max, p))
-                break :chunk_iter;
-        }
+        var chunk_mesh_iter = this.chunk_mesh_alloc.loaded_meshes.iterator();
+        while (chunk_mesh_iter.next()) |kv| chunk_iter: {
+            const pos: math.Vec3 = @floatFromInt(kv.key_ptr.*.vec() * Chunk.size);
+            const chunk_size_f = math.i2f(math.Vec3, Chunk.size);
+            // extent
+            const e_ws = chunk_size_f / math.splat3(f32, 2);
+            // center
+            const c_ws = pos + e_ws;
+            const c_vs = pointToViewSpace(c_ws, camera.pos, forward, right, up);
+            const e_vs = pointToViewSpace(e_ws, @splat(0), af, ar, au);
+            const min = c_vs - e_vs;
+            const max = c_vs + e_vs;
 
-        const chunk_pos = kv.key_ptr.*;
-        const loaded = kv.value_ptr.*;
+            for (frustum_planes) |p| {
+                if (!aabbInPlane(min, max, p))
+                    break :chunk_iter;
+            }
 
-        if (loaded.opaque_count != 0) {
-            this.drawChunk(render_pass, chunk_pos.vec(), kv.value_ptr.*);
-        }
+            const chunk_pos = kv.key_ptr.*;
+            const loaded = kv.value_ptr.*;
 
-        if (loaded.water_count != 0) {
-            try water_chunks.append(alloc, .{
-                .pos = chunk_pos,
-                .offset = loaded.waterOffset(),
-                .count = loaded.water_count,
-            });
+            if (loaded.opaque_count != 0) {
+                this.drawChunk(render_pass, chunk_pos.vec(), kv.value_ptr.*);
+            }
+
+            if (loaded.water_count != 0) {
+                try water_chunks.append(alloc, .{
+                    .pos = chunk_pos,
+                    .offset = loaded.waterOffset(),
+                    .count = loaded.water_count,
+                });
+            }
         }
     }
+
+    render_pass.cmdBeginDebugBlockLabel("water");
+    defer render_pass.cmdEndDebugBlockLabel();
 
     render_pass.cmdBindPipeline(this.water_pipeline);
     render_pass.cmdPushConstants(this.chunk_pipeline, .{
@@ -539,9 +545,8 @@ fn deinitFramesInFlight(this: *Renderer, alloc: std.mem.Allocator) void {
     alloc.free(this.per_frame_in_flight);
 }
 
-fn initChunkPipelines(this: *Renderer, alloc: std.mem.Allocator) !void {
+fn initChunkPipelines(this: *Renderer) !void {
     this.chunk_pipeline = try .init(this.device, .{
-        .alloc = alloc,
         .render_target_desc = .{
             .color_format = this.display.imageFormat(),
             .depth_format = .d32_sfloat,
@@ -568,13 +573,13 @@ fn initChunkPipelines(this: *Renderer, alloc: std.mem.Allocator) !void {
         .depth_mode = .{
             .testing = true,
             .writing = true,
-            .compare_op = .less,
+            .compare_op = .greater,
         },
     });
-    errdefer this.chunk_pipeline.deinit(this.device, alloc);
+    errdefer this.chunk_pipeline.deinit(this.device);
+    this.chunk_pipeline.debugLabel(this.device, "chunk opaque pipeline");
 
     this.water_pipeline = try .init(this.device, .{
-        .alloc = alloc,
         .render_target_desc = .{
             .color_format = this.display.imageFormat(),
             .depth_format = .d32_sfloat,
@@ -601,7 +606,7 @@ fn initChunkPipelines(this: *Renderer, alloc: std.mem.Allocator) !void {
         .depth_mode = .{
             .testing = true,
             .writing = false,
-            .compare_op = .less,
+            .compare_op = .greater,
         },
         .blend_info = .{
             .src_color_factor = .src_alpha,
@@ -613,11 +618,12 @@ fn initChunkPipelines(this: *Renderer, alloc: std.mem.Allocator) !void {
             .alpha_op = .add,
         },
     });
+    this.water_pipeline.debugLabel(this.device, "water pipeline");
 }
 
-fn deinitChunkPipelines(renderer: *Renderer, alloc: std.mem.Allocator) void {
-    renderer.chunk_pipeline.deinit(renderer.device, alloc);
-    renderer.water_pipeline.deinit(renderer.device, alloc);
+fn deinitChunkPipelines(renderer: *Renderer) void {
+    renderer.chunk_pipeline.deinit(renderer.device);
+    renderer.water_pipeline.deinit(renderer.device);
 }
 
 const PerFrameInFlight = struct {
@@ -627,25 +633,24 @@ const PerFrameInFlight = struct {
     trash: std.ArrayList(gpu.AnyObject),
 
     pub fn init(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) !void {
-        this.cmd_encoder = try .init(renderer.device);
+        this.cmd_encoder = try .init(renderer.device, alloc);
         errdefer this.cmd_encoder.deinit(renderer.device);
 
         try this.initViewportDependants(renderer, alloc);
-        errdefer this.deinitViewportDependants(renderer, alloc);
+        errdefer this.deinitViewportDependants(renderer);
 
         this.trash = .empty;
     }
 
     pub fn deinit(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) void {
-        gpu.AnyObject.deinitAllReversed(this.trash.items, renderer.device, alloc);
+        gpu.AnyObject.deinitAllReversed(this.trash.items, renderer.device);
         this.trash.deinit(alloc);
-        this.deinitViewportDependants(renderer, alloc);
+        this.deinitViewportDependants(renderer);
         this.cmd_encoder.deinit(renderer.device);
     }
 
     pub fn initViewportDependants(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) !void {
         this.depth_image = try .init(renderer.device, .{
-            .alloc = alloc,
             .format = .d32_sfloat,
             .usage = .{
                 .depth_stencil_attachment = true,
@@ -653,17 +658,18 @@ const PerFrameInFlight = struct {
             .loc = .device,
             .size = renderer.display.imageSize(),
         });
-        errdefer this.depth_image.deinit(renderer.device, alloc);
+        errdefer this.depth_image.deinit(renderer.device);
+        this.depth_image.debugLabel(renderer.device, "depth image");
 
         this.depth_image_view = try .init(renderer.device, .{
-            .alloc = alloc,
             .kind = .@"2d",
             .image = this.depth_image,
             .subresource_range = .{
                 .aspect = .{ .depth = true },
             },
         });
-        errdefer this.depth_image_view.deinit(renderer.device, alloc);
+        errdefer this.depth_image_view.deinit(renderer.device);
+        this.depth_image_view.debugLabel(renderer.device, "depth image view");
 
         try renderer.upload_man.post_copy_image_barriers.append(alloc, .{
             .image = this.depth_image,
@@ -682,9 +688,9 @@ const PerFrameInFlight = struct {
         });
     }
 
-    pub fn deinitViewportDependants(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) void {
-        this.depth_image_view.deinit(renderer.device, alloc);
-        this.depth_image.deinit(renderer.device, alloc);
+    pub fn deinitViewportDependants(this: *PerFrameInFlight, renderer: *Renderer) void {
+        this.depth_image_view.deinit(renderer.device);
+        this.depth_image.deinit(renderer.device);
     }
 };
 

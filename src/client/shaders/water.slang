@@ -84,7 +84,7 @@ VSOutput vsMain(VSInput input) {
     float3 fvertex_pos = vertex_pos;
 
     bool top = !has_water_above && (face == 4 || (face != 5 && up_table[vid] == 1));
-    fvertex_pos.z -= uint(top) * 0.2;
+    fvertex_pos.z -= uint(top) * 0.125;
 
     o.position = mul(float4(fvertex_pos, 1), pc.vp);
     o.uvs = uv_table[vid];

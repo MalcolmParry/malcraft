@@ -26,7 +26,7 @@ pub fn view(this: Camera) math.Mat4 {
 pub fn proj(this: Camera, aspect_ratio: f32) math.Mat4 {
     return math.matMul(
         math.Mat4,
-        math.perspective(aspect_ratio, this.v_fov, this.near, this.far),
+        math.perspectiveReverseZInf(aspect_ratio, this.v_fov, this.near),
         math.to_vulkan,
     );
 }

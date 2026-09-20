@@ -3,7 +3,6 @@ const mw = @import("mwengine");
 const math = mw.math;
 const znet = @import("znet");
 const protocol = @import("protocol.zig");
-const Deque = @import("../utils/deque.zig").Deque;
 const GenerationalSparseSet = @import("../utils/generational_sparse_set.zig").GenerationalSparseSet;
 const ServerMsgId = protocol.ServerMsgId;
 const NetworkManager = @This();
@@ -16,8 +15,8 @@ failed: std.atomic.Value(bool) = .init(false),
 running: std.atomic.Value(bool) = .init(true),
 // TODO: replace this with atomic queue
 mutex: std.Io.Mutex = .init,
-outgoing: Deque(Command),
-incoming: Deque(Event),
+outgoing: std.Deque(Command),
+incoming: std.Deque(Event),
 bytes_sent: usize = 0,
 
 pub fn init(man: *NetworkManager, alloc: std.mem.Allocator, io: std.Io, host_config: znet.HostConfig) !void {
