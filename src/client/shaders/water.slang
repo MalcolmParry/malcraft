@@ -1,11 +1,15 @@
 struct PushConstants {
     float4x4 vp;
+};
+
+struct ChunkData {
     int3 chunk_pos;
 };
 
 struct VSInput {
     [[vk::location(0)]] uint packed;
     uint vert_id : SV_VulkanVertexID;
+    uint draw_id : SV_DrawIndex;
 };
 
 struct VSOutput {
@@ -15,6 +19,9 @@ struct VSOutput {
 
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pc;
+
+[[vk::binding(0, 0)]]
+StructuredBuffer<ChunkData, Std430DataLayout> chunk_data;
 
 static const int3 face_origin_table[6] = {
     { 1, 1, 0 },
@@ -54,8 +61,8 @@ static const uint up_table[4] = {
 static const float2 uv_table[4] = {
     { 0, 0 },
     { 1, 0 },
-    { 1, 1 },
     { 0, 1 },
+    { 1, 1 },
 };
 
 [[shader("vertex")]]
@@ -63,6 +70,7 @@ VSOutput vsMain(VSInput input) {
     VSOutput o;
 
     uint packed = input.packed;
+    int3 chunk_pos = chunk_data[input.draw_id].chunk_pos;
 
     uint face = packed & 7;
     bool has_water_above = packed >> 18 > 0;
@@ -73,7 +81,7 @@ VSOutput vsMain(VSInput input) {
     };
 
     uint vid = input.vert_id;
-    int3 block_pos = rel_pos + pc.chunk_pos * 32;
+    int3 block_pos = rel_pos + chunk_pos * 32;
     int3 face_origin = face_origin_table[face];
     int3 right_offset = right_table[vid] * face_right_table[face];
     int3 up_offset = up_table[vid] * face_up_table[face];
@@ -90,7 +98,7 @@ VSOutput vsMain(VSInput input) {
     return o;
 }
 
-[[vk::binding(0, 0)]]
+[[vk::binding(1, 0)]]
 Sampler2DArray sampler;
 
 [[shader("pixel")]]

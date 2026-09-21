@@ -1,11 +1,15 @@
 struct PushConstants {
     float4x4 vp;
+};
+
+struct ChunkData {
     int3 chunk_pos;
 };
 
 struct VSInput {
     [[vk::location(0)]] uint2 packed;
     uint vert_id : SV_VulkanVertexID;
+    uint draw_id : SV_DrawIndex;
 };
 
 struct VSOutput {
@@ -17,6 +21,9 @@ struct VSOutput {
 
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pc;
+
+[[vk::binding(0, 0)]]
+StructuredBuffer<ChunkData, Std430DataLayout> chunk_data;
 
 static const int3 face_origin_table[6] = {
     { 1, 1, 0 },
@@ -80,6 +87,7 @@ VSOutput vsMain(VSInput input) {
 
     uint lower = input.packed.x;
     uint upper = input.packed.y;
+    int3 chunk_pos = chunk_data[input.draw_id].chunk_pos;
 
     uint w = ((lower >> 18) & 0x1f) + 1;
     uint h = ((lower >> 23) & 0x1f) + 1;
@@ -93,7 +101,7 @@ VSOutput vsMain(VSInput input) {
     };
 
     uint vid = vid_flip_table[input.vert_id + flipped * 4];
-    int3 block_pos = rel_pos + pc.chunk_pos * 32;
+    int3 block_pos = rel_pos + chunk_pos * 32;
     int3 face_origin = face_origin_table[face];
     int3 right_offset = w * right_table[vid] * face_right_table[face];
     int3 up_offset = h * up_table[vid] * face_up_table[face];
@@ -111,7 +119,7 @@ VSOutput vsMain(VSInput input) {
     return o;
 }
 
-[[vk::binding(0, 0)]]
+[[vk::binding(1, 0)]]
 Sampler2DArray sampler;
 
 static const float3 sun_dir = normalize(float3(-1, -2, 5));
