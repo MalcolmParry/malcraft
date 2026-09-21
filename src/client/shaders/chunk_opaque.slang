@@ -45,16 +45,12 @@ static const int3 face_up_table[6] = {
     { 1, 0, 0 },
 };
 
-static const uint right_table[6] = {
-    0, 1, 1, 0, 1, 0
+static const uint right_table[4] = {
+    0, 1, 0, 1
 };
 
-static const uint up_table[6] = {
-    0, 0, 1, 0, 1, 1
-};
-
-static const uint ao_index_table[6] = {
-    0, 2, 6, 0, 6, 4
+static const uint up_table[4] = {
+    0, 0, 1, 1
 };
 
 static const float ao_table[4] = {
@@ -64,20 +60,18 @@ static const float ao_table[4] = {
     0.40,
 };
 
-static const float2 uv_table[6] = {
+static const float2 uv_table[4] = {
     { 0, 0 },
     { 1, 0 },
-    { 1, 1 },
-    { 0, 0 },
-    { 1, 1 },
     { 0, 1 },
+    { 1, 1 },
 };
 
-static uint vid_flip_table[12] = {
+static uint vid_flip_table[8] = {
     // not flipped
-    0, 1, 2, 3, 4, 5,
+    0, 1, 2, 3,
     // flipped
-    0, 1, 5, 1, 2, 5,
+    2, 0, 3, 1,
 };
 
 [[shader("vertex")]]
@@ -98,7 +92,7 @@ VSOutput vsMain(VSInput input) {
         (lower >> 13) & 0x1f,
     };
 
-    uint vid = vid_flip_table[input.vert_id + flipped * 6];
+    uint vid = vid_flip_table[input.vert_id + flipped * 4];
     int3 block_pos = rel_pos + pc.chunk_pos * 32;
     int3 face_origin = face_origin_table[face];
     int3 right_offset = w * right_table[vid] * face_right_table[face];
@@ -108,7 +102,7 @@ VSOutput vsMain(VSInput input) {
 
     o.position = mul(float4(vertex_pos, 1), pc.vp);
     o.packed = face | (tex_id << 3);
-    o.ao = ao_table[(upper >> ao_index_table[vid]) & 3];
+    o.ao = ao_table[(upper >> (vid * 2)) & 3];
 
     float2 base_uv = uv_table[vid];
     float2 repeat = { w, h };

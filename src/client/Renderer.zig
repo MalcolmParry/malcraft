@@ -451,7 +451,7 @@ fn drawChunks(this: *Renderer, alloc: std.mem.Allocator, render_pass: gpu.Render
         );
 
         render_pass.cmdDraw(.{
-            .vertex_count = 6,
+            .vertex_count = 4,
             .instance_count = chunk.count,
             .first_instance = chunk.offset,
             .indexed = false,
@@ -521,7 +521,7 @@ fn drawChunk(this: *Renderer, render_pass: gpu.RenderPassEncoder, pos: Chunk.Pos
     );
 
     render_pass.cmdDraw(.{
-        .vertex_count = 6,
+        .vertex_count = 4,
         .instance_count = @intCast(loaded_mesh.opaque_count),
         .first_instance = @intCast(loaded_mesh.opaque_offset),
         .indexed = false,
@@ -568,6 +568,7 @@ fn initChunkPipelines(this: *Renderer) !void {
                 .{ .type = .uint32x2 },
             },
         }},
+        .topology = .triangle_strip,
         .polygon_mode = if (this.wireframe) .line else .fill,
         .cull_mode = .back,
         .depth_mode = .{
@@ -601,6 +602,7 @@ fn initChunkPipelines(this: *Renderer) !void {
                 .{ .type = .uint32 },
             },
         }},
+        .topology = .triangle_strip,
         .polygon_mode = if (this.wireframe) .line else .fill,
         .cull_mode = .none,
         .depth_mode = .{

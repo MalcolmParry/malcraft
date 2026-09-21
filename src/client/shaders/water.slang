@@ -43,19 +43,17 @@ static const int3 face_up_table[6] = {
     { 1, 0, 0 },
 };
 
-static const uint right_table[6] = {
-    0, 1, 1, 0, 1, 0
+static const uint right_table[4] = {
+    0, 1, 0, 1
 };
 
-static const uint up_table[6] = {
-    0, 0, 1, 0, 1, 1
+static const uint up_table[4] = {
+    0, 0, 1, 1
 };
 
-static const float2 uv_table[6] = {
+static const float2 uv_table[4] = {
     { 0, 0 },
     { 1, 0 },
-    { 1, 1 },
-    { 0, 0 },
     { 1, 1 },
     { 0, 1 },
 };

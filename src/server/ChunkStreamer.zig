@@ -17,7 +17,8 @@ const zstd = @cImport({
     @cInclude("zstd.h");
 });
 
-const chunk_transfer_limit = 256 * 1024;
+// const chunk_transfer_limit = 256 * 1024;
+const chunk_transfer_limit = 8 * 1024 * 1024;
 
 cursor: Chunk.Cursor,
 regions_to_send: std.Deque(Region.PackedPos) = .empty,
