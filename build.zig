@@ -76,7 +76,7 @@ fn buildClient(b: *Build, target: std.Build.ResolvedTarget, optimize: std.builti
 
     const options = b.addOptions();
     options.addOption(bool, "gpu_validation", b.option(bool, "gpu-validation", "") orelse (optimize != .ReleaseFast));
-    options.addOption(bool, "render_borders_with_nonexistant_chunks", b.option(bool, "borders", "Should render borders with nonexistant chunks (kind of broken now)") orelse true);
+    options.addOption(bool, "render_borders_with_nonexistant_chunks", b.option(bool, "borders", "Should render borders with nonexistant chunks (kind of broken now)") orelse false);
     client.root_module.addOptions("options", options);
 
     const exe_install = b.addInstallArtifact(client, .{});

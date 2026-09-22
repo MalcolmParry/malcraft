@@ -58,6 +58,9 @@ pub fn genMany(
         if (player_index == 0) empty_queue_count = 0;
 
         const player = &players[player_index];
+        defer player_index = (player_index + 1) % players.len;
+        if (player.state != .normal) continue;
+
         if (player.chunk_streamer.chunks_to_gen.popFront()) |pos| {
             if (!player.chunk_streamer.cursor.chunkInRange(pos.vec())) continue;
             if (world.containsChunk(pos.vec())) continue;
@@ -92,8 +95,6 @@ pub fn genMany(
         } else {
             empty_queue_count += 1;
         }
-
-        player_index = (player_index + 1) % players.len;
     }
 
     gen.total_time += @intCast(start.untilNow(io, .awake).toNanoseconds());
