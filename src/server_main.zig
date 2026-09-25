@@ -6,8 +6,8 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
     const opts: Server.Options = .{
-        .chunk_streaming_radius = 256,
-        .chunk_streaming_height = 64,
+        .chunk_streaming_radius = 1024,
+        .chunk_streaming_height = 256,
         .ip = "0.0.0.0",
         .port = 5000,
     };

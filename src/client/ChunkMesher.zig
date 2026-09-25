@@ -13,6 +13,7 @@ const ChunkMesher = @This();
 pub const max_faces = (Chunk.block_count / 2) * 6;
 
 pub const GpuLoaded = struct {
+    super_slab_index: u32,
     buffer_offset: u32,
     opaque_count: u32,
     water_count: u32,

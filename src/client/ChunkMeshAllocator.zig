@@ -7,7 +7,7 @@ const Chunk = @import("../common/Chunk.zig");
 const RendererInfo = @import("Renderer.zig").Info;
 
 const ChunkMeshAllocator = @This();
-pub const buffer_size = 1024 * 1024 * 512;
+pub const buffer_size = 1024 * 1024 * 128;
 
 comptime {
     std.debug.assert(buffer_size / @sizeOf(ChunkMesher.GreedyQuad) < std.math.maxInt(u32));
@@ -16,7 +16,7 @@ comptime {
 renderer_info: *const RendererInfo,
 free_list_alloc: gpu.FreeListAllocator(.{
     .super_slab_size = buffer_size,
-    .allow_multiple_super_slabs = false,
+    .allow_multiple_super_slabs = true,
     .stats = true,
 }),
 upload_man: *gpu.UploadManager,
@@ -84,11 +84,11 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, opaque_quads: []const
     const byte_count: u32 = opaque_byte_count + water_byte_count;
 
     const allocation = try this.free_list_alloc.alloc(this.device, byte_count, .max(.of(ChunkMesher.GreedyQuad), .of(ChunkMesher.WaterFace)));
-    std.debug.assert(allocation.super_slab == 0);
+    const buffer = this.free_list_alloc.super_descs.items[allocation.super_slab].buffer;
 
     if (opaque_quads.len != 0) {
         const opaque_dst: gpu.Buffer.Region = .{
-            .buffer = this.free_list_alloc.super_descs.items[0].buffer,
+            .buffer = buffer,
             .offset = allocation.offset,
             .size = opaque_byte_count,
         };
@@ -108,7 +108,7 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, opaque_quads: []const
 
     if (water_faces.len != 0) {
         const water_dst: gpu.Buffer.Region = .{
-            .buffer = this.free_list_alloc.super_descs.items[0].buffer,
+            .buffer = buffer,
             .offset = allocation.offset + opaque_byte_count,
             .size = water_byte_count,
         };
@@ -133,6 +133,7 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, opaque_quads: []const
     }
 
     entry.value_ptr.* = .{
+        .super_slab_index = allocation.super_slab,
         .buffer_offset = allocation.offset,
         .opaque_count = @intCast(opaque_quads.len),
         .water_count = @intCast(water_faces.len),
@@ -141,7 +142,7 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, opaque_quads: []const
 
 pub fn free(mesh_alloc: *ChunkMeshAllocator, chunk: ChunkMesher.GpuLoaded) !void {
     mesh_alloc.free_list_alloc.free(.{
-        .super_slab = 0,
+        .super_slab = chunk.super_slab_index,
         .offset = chunk.buffer_offset,
         .size = chunk.opaque_count * @sizeOf(ChunkMesher.GreedyQuad) + chunk.water_count * @sizeOf(ChunkMesher.WaterFace),
         .alignment = .max(.of(ChunkMesher.GreedyQuad), .of(ChunkMesher.WaterFace)),

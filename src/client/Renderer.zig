@@ -391,7 +391,7 @@ fn drawChunks(this: *Renderer, per_frame: *PerFrameInFlight, acquired_image: gpu
 
             const chunk_pos = kv.key_ptr.*;
             const loaded = kv.value_ptr.*;
-            const buffer_ptr = this.chunk_mesh_alloc.free_list_alloc.super_descs.items[0].buffer.gpu_ptr.?;
+            const buffer_ptr = this.chunk_mesh_alloc.free_list_alloc.super_descs.items[loaded.super_slab_index].buffer.gpu_ptr.?;
 
             if (loaded.opaque_count != 0) {
                 opaque_data.slice[opaque_draw_count] = .{

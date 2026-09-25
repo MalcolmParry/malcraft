@@ -13,7 +13,7 @@ pub const default: Camera = .{
     .euler = .{ 0, 0, 0 },
     .v_fov = math.rad(90.0),
     .near = 0.1,
-    .far = 10_000,
+    .far = 40_000,
 };
 
 pub fn view(this: Camera) math.Mat4 {
