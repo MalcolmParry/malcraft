@@ -52,7 +52,7 @@ pub fn init(this: *ChunkMeshAllocator, info: InitInfo) !void {
         .buffer_loc = .device,
         .buffer_usage = .{
             .dst = true,
-            .vertex = true,
+            .device_address = true,
         },
     };
     errdefer this.free_list_alloc.deinit(info.device);
@@ -83,7 +83,7 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, opaque_quads: []const
     const water_byte_count: u32 = @intCast(water_faces.len * @sizeOf(ChunkMesher.WaterFace));
     const byte_count: u32 = opaque_byte_count + water_byte_count;
 
-    const allocation = try this.free_list_alloc.alloc(this.device, byte_count);
+    const allocation = try this.free_list_alloc.alloc(this.device, byte_count, .max(.of(ChunkMesher.GreedyQuad), .of(ChunkMesher.WaterFace)));
     std.debug.assert(allocation.super_slab == 0);
 
     if (opaque_quads.len != 0) {
@@ -99,9 +99,9 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, opaque_quads: []const
             .post_copy_barrier = .{
                 .region = opaque_dst,
                 .src_stage = .{ .transfer = true },
-                .dst_stage = .{ .vertex_input = true },
+                .dst_stage = .{ .vertex_shader = true },
                 .src_access = .{ .transfer_write = true },
-                .dst_access = .{ .vertex_read = true },
+                .dst_access = .{ .shader_storage_read = true },
             },
         });
     }
@@ -119,9 +119,9 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, opaque_quads: []const
             .post_copy_barrier = .{
                 .region = water_dst,
                 .src_stage = .{ .transfer = true },
-                .dst_stage = .{ .vertex_input = true },
+                .dst_stage = .{ .vertex_shader = true },
                 .src_access = .{ .transfer_write = true },
-                .dst_access = .{ .vertex_read = true },
+                .dst_access = .{ .shader_storage_read = true },
             },
         });
     }
@@ -133,7 +133,7 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, opaque_quads: []const
     }
 
     entry.value_ptr.* = .{
-        .opaque_offset = @divExact(allocation.offset, @sizeOf(ChunkMesher.GreedyQuad)),
+        .buffer_offset = allocation.offset,
         .opaque_count = @intCast(opaque_quads.len),
         .water_count = @intCast(water_faces.len),
     };
@@ -142,8 +142,9 @@ pub fn writeChunkAssumeCapacity(this: *ChunkMeshAllocator, opaque_quads: []const
 pub fn free(mesh_alloc: *ChunkMeshAllocator, chunk: ChunkMesher.GpuLoaded) !void {
     mesh_alloc.free_list_alloc.free(.{
         .super_slab = 0,
-        .offset = chunk.opaque_offset * @sizeOf(ChunkMesher.GreedyQuad),
+        .offset = chunk.buffer_offset,
         .size = chunk.opaque_count * @sizeOf(ChunkMesher.GreedyQuad) + chunk.water_count * @sizeOf(ChunkMesher.WaterFace),
+        .alignment = .max(.of(ChunkMesher.GreedyQuad), .of(ChunkMesher.WaterFace)),
     });
 }
 

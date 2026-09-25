@@ -13,12 +13,16 @@ const ChunkMesher = @This();
 pub const max_faces = (Chunk.block_count / 2) * 6;
 
 pub const GpuLoaded = struct {
+    buffer_offset: u32,
     opaque_count: u32,
-    opaque_offset: u32,
     water_count: u32,
 
+    pub fn opaqueOffset(loaded: GpuLoaded) u32 {
+        return loaded.buffer_offset;
+    }
+
     pub fn waterOffset(loaded: GpuLoaded) u32 {
-        return @divExact((loaded.opaque_offset + loaded.opaque_count) * @sizeOf(GreedyQuad), @sizeOf(WaterFace));
+        return loaded.buffer_offset + loaded.opaque_count * @sizeOf(GreedyQuad);
     }
 };
 

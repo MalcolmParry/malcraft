@@ -33,6 +33,7 @@ ui: UIRenderer,
 texture_man: TextureManager,
 chunk_mesh_alloc: ChunkMeshAllocator,
 chunk_resource_layout: gpu.ResourceSet.Layout,
+chunk_resource_set: gpu.ResourceSet,
 chunk_pipeline: gpu.GraphicsPipeline,
 water_pipeline: gpu.GraphicsPipeline,
 
@@ -103,8 +104,8 @@ pub fn init(this: *@This(), info: InitInfo) !void {
         .loc = .device,
         .usage = .{
             .dst = true,
-            .storage = true,
             .indirect_cmd = true,
+            .device_address = true,
         },
     });
     errdefer streaming_buffer.deinit(this.device);
@@ -134,17 +135,10 @@ pub fn init(this: *@This(), info: InitInfo) !void {
 
     this.chunk_resource_layout = try .init(this.device, &.{
         .{
-            .t = .storage,
-            .stages = .{ .vertex = true },
-            .flags = .{},
-            .binding = 0,
-            .count = 1,
-        },
-        .{
             .t = .image,
             .stages = .{ .pixel = true },
             .flags = .{},
-            .binding = 1,
+            .binding = 0,
             .count = 1,
         },
     });
@@ -168,6 +162,18 @@ pub fn init(this: *@This(), info: InitInfo) !void {
 
     this.texture_man = try .init(alloc, io, this.device, &this.stage_man);
     errdefer this.texture_man.deinit(this.device);
+
+    this.chunk_resource_set = try .init(this.device, this.chunk_resource_layout);
+    try this.destruct_queue.append(alloc, .{ .resource_set = this.chunk_resource_set });
+
+    try this.chunk_resource_set.update(this.device, &.{.{
+        .binding = 0,
+        .data = .{ .image = &.{.{
+            .layout = .shader_read_only,
+            .view = this.texture_man.view,
+            .sampler = this.texture_man.sampler,
+        }} },
+    }});
 
     try this.initFramesInFlight(alloc);
     errdefer this.deinitFramesInFlight(alloc);
@@ -268,11 +274,7 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
         }},
     });
 
-    const push_constants: PerFramePushConstants = .{
-        .vp = math.matrixToArray(data.camera.vp(aspect_ratio)),
-    };
-
-    try this.drawChunks(per_frame, acquired_image, push_constants, aspect_ratio, data.camera);
+    try this.drawChunks(per_frame, acquired_image, data.camera, aspect_ratio);
 
     try this.ui.render(.{
         .alloc = alloc,
@@ -348,7 +350,7 @@ pub fn render(this: *@This(), data: FrameData, alloc: std.mem.Allocator) !void {
     }
 }
 
-fn drawChunks(this: *Renderer, per_frame: *PerFrameInFlight, acquired_image: gpu.Display.AcquiredImage, push_constants: PerFramePushConstants, aspect_ratio: f32, camera: Camera) !void {
+fn drawChunks(this: *Renderer, per_frame: *PerFrameInFlight, acquired_image: gpu.Display.AcquiredImage, camera: Camera, aspect_ratio: f32) !void {
     const chunk_count = this.chunk_mesh_alloc.loaded_meshes.count();
 
     const opaque_data = try this.stage_man.allocate(PerChunkData, chunk_count);
@@ -389,17 +391,19 @@ fn drawChunks(this: *Renderer, per_frame: *PerFrameInFlight, acquired_image: gpu
 
             const chunk_pos = kv.key_ptr.*;
             const loaded = kv.value_ptr.*;
+            const buffer_ptr = this.chunk_mesh_alloc.free_list_alloc.super_descs.items[0].buffer.gpu_ptr.?;
 
             if (loaded.opaque_count != 0) {
                 opaque_data.slice[opaque_draw_count] = .{
                     .pos = chunk_pos.vec(),
+                    .quads_gpu = @intFromPtr(buffer_ptr) + loaded.opaqueOffset(),
                 };
 
                 opaque_draws.slice[opaque_draw_count] = .{
                     .vertex_count = 4,
                     .first_vertex = 0,
                     .instance_count = loaded.opaque_count,
-                    .first_instance = loaded.opaque_offset,
+                    .first_instance = 0,
                 };
 
                 opaque_draw_count += 1;
@@ -408,13 +412,14 @@ fn drawChunks(this: *Renderer, per_frame: *PerFrameInFlight, acquired_image: gpu
             if (loaded.water_count != 0) {
                 water_data.slice[water_draw_count] = .{
                     .pos = chunk_pos.vec(),
+                    .quads_gpu = @intFromPtr(buffer_ptr) + loaded.waterOffset(),
                 };
 
                 water_draws.slice[water_draw_count] = .{
                     .vertex_count = 4,
                     .first_vertex = 0,
                     .instance_count = loaded.water_count,
-                    .first_instance = loaded.waterOffset(),
+                    .first_instance = 0,
                 };
 
                 water_draw_count += 1;
@@ -423,9 +428,11 @@ fn drawChunks(this: *Renderer, per_frame: *PerFrameInFlight, acquired_image: gpu
     }
 
     var gpu_opaque_draws: gpu.Buffer.Region = undefined;
+    var gpu_opaque_chunk_data: [*]PerChunkData = undefined;
     if (opaque_draw_count != 0) {
         gpu_opaque_draws = try this.streaming.allocTAligned(gpu.VulkanIndirectDrawCommand, opaque_draw_count, .@"4");
         const gpu_data = try this.streaming.allocTAligned(PerChunkData, opaque_draw_count, .@"16");
+        gpu_opaque_chunk_data = @ptrCast(@alignCast(this.streaming.buffer.gpu_ptr.? + gpu_data.offset));
 
         per_frame.cmd_encoder.cmdCopyBuffer(
             opaque_draws.region.slice(0, @sizeOf(gpu.VulkanIndirectDrawCommand) * opaque_draw_count),
@@ -451,21 +458,18 @@ fn drawChunks(this: *Renderer, per_frame: *PerFrameInFlight, acquired_image: gpu
                     .src_stage = .{ .transfer = true },
                     .dst_stage = .{ .vertex_shader = true },
                     .src_access = .{ .transfer_write = true },
-                    .dst_access = .{ .shader_read = true },
+                    .dst_access = .{ .shader_storage_read = true },
                 },
             },
         });
-
-        try per_frame.opaque_resource_set.update(this.device, &.{.{
-            .binding = 0,
-            .data = .{ .storage = &.{gpu_data} },
-        }});
     }
 
     var gpu_water_draws: gpu.Buffer.Region = undefined;
+    var gpu_water_chunk_data: [*]PerChunkData = undefined;
     if (water_draw_count != 0) {
         gpu_water_draws = try this.streaming.allocTAligned(gpu.VulkanIndirectDrawCommand, water_draw_count, .@"4");
         const gpu_data = try this.streaming.allocTAligned(PerChunkData, water_draw_count, .@"16");
+        gpu_water_chunk_data = @ptrCast(@alignCast(this.streaming.buffer.gpu_ptr.? + gpu_data.offset));
 
         per_frame.cmd_encoder.cmdCopyBuffer(
             water_draws.region.slice(0, @sizeOf(gpu.VulkanIndirectDrawCommand) * water_draw_count),
@@ -491,15 +495,10 @@ fn drawChunks(this: *Renderer, per_frame: *PerFrameInFlight, acquired_image: gpu
                     .src_stage = .{ .transfer = true },
                     .dst_stage = .{ .vertex_shader = true },
                     .src_access = .{ .transfer_write = true },
-                    .dst_access = .{ .shader_read = true },
+                    .dst_access = .{ .shader_storage_read = true },
                 },
             },
         });
-
-        try per_frame.water_resource_set.update(this.device, &.{.{
-            .binding = 0,
-            .data = .{ .storage = &.{gpu_data} },
-        }});
     }
 
     const render_pass = per_frame.cmd_encoder.cmdBeginRenderPass(.{
@@ -524,15 +523,21 @@ fn drawChunks(this: *Renderer, per_frame: *PerFrameInFlight, acquired_image: gpu
     });
     defer render_pass.cmdEnd();
 
+    const vp = math.matrixToArray(camera.vp(aspect_ratio));
+
     if (opaque_draw_count != 0) {
+        const pc: PushConstants = .{
+            .vp = vp,
+            .chunk_data_gpu = gpu_opaque_chunk_data,
+        };
+
         render_pass.cmdBindPipeline(this.chunk_pipeline);
-        render_pass.cmdBindResourceSets(this.chunk_pipeline, &.{per_frame.opaque_resource_set}, 0);
-        render_pass.cmdBindVertexBuffer(0, this.chunk_mesh_alloc.free_list_alloc.super_descs.items[0].buffer.region());
+        render_pass.cmdBindResourceSets(this.chunk_pipeline, &.{this.chunk_resource_set}, 0);
         render_pass.cmdPushConstants(this.chunk_pipeline, .{
             .stages = .{ .vertex = true },
             .offset = 0,
-            .size = @sizeOf(PerFramePushConstants),
-        }, @ptrCast(&push_constants));
+            .size = @sizeOf(PushConstants),
+        }, @ptrCast(&pc));
 
         render_pass.cmdDrawIndirect(.{
             .region = gpu_opaque_draws,
@@ -542,14 +547,18 @@ fn drawChunks(this: *Renderer, per_frame: *PerFrameInFlight, acquired_image: gpu
     }
 
     if (water_draw_count != 0) {
+        const pc: PushConstants = .{
+            .vp = vp,
+            .chunk_data_gpu = gpu_water_chunk_data,
+        };
+
         render_pass.cmdBindPipeline(this.water_pipeline);
-        render_pass.cmdBindResourceSets(this.water_pipeline, &.{per_frame.water_resource_set}, 0);
-        render_pass.cmdBindVertexBuffer(0, this.chunk_mesh_alloc.free_list_alloc.super_descs.items[0].buffer.region());
+        render_pass.cmdBindResourceSets(this.water_pipeline, &.{this.chunk_resource_set}, 0);
         render_pass.cmdPushConstants(this.water_pipeline, .{
             .stages = .{ .vertex = true },
             .offset = 0,
-            .size = @sizeOf(PerFramePushConstants),
-        }, @ptrCast(&push_constants));
+            .size = @sizeOf(PushConstants),
+        }, @ptrCast(&pc));
 
         render_pass.cmdDrawIndirect(.{
             .region = gpu_water_draws,
@@ -631,20 +640,13 @@ fn initChunkPipelines(this: *Renderer) !void {
         .push_constant_ranges = &.{.{
             .stages = .{ .vertex = true },
             .offset = 0,
-            .size = @sizeOf(PerFramePushConstants),
+            .size = @sizeOf(PushConstants),
         }},
         .resource_layouts = &.{this.chunk_resource_layout},
         .shaders = &.{
             this.shader_man.getShader(.chunk_opaque_vertex),
             this.shader_man.getShader(.chunk_opaque_pixel),
         },
-        .vertex_input_bindings = &.{.{
-            .binding = 0,
-            .rate = .per_instance,
-            .fields = &.{
-                .{ .type = .uint32x2 },
-            },
-        }},
         .topology = .triangle_strip,
         .polygon_mode = if (this.wireframe) .line else .fill,
         .cull_mode = .back,
@@ -665,20 +667,13 @@ fn initChunkPipelines(this: *Renderer) !void {
         .push_constant_ranges = &.{.{
             .stages = .{ .vertex = true },
             .offset = 0,
-            .size = @sizeOf(PerFramePushConstants),
+            .size = @sizeOf(PushConstants),
         }},
         .resource_layouts = &.{this.chunk_resource_layout},
         .shaders = &.{
             this.shader_man.getShader(.water_vertex),
             this.shader_man.getShader(.water_pixel),
         },
-        .vertex_input_bindings = &.{.{
-            .binding = 0,
-            .rate = .per_instance,
-            .fields = &.{
-                .{ .type = .uint32 },
-            },
-        }},
         .topology = .triangle_strip,
         .polygon_mode = if (this.wireframe) .line else .fill,
         .cull_mode = .none,
@@ -709,8 +704,6 @@ const PerFrameInFlight = struct {
     cmd_encoder: gpu.CommandEncoder,
     depth_image: gpu.Image,
     depth_image_view: gpu.Image.View,
-    opaque_resource_set: gpu.ResourceSet,
-    water_resource_set: gpu.ResourceSet,
     trash: std.ArrayList(gpu.AnyObject),
 
     pub fn init(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) !void {
@@ -720,38 +713,12 @@ const PerFrameInFlight = struct {
         try this.initViewportDependants(renderer, alloc);
         errdefer this.deinitViewportDependants(renderer);
 
-        this.opaque_resource_set = try .init(renderer.device, renderer.chunk_resource_layout);
-        errdefer this.opaque_resource_set.deinit(renderer.device);
-
-        this.water_resource_set = try .init(renderer.device, renderer.chunk_resource_layout);
-        errdefer this.water_resource_set.deinit(renderer.device);
-
-        try this.opaque_resource_set.update(renderer.device, &.{.{
-            .binding = 1,
-            .data = .{ .image = &.{.{
-                .layout = .shader_read_only,
-                .view = renderer.texture_man.view,
-                .sampler = renderer.texture_man.sampler,
-            }} },
-        }});
-
-        try this.water_resource_set.update(renderer.device, &.{.{
-            .binding = 1,
-            .data = .{ .image = &.{.{
-                .layout = .shader_read_only,
-                .view = renderer.texture_man.view,
-                .sampler = renderer.texture_man.sampler,
-            }} },
-        }});
-
         this.trash = .empty;
     }
 
     pub fn deinit(this: *PerFrameInFlight, renderer: *Renderer, alloc: std.mem.Allocator) void {
         gpu.AnyObject.deinitAllReversed(this.trash.items, renderer.device);
         this.trash.deinit(alloc);
-        this.water_resource_set.deinit(renderer.device);
-        this.opaque_resource_set.deinit(renderer.device);
         this.deinitViewportDependants(renderer);
         this.cmd_encoder.deinit(renderer.device);
     }
@@ -804,10 +771,12 @@ const PerFrameInFlight = struct {
 const PerChunkData = extern struct {
     pos: [3]i32,
     pad: u32 = 0,
+    quads_gpu: gpu.Size,
 };
 
-const PerFramePushConstants = extern struct {
+const PushConstants = extern struct {
     vp: [4][4]f32,
+    chunk_data_gpu: [*]PerChunkData,
 };
 
 pub const Info = struct {
